@@ -14,19 +14,25 @@ fn test_two_agents_same_file_different_symbols_auto_merges() {
     let ctx = TestContext::new();
 
     // Seed trunk with a handlers file containing one function.
-    let base = ctx.commit_files(&[
-        ("src/handlers.rs", "fn handle_login() {}\n"),
-    ]);
+    let base = ctx.commit_files(&[("src/handlers.rs", "fn handle_login() {}\n")]);
 
     // Agent-a adds handle_register.
-    let (agent_a, upper_a) = ctx.create_agent("agent-a", &[
-        ("src/handlers.rs", "fn handle_login() {}\nfn handle_register() {}\n"),
-    ]);
+    let (agent_a, upper_a) = ctx.create_agent(
+        "agent-a",
+        &[(
+            "src/handlers.rs",
+            "fn handle_login() {}\nfn handle_register() {}\n",
+        )],
+    );
 
     // Agent-b adds handle_admin.
-    let (agent_b, upper_b) = ctx.create_agent("agent-b", &[
-        ("src/handlers.rs", "fn handle_login() {}\nfn handle_admin() {}\n"),
-    ]);
+    let (agent_b, upper_b) = ctx.create_agent(
+        "agent-b",
+        &[(
+            "src/handlers.rs",
+            "fn handle_login() {}\nfn handle_admin() {}\n",
+        )],
+    );
 
     let cs_a = ctx.build_changeset(
         "cs-a",

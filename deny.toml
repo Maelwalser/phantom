@@ -1,0 +1,29 @@
+# cargo-deny configuration (v0.19+)
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# fuser 0.15.x has RUSTSEC-2021-0154 (uninitialized memory read).
+# Upgrade to 0.16+ when API migration is complete.
+ignore = ["RUSTSEC-2021-0154"]
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "Unicode-3.0",
+    "CC0-1.0",
+]
+
+[bans]
+multiple-versions = "warn"
+# Workspace path dependencies use wildcard versions internally — allow them.
+wildcards = "allow"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

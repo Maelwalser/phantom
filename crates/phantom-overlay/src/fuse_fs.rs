@@ -1,6 +1,6 @@
 //! FUSE filesystem adapter for the copy-on-write overlay.
 //!
-//! [`PhantomFs`] wraps an [`OverlayLayer`] and exposes it as a FUSE
+//! `PhantomFs` wraps an `OverlayLayer` and exposes it as a FUSE
 //! filesystem via the `fuser` crate. This module is only compiled on Linux.
 
 #[cfg(target_os = "linux")]
@@ -8,8 +8,8 @@ mod inner {
     use std::collections::HashMap;
     use std::ffi::OsStr;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use fuser::{

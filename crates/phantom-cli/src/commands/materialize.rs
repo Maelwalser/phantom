@@ -33,9 +33,7 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
 
         let cs = projection
             .latest_submitted_changeset(&agent_id)
-            .with_context(|| {
-                format!("no submitted changeset found for agent '{agent_name}'")
-            })?;
+            .with_context(|| format!("no submitted changeset found for agent '{agent_name}'"))?;
 
         println!("Resolved agent '{agent_name}' → changeset '{}'", cs.id);
         cs.id.clone()
@@ -102,50 +100,47 @@ pub fn materialize_changeset(
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Clear the agent's upper layer so reads fall through to the updated trunk.
-    if let MaterializeResult::Success { .. } = &result {
-        if let Err(e) = ctx.overlays.clear_overlay(&changeset.agent_id) {
-            eprintln!(
-                "warning: failed to clear upper layer for {}: {e}",
-                changeset.agent_id
-            );
-        }
+    if let MaterializeResult::Success { .. } = &result
+        && let Err(e) = ctx.overlays.clear_overlay(&changeset.agent_id)
+    {
+        eprintln!(
+            "warning: failed to clear upper layer for {}: {e}",
+            changeset.agent_id
+        );
     }
 
     // Run ripple check on success
-    if let MaterializeResult::Success { .. } = &result {
-        if let Ok(head) = materializer.git().head_oid() {
-            if let Ok(changed_files) =
-                materializer.git().changed_files(&changeset.base_commit, &head)
-            {
-                let active: Vec<(AgentId, Vec<std::path::PathBuf>)> = projection
-                    .active_agents()
-                    .into_iter()
-                    .filter(|a| *a != changeset.agent_id)
-                    .filter_map(|a| {
-                        let agent_cs = all_events
-                            .iter()
-                            .filter(|e| e.agent_id == a)
-                            .find_map(|e| match &e.kind {
-                                EventKind::OverlayCreated { .. } => {
-                                    Some(e.changeset_id.clone())
-                                }
-                                _ => None,
-                            });
-                        agent_cs.and_then(|cs_id| {
-                            projection
-                                .changeset(&cs_id)
-                                .map(|cs| (a.clone(), cs.files_touched.clone()))
-                        })
-                    })
-                    .collect();
+    if let MaterializeResult::Success { .. } = &result
+        && let Ok(head) = materializer.git().head_oid()
+        && let Ok(changed_files) = materializer
+            .git()
+            .changed_files(&changeset.base_commit, &head)
+    {
+        let active: Vec<(AgentId, Vec<std::path::PathBuf>)> = projection
+            .active_agents()
+            .into_iter()
+            .filter(|a| *a != changeset.agent_id)
+            .filter_map(|a| {
+                let agent_cs = all_events
+                    .iter()
+                    .filter(|e| e.agent_id == a)
+                    .find_map(|e| match &e.kind {
+                        EventKind::OverlayCreated { .. } => Some(e.changeset_id.clone()),
+                        _ => None,
+                    });
+                agent_cs.and_then(|cs_id| {
+                    projection
+                        .changeset(&cs_id)
+                        .map(|cs| (a.clone(), cs.files_touched.clone()))
+                })
+            })
+            .collect();
 
-                let affected = RippleChecker::check_ripple(&changed_files, &active);
-                if !affected.is_empty() {
-                    println!("Ripple: the following agents may be affected:");
-                    for (agent, files) in &affected {
-                        println!("  {agent}: {} file(s)", files.len());
-                    }
-                }
+        let affected = RippleChecker::check_ripple(&changed_files, &active);
+        if !affected.is_empty() {
+            println!("Ripple: the following agents may be affected:");
+            for (agent, files) in &affected {
+                println!("  {agent}: {} file(s)", files.len());
             }
         }
     }

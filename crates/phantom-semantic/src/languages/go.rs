@@ -43,7 +43,15 @@ fn extract_go_node(
     match kind {
         "function_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                push_symbol(symbols, "package", &name, SymbolKind::Function, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    "package",
+                    &name,
+                    SymbolKind::Function,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "method_declaration" => {
@@ -63,7 +71,15 @@ fn extract_go_node(
                 } else {
                     "package".to_string()
                 };
-                push_symbol(symbols, &scope, &name, SymbolKind::Method, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Method,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "type_declaration" => {
@@ -79,13 +95,23 @@ fn extract_go_node(
                         Some("interface_type") => SymbolKind::Interface,
                         _ => SymbolKind::TypeAlias,
                     };
-                    push_symbol(symbols, "package", &name, sym_kind, child, source, file_path);
+                    push_symbol(
+                        symbols, "package", &name, sym_kind, child, source, file_path,
+                    );
                 }
             }
         }
         "import_declaration" => {
             let text = node_text(node, source);
-            push_symbol(symbols, "package", &text, SymbolKind::Import, node, source, file_path);
+            push_symbol(
+                symbols,
+                "package",
+                &text,
+                SymbolKind::Import,
+                node,
+                source,
+                file_path,
+            );
         }
         _ => {}
     }
@@ -163,9 +189,21 @@ func (s *Server) Start() error {
 }
 "#;
         let symbols = parse_go(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function && s.name == "main"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Struct && s.name == "Server"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Method && s.name == "Start"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Function && s.name == "main")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Struct && s.name == "Server")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Method && s.name == "Start")
+        );
     }
 
     #[test]
@@ -181,6 +219,10 @@ type Handler interface {
 "#;
         let symbols = parse_go(src);
         assert!(symbols.iter().any(|s| s.kind == SymbolKind::Import));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Interface && s.name == "Handler"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Interface && s.name == "Handler")
+        );
     }
 }

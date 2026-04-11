@@ -123,7 +123,11 @@ mod tests {
         let f1 = make_symbol("f1", SymbolKind::Function, "fn f1() {}");
         let f2 = make_symbol("f2", SymbolKind::Function, "fn f2() {}");
 
-        let ops = diff_symbols(&[f1, f2], &[make_symbol("f1", SymbolKind::Function, "fn f1() {}")], Path::new("test.rs"));
+        let ops = diff_symbols(
+            &[f1, f2],
+            &[make_symbol("f1", SymbolKind::Function, "fn f1() {}")],
+            Path::new("test.rs"),
+        );
 
         let deletes: Vec<_> = ops
             .iter()
@@ -135,7 +139,11 @@ mod tests {
     #[test]
     fn identical_files_produce_empty_diff() {
         let f1 = make_symbol("f1", SymbolKind::Function, "fn f1() {}");
-        let ops = diff_symbols(&[f1.clone()], &[f1], Path::new("test.rs"));
+        let ops = diff_symbols(
+            std::slice::from_ref(&f1),
+            std::slice::from_ref(&f1),
+            Path::new("test.rs"),
+        );
         assert!(ops.is_empty());
     }
 
@@ -148,8 +156,14 @@ mod tests {
 
         let ops = diff_symbols(&[old1, old2], &[new1, new2], Path::new("test.rs"));
 
-        let adds: Vec<_> = ops.iter().filter(|o| matches!(o, SemanticOperation::AddSymbol { .. })).collect();
-        let deletes: Vec<_> = ops.iter().filter(|o| matches!(o, SemanticOperation::DeleteSymbol { .. })).collect();
+        let adds: Vec<_> = ops
+            .iter()
+            .filter(|o| matches!(o, SemanticOperation::AddSymbol { .. }))
+            .collect();
+        let deletes: Vec<_> = ops
+            .iter()
+            .filter(|o| matches!(o, SemanticOperation::DeleteSymbol { .. }))
+            .collect();
         assert_eq!(adds.len(), 2);
         assert_eq!(deletes.len(), 2);
     }

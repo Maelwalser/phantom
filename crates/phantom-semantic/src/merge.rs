@@ -13,7 +13,7 @@ use phantom_core::id::ChangesetId;
 use phantom_core::symbol::SymbolEntry;
 use phantom_core::traits::{MergeResult, SemanticAnalyzer};
 
-use crate::diff::{self, entity_key, EntityKey};
+use crate::diff::{self, EntityKey, entity_key};
 use crate::parser::Parser;
 
 /// Semantic merge engine backed by tree-sitter.
@@ -38,11 +38,7 @@ impl Default for SemanticMerger {
 }
 
 impl phantom_core::traits::SemanticAnalyzer for SemanticMerger {
-    fn extract_symbols(
-        &self,
-        path: &Path,
-        content: &[u8],
-    ) -> Result<Vec<SymbolEntry>, CoreError> {
+    fn extract_symbols(&self, path: &Path, content: &[u8]) -> Result<Vec<SymbolEntry>, CoreError> {
         self.parser
             .parse_file(path, content)
             .map_err(|e| CoreError::Semantic(e.to_string()))
@@ -205,7 +201,12 @@ impl SemanticMerger {
 
         // No conflicts — reconstruct the merged file
         let merged = reconstruct_merged_file(
-            base, ours, theirs, &base_symbols, &ours_symbols, &theirs_symbols,
+            base,
+            ours,
+            theirs,
+            &base_symbols,
+            &ours_symbols,
+            &theirs_symbols,
         );
         Ok(MergeResult::Clean(merged))
     }
@@ -375,8 +376,14 @@ mod tests {
             MergeResult::Clean(merged) => {
                 let text = String::from_utf8_lossy(&merged);
                 assert!(text.contains("existing"), "should keep existing function");
-                assert!(text.contains("added_by_ours"), "should include ours' addition");
-                assert!(text.contains("added_by_theirs"), "should include theirs' addition");
+                assert!(
+                    text.contains("added_by_ours"),
+                    "should include ours' addition"
+                );
+                assert!(
+                    text.contains("added_by_theirs"),
+                    "should include theirs' addition"
+                );
             }
             MergeResult::Conflict(c) => panic!("expected clean merge, got conflicts: {c:?}"),
         }
@@ -395,7 +402,10 @@ mod tests {
         match result {
             MergeResult::Conflict(conflicts) => {
                 assert!(!conflicts.is_empty());
-                assert!(matches!(conflicts[0].kind, ConflictKind::BothModifiedSymbol));
+                assert!(matches!(
+                    conflicts[0].kind,
+                    ConflictKind::BothModifiedSymbol
+                ));
             }
             MergeResult::Clean(_) => panic!("expected conflict"),
         }
@@ -435,9 +445,11 @@ mod tests {
         match result {
             MergeResult::Conflict(conflicts) => {
                 assert!(!conflicts.is_empty());
-                assert!(conflicts
-                    .iter()
-                    .any(|c| matches!(c.kind, ConflictKind::ModifyDeleteSymbol)));
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| matches!(c.kind, ConflictKind::ModifyDeleteSymbol))
+                );
             }
             MergeResult::Clean(_) => panic!("expected conflict"),
         }

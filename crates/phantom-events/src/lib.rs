@@ -149,9 +149,7 @@ mod tests {
         assert_eq!(store.query_all().unwrap().len(), 9);
 
         // Drop cs-2
-        let affected = store
-            .mark_dropped(&ChangesetId("cs-2".into()))
-            .unwrap();
+        let affected = store.mark_dropped(&ChangesetId("cs-2".into())).unwrap();
         assert_eq!(affected, 3);
 
         // query_all excludes dropped
@@ -174,7 +172,7 @@ mod tests {
         let base = Utc::now();
 
         // Events at base - 2h, base - 1h, base, base + 1h
-        let timestamps = vec![
+        let timestamps = [
             base - Duration::hours(2),
             base - Duration::hours(1),
             base,
@@ -410,14 +408,18 @@ mod tests {
     fn test_empty_store_returns_empty() {
         let store = SqliteEventStore::in_memory().unwrap();
         assert!(store.query_all().unwrap().is_empty());
-        assert!(store
-            .query_by_changeset(&ChangesetId("cs-1".into()))
-            .unwrap()
-            .is_empty());
-        assert!(store
-            .query_by_agent(&AgentId("agent-a".into()))
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .query_by_changeset(&ChangesetId("cs-1".into()))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .query_by_agent(&AgentId("agent-a".into()))
+                .unwrap()
+                .is_empty()
+        );
         assert!(store.query_since(Utc::now()).unwrap().is_empty());
     }
 

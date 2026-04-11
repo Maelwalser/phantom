@@ -107,4 +107,3 @@ pub(crate) fn walk_files(dir: &Path, base: &Path) -> Result<Vec<PathBuf>, Overla
     }
     Ok(result)
 }
-

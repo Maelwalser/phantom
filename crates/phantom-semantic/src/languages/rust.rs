@@ -47,29 +47,69 @@ fn extract_from_node(
             if is_test_function(node, source) {
                 if let Some(name) = child_field_text(node, "name", source) {
                     let scope = build_scope(scope_parts);
-                    push_symbol(symbols, &scope, &name, SymbolKind::Test, node, source, file_path);
+                    push_symbol(
+                        symbols,
+                        &scope,
+                        &name,
+                        SymbolKind::Test,
+                        node,
+                        source,
+                        file_path,
+                    );
                 }
             } else if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Function, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Function,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "struct_item" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Struct, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Struct,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "enum_item" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Enum, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Enum,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "trait_item" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Trait, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Trait,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "impl_item" => {
@@ -98,24 +138,56 @@ fn extract_from_node(
         "use_declaration" => {
             let text = node_text(node, source);
             let scope = build_scope(scope_parts);
-            push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
+            push_symbol(
+                symbols,
+                &scope,
+                &text,
+                SymbolKind::Import,
+                node,
+                source,
+                file_path,
+            );
         }
         "const_item" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Const, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Const,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "type_item" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::TypeAlias, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::TypeAlias,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "mod_item" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Module, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Module,
+                    node,
+                    source,
+                    file_path,
+                );
                 // Recurse into module body
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut new_scope = scope_parts.to_vec();
@@ -131,7 +203,15 @@ fn extract_from_node(
         "macro_definition" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Function, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Function,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         _ => {}
@@ -329,15 +409,24 @@ impl MyStruct {
 "#;
         let symbols = parse_and_extract(src);
 
-        let structs: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Struct).collect();
+        let structs: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Struct)
+            .collect();
         assert_eq!(structs.len(), 1);
         assert_eq!(structs[0].name, "MyStruct");
 
-        let impls: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Impl).collect();
+        let impls: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Impl)
+            .collect();
         assert_eq!(impls.len(), 1);
         assert_eq!(impls[0].name, "MyStruct");
 
-        let methods: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Method).collect();
+        let methods: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
         assert_eq!(methods.len(), 2);
         assert_eq!(methods[0].name, "new");
         assert_eq!(methods[1].name, "value");
@@ -351,7 +440,10 @@ use std::collections::HashMap;
 use std::io::{self, Read};
 "#;
         let symbols = parse_and_extract(src);
-        let imports: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Import).collect();
+        let imports: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Import)
+            .collect();
         assert_eq!(imports.len(), 2);
     }
 
@@ -374,7 +466,10 @@ mod tests {
 }
 "#;
         let symbols = parse_and_extract(src);
-        let tests: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Test).collect();
+        let tests: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Test)
+            .collect();
         assert_eq!(tests.len(), 2);
         assert_eq!(tests[0].name, "test_foo");
         assert_eq!(tests[1].name, "test_bar");
@@ -422,17 +517,11 @@ mod outer {
         assert_eq!(outer_mod.len(), 1);
         assert_eq!(outer_mod[0].scope, "crate");
 
-        let outer_fn: Vec<_> = symbols
-            .iter()
-            .filter(|s| s.name == "outer_fn")
-            .collect();
+        let outer_fn: Vec<_> = symbols.iter().filter(|s| s.name == "outer_fn").collect();
         assert_eq!(outer_fn.len(), 1);
         assert_eq!(outer_fn[0].scope, "crate::outer");
 
-        let inner_fn: Vec<_> = symbols
-            .iter()
-            .filter(|s| s.name == "inner_fn")
-            .collect();
+        let inner_fn: Vec<_> = symbols.iter().filter(|s| s.name == "inner_fn").collect();
         assert_eq!(inner_fn.len(), 1);
         assert_eq!(inner_fn[0].scope, "crate::outer::inner");
     }
@@ -447,10 +536,26 @@ type Result<T> = std::result::Result<T, MyError>;
 "#;
         let symbols = parse_and_extract(src);
 
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Enum && s.name == "Color"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Trait && s.name == "Drawable"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Const && s.name == "MAX_SIZE"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::TypeAlias && s.name == "Result"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Enum && s.name == "Color")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Trait && s.name == "Drawable")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Const && s.name == "MAX_SIZE")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::TypeAlias && s.name == "Result")
+        );
     }
 
     #[test]

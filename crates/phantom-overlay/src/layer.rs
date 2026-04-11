@@ -304,8 +304,8 @@ fn load_whiteouts(upper: &Path) -> Result<HashSet<PathBuf>, OverlayError> {
         return Ok(HashSet::new());
     }
     let data = fs::read_to_string(&path)?;
-    let ws: WhiteoutSet = serde_json::from_str(&data)
-        .map_err(|e| OverlayError::Serialization(e.to_string()))?;
+    let ws: WhiteoutSet =
+        serde_json::from_str(&data).map_err(|e| OverlayError::Serialization(e.to_string()))?;
     Ok(ws.paths.into_iter().map(PathBuf::from).collect())
 }
 
@@ -325,7 +325,8 @@ mod tests {
     #[test]
     fn write_to_upper_and_read_back() {
         let (lower, upper) = setup();
-        let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         // Write and remove from whiteouts in case.
         layer.write_file(Path::new("hello.txt"), b"world").unwrap();
@@ -338,7 +339,8 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("trunk.txt"), b"from trunk").unwrap();
 
-        let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         let data = layer.read_file(Path::new("trunk.txt")).unwrap();
         assert_eq!(data, b"from trunk");
     }
@@ -348,7 +350,8 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("shared.txt"), b"lower").unwrap();
 
-        let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.write_file(Path::new("shared.txt"), b"upper").unwrap();
 
         let data = layer.read_file(Path::new("shared.txt")).unwrap();
@@ -360,7 +363,8 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("victim.txt"), b"doomed").unwrap();
 
-        let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.delete_file(Path::new("victim.txt")).unwrap();
 
         assert!(!layer.exists(Path::new("victim.txt")));
@@ -368,7 +372,10 @@ mod tests {
 
         // Verify excluded from read_dir as well.
         let entries = layer.read_dir(Path::new("")).unwrap();
-        let names: Vec<_> = entries.iter().map(|e| e.name.to_string_lossy().into_owned()).collect();
+        let names: Vec<_> = entries
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
         assert!(!names.contains(&"victim.txt".to_string()));
     }
 
@@ -377,7 +384,8 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("file.txt"), b"v1").unwrap();
 
-        let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.delete_file(Path::new("file.txt")).unwrap();
         assert!(!layer.exists(Path::new("file.txt")));
 
@@ -393,14 +401,19 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("lower.txt"), b"trunk").unwrap();
 
-        let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.write_file(Path::new("new.txt"), b"agent").unwrap();
 
         let modified = layer.modified_files().unwrap();
         assert!(modified.contains(&PathBuf::from("new.txt")));
         assert!(!modified.contains(&PathBuf::from("lower.txt")));
         // The whiteouts file should not appear.
-        assert!(!modified.iter().any(|p| p.to_string_lossy() == ".whiteouts.json"));
+        assert!(
+            !modified
+                .iter()
+                .any(|p| p.to_string_lossy() == ".whiteouts.json")
+        );
     }
 
     #[test]
@@ -411,7 +424,8 @@ mod tests {
         fs::write(lower1.path().join("a.txt"), b"lower1").unwrap();
         fs::write(lower2.path().join("b.txt"), b"lower2").unwrap();
 
-        let mut layer = OverlayLayer::new(lower1.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let mut layer =
+            OverlayLayer::new(lower1.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         assert!(layer.exists(Path::new("a.txt")));
         assert!(!layer.exists(Path::new("b.txt")));
 
@@ -425,11 +439,15 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("from_lower.txt"), b"l").unwrap();
 
-        let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.write_file(Path::new("from_upper.txt"), b"u").unwrap();
 
         let entries = layer.read_dir(Path::new("")).unwrap();
-        let names: HashSet<_> = entries.iter().map(|e| e.name.to_string_lossy().into_owned()).collect();
+        let names: HashSet<_> = entries
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
         assert!(names.contains("from_lower.txt"));
         assert!(names.contains("from_upper.txt"));
         // No duplicates.
@@ -439,7 +457,8 @@ mod tests {
     #[test]
     fn nested_directory_creation() {
         let (lower, upper) = setup();
-        let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         layer.write_file(Path::new("a/b/c.txt"), b"deep").unwrap();
 
@@ -453,12 +472,14 @@ mod tests {
         fs::write(lower.path().join("persist.txt"), b"data").unwrap();
 
         {
-            let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+            let mut layer =
+                OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
             layer.delete_file(Path::new("persist.txt")).unwrap();
         }
 
         // New instance from the same upper dir should restore whiteouts.
-        let layer2 = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let layer2 =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         assert!(!layer2.exists(Path::new("persist.txt")));
         assert!(layer2.read_file(Path::new("persist.txt")).is_err());
     }
@@ -468,11 +489,16 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("trunk.txt"), b"from trunk").unwrap();
 
-        let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         // Write some files and create a whiteout.
-        layer.write_file(Path::new("agent.txt"), b"agent work").unwrap();
-        layer.write_file(Path::new("sub/nested.txt"), b"deep").unwrap();
+        layer
+            .write_file(Path::new("agent.txt"), b"agent work")
+            .unwrap();
+        layer
+            .write_file(Path::new("sub/nested.txt"), b"deep")
+            .unwrap();
         layer.delete_file(Path::new("trunk.txt")).unwrap();
 
         assert!(layer.exists(Path::new("agent.txt")));

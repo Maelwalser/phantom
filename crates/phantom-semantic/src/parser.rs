@@ -9,11 +9,11 @@ use std::path::Path;
 use phantom_core::SymbolEntry;
 
 use crate::error::SemanticError;
+use crate::languages::LanguageExtractor;
 use crate::languages::go::GoExtractor;
 use crate::languages::python::PythonExtractor;
 use crate::languages::rust::RustExtractor;
 use crate::languages::typescript::TypeScriptExtractor;
-use crate::languages::LanguageExtractor;
 
 /// Multi-language parser that routes files to the right tree-sitter grammar.
 pub struct Parser {
@@ -54,12 +54,11 @@ impl Parser {
         path: &Path,
         content: &[u8],
     ) -> Result<Vec<SymbolEntry>, SemanticError> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .ok_or_else(|| SemanticError::UnsupportedLanguage {
+        let ext = path.extension().and_then(|e| e.to_str()).ok_or_else(|| {
+            SemanticError::UnsupportedLanguage {
                 path: path.to_path_buf(),
-            })?;
+            }
+        })?;
 
         let idx = self
             .ext_to_index
@@ -114,9 +113,7 @@ mod tests {
     fn parses_rust_file() {
         let parser = Parser::new();
         let src = b"fn hello() {}";
-        let symbols = parser
-            .parse_file(Path::new("test.rs"), src)
-            .unwrap();
+        let symbols = parser.parse_file(Path::new("test.rs"), src).unwrap();
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].kind, SymbolKind::Function);
     }
@@ -125,9 +122,7 @@ mod tests {
     fn parses_typescript_file() {
         let parser = Parser::new();
         let src = b"function greet(): void {}";
-        let symbols = parser
-            .parse_file(Path::new("test.ts"), src)
-            .unwrap();
+        let symbols = parser.parse_file(Path::new("test.ts"), src).unwrap();
         assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function));
     }
 
@@ -135,9 +130,7 @@ mod tests {
     fn parses_python_file() {
         let parser = Parser::new();
         let src = b"def hello():\n    pass";
-        let symbols = parser
-            .parse_file(Path::new("test.py"), src)
-            .unwrap();
+        let symbols = parser.parse_file(Path::new("test.py"), src).unwrap();
         assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function));
     }
 
@@ -146,7 +139,10 @@ mod tests {
         let parser = Parser::new();
         let result = parser.parse_file(Path::new("test.txt"), b"hello");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), SemanticError::UnsupportedLanguage { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            SemanticError::UnsupportedLanguage { .. }
+        ));
     }
 
     #[test]

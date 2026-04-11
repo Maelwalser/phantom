@@ -92,11 +92,7 @@ impl TestContext {
     /// Create a temporary upper directory for an agent with the given files.
     ///
     /// Returns `(AgentId, upper_dir TempDir)`.
-    pub fn create_agent(
-        &self,
-        agent_name: &str,
-        files: &[(&str, &str)],
-    ) -> (AgentId, TempDir) {
+    pub fn create_agent(&self, agent_name: &str, files: &[(&str, &str)]) -> (AgentId, TempDir) {
         let upper = TempDir::new().expect("failed to create upper dir");
         for &(path, content) in files {
             let full = upper.path().join(path);

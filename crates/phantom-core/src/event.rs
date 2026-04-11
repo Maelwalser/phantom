@@ -180,9 +180,7 @@ mod tests {
             EventKind::FileDeleted {
                 path: PathBuf::from("old.rs"),
             },
-            EventKind::ChangesetSubmitted {
-                operations: vec![],
-            },
+            EventKind::ChangesetSubmitted { operations: vec![] },
             EventKind::ChangesetMergeChecked {
                 result: MergeCheckResult::Clean,
             },

@@ -74,13 +74,29 @@ fn extract_ts_node(
         "function_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Function, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Function,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "class_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Class, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Class,
+                    node,
+                    source,
+                    file_path,
+                );
                 // Recurse into class body for methods
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut new_scope = scope_parts.to_vec();
@@ -96,19 +112,43 @@ fn extract_ts_node(
         "interface_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Interface, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Interface,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "method_definition" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Method, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Method,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "import_statement" => {
             let text = node_text(node, source);
             let scope = build_scope(scope_parts);
-            push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
+            push_symbol(
+                symbols,
+                &scope,
+                &text,
+                SymbolKind::Import,
+                node,
+                source,
+                file_path,
+            );
         }
         "export_statement" => {
             // Check if it has a declaration child — extract that instead
@@ -117,20 +157,44 @@ fn extract_ts_node(
             } else {
                 let text = node_text(node, source);
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &text,
+                    SymbolKind::Import,
+                    node,
+                    source,
+                    file_path,
+                );
             }
             return;
         }
         "type_alias_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::TypeAlias, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::TypeAlias,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         "enum_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Enum, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Enum,
+                    node,
+                    source,
+                    file_path,
+                );
             }
         }
         _ => {}
@@ -213,9 +277,21 @@ class User {
 }
 "#;
         let symbols = parse_ts(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function && s.name == "greet"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Class && s.name == "User"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Method && s.name == "getName"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Function && s.name == "greet")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Class && s.name == "User")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Method && s.name == "getName")
+        );
     }
 
     #[test]
@@ -231,7 +307,15 @@ type Result<T> = { ok: true; value: T } | { ok: false; error: Error };
 "#;
         let symbols = parse_ts(src);
         assert!(symbols.iter().any(|s| s.kind == SymbolKind::Import));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Interface && s.name == "Props"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::TypeAlias && s.name == "Result"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Interface && s.name == "Props")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::TypeAlias && s.name == "Result")
+        );
     }
 }

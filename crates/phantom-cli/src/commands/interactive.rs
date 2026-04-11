@@ -127,7 +127,13 @@ pub fn run_interactive_session(
 
     // Post-session automation
     let auto_submit = args.auto_submit || args.auto_materialize;
-    post_session_flow(ctx, agent_id, changeset_id, auto_submit, args.auto_materialize)
+    post_session_flow(
+        ctx,
+        agent_id,
+        changeset_id,
+        auto_submit,
+        args.auto_materialize,
+    )
 }
 
 /// Write a context file into the overlay with agent metadata and optional task.
@@ -176,10 +182,10 @@ trunk and other agents.
 /// Remove the generated context file from the overlay.
 fn cleanup_context_file(upper_dir: &Path) {
     let path = upper_dir.join(CONTEXT_FILE);
-    if let Err(e) = std::fs::remove_file(&path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            warn!(path = %path.display(), error = %e, "failed to clean up context file");
-        }
+    if let Err(e) = std::fs::remove_file(&path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        warn!(path = %path.display(), error = %e, "failed to clean up context file");
     }
 }
 
@@ -227,10 +233,7 @@ fn post_session_flow(
                         println!("Materialized {cs_id} → commit {short}");
                     }
                     MaterializeResult::Conflict { details } => {
-                        eprintln!(
-                            "Materialization failed with {} conflict(s):",
-                            details.len()
-                        );
+                        eprintln!("Materialization failed with {} conflict(s):", details.len());
                         for detail in &details {
                             eprintln!(
                                 "  [{:?}] {} — {}",

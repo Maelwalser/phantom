@@ -62,18 +62,11 @@ pub trait SymbolIndex: Send + Sync {
 /// Implemented by `phantom-semantic` using tree-sitter grammars.
 pub trait SemanticAnalyzer: Send + Sync {
     /// Parse a file and extract its symbols.
-    fn extract_symbols(
-        &self,
-        path: &Path,
-        content: &[u8],
-    ) -> Result<Vec<SymbolEntry>, CoreError>;
+    fn extract_symbols(&self, path: &Path, content: &[u8]) -> Result<Vec<SymbolEntry>, CoreError>;
 
     /// Compute the semantic operations needed to transform `base` into `current`.
-    fn diff_symbols(
-        &self,
-        base: &[SymbolEntry],
-        current: &[SymbolEntry],
-    ) -> Vec<SemanticOperation>;
+    fn diff_symbols(&self, base: &[SymbolEntry], current: &[SymbolEntry])
+    -> Vec<SemanticOperation>;
 
     /// Perform a three-way semantic merge.
     fn three_way_merge(

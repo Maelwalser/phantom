@@ -19,14 +19,22 @@ fn test_two_agents_disjoint_files_auto_merges() {
     ]);
 
     // Agent-a modifies src/a.rs — adds a new function.
-    let (agent_a, upper_a) = ctx.create_agent("agent-a", &[
-        ("src/a.rs", "fn alpha() -> i32 { 1 }\nfn alpha_two() -> i32 { 12 }\n"),
-    ]);
+    let (agent_a, upper_a) = ctx.create_agent(
+        "agent-a",
+        &[(
+            "src/a.rs",
+            "fn alpha() -> i32 { 1 }\nfn alpha_two() -> i32 { 12 }\n",
+        )],
+    );
 
     // Agent-b modifies src/b.rs — adds a new function.
-    let (agent_b, upper_b) = ctx.create_agent("agent-b", &[
-        ("src/b.rs", "fn beta() -> i32 { 2 }\nfn beta_two() -> i32 { 22 }\n"),
-    ]);
+    let (agent_b, upper_b) = ctx.create_agent(
+        "agent-b",
+        &[(
+            "src/b.rs",
+            "fn beta() -> i32 { 2 }\nfn beta_two() -> i32 { 22 }\n",
+        )],
+    );
 
     let cs_a = ctx.build_changeset(
         "cs-a",
@@ -81,8 +89,20 @@ fn test_two_agents_disjoint_files_auto_merges() {
     )
     .unwrap();
 
-    assert!(a_content.contains("alpha"), "trunk src/a.rs should contain alpha");
-    assert!(a_content.contains("alpha_two"), "trunk src/a.rs should contain alpha_two");
-    assert!(b_content.contains("beta"), "trunk src/b.rs should contain beta");
-    assert!(b_content.contains("beta_two"), "trunk src/b.rs should contain beta_two");
+    assert!(
+        a_content.contains("alpha"),
+        "trunk src/a.rs should contain alpha"
+    );
+    assert!(
+        a_content.contains("alpha_two"),
+        "trunk src/a.rs should contain alpha_two"
+    );
+    assert!(
+        b_content.contains("beta"),
+        "trunk src/b.rs should contain beta"
+    );
+    assert!(
+        b_content.contains("beta_two"),
+        "trunk src/b.rs should contain beta_two"
+    );
 }

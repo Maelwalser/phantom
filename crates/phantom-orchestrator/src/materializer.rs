@@ -74,13 +74,12 @@ impl Materializer {
             .git
             .repo()
             .workdir()
-            .ok_or_else(|| OrchestratorError::NotFound("repository has no working directory".into()))?
+            .ok_or_else(|| {
+                OrchestratorError::NotFound("repository has no working directory".into())
+            })?
             .to_path_buf();
 
-        let message = format!(
-            "phantom: materialize {} ({})",
-            changeset.id, changeset.task
-        );
+        let message = format!("phantom: materialize {} ({})", changeset.id, changeset.task);
 
         if head == changeset.base_commit {
             return self.direct_apply(changeset, upper_dir, &trunk_path, &message, event_store);
@@ -163,7 +162,9 @@ impl Materializer {
                     match self.git.read_file_at_commit(ctx.head, file) {
                         Ok(ours) => {
                             // File was added on trunk too — need merge with empty base
-                            let result = ctx.analyzer.three_way_merge(&[], &ours, &theirs, file)
+                            let result = ctx
+                                .analyzer
+                                .three_way_merge(&[], &ours, &theirs, file)
                                 .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
                             match result {
                                 MergeResult::Clean(content) => {
@@ -210,7 +211,8 @@ impl Materializer {
                     }
 
                     // Three-way semantic merge
-                    let result = ctx.analyzer
+                    let result = ctx
+                        .analyzer
                         .three_way_merge(&base_content, &ours, &theirs, file)
                         .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
 
@@ -249,12 +251,8 @@ impl Materializer {
 
         // Stage and commit, using the verified head OID as parent
         let file_paths: Vec<_> = merged_files.iter().map(|(p, _)| p.clone()).collect();
-        let new_commit = self.commit_merged_files(
-            &file_paths,
-            ctx.head,
-            ctx.message,
-            &changeset.agent_id.0,
-        )?;
+        let new_commit =
+            self.commit_merged_files(&file_paths, ctx.head, ctx.message, &changeset.agent_id.0)?;
 
         self.append_materialized_event(changeset, &new_commit, ctx.event_store)?;
 
@@ -318,10 +316,10 @@ impl Materializer {
         let git2_parent_oid = git::git_oid_to_oid(parent_oid)?;
         let parent = self.git.repo().find_commit(git2_parent_oid)?;
 
-        let new_oid = self
-            .git
-            .repo()
-            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
+        let new_oid =
+            self.git
+                .repo()
+                .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
 
         Ok(git::oid_to_git_oid(new_oid))
     }
@@ -578,11 +576,7 @@ mod tests {
         let event_store = MockEventStore::new();
         let analyzer = MockAnalyzer::new();
 
-        let changeset = make_changeset(
-            "cs-1",
-            base,
-            vec![PathBuf::from("src/main.rs")],
-        );
+        let changeset = make_changeset("cs-1", base, vec![PathBuf::from("src/main.rs")]);
 
         let materializer = Materializer::new(git);
         let result = materializer
@@ -607,10 +601,8 @@ mod tests {
 
     #[test]
     fn clean_merge_trunk_advanced() {
-        let (_dir, git) = init_repo(&[
-            ("src/api.rs", b"fn api() {}"),
-            ("src/db.rs", b"fn db() {}"),
-        ]);
+        let (_dir, git) =
+            init_repo(&[("src/api.rs", b"fn api() {}"), ("src/db.rs", b"fn db() {}")]);
         let base = git.head_oid().unwrap();
 
         advance_trunk(&git, &[("src/db.rs", b"fn db() { /* updated */ }")]);
@@ -619,11 +611,7 @@ mod tests {
         let event_store = MockEventStore::new();
         let analyzer = MockAnalyzer::new();
 
-        let changeset = make_changeset(
-            "cs-2",
-            base,
-            vec![PathBuf::from("src/api.rs")],
-        );
+        let changeset = make_changeset("cs-2", base, vec![PathBuf::from("src/api.rs")]);
 
         let materializer = Materializer::new(git);
         let result = materializer
@@ -667,11 +655,7 @@ mod tests {
             }]),
         );
 
-        let changeset = make_changeset(
-            "cs-3",
-            base,
-            vec![PathBuf::from("src/lib.rs")],
-        );
+        let changeset = make_changeset("cs-3", base, vec![PathBuf::from("src/lib.rs")]);
 
         let materializer = Materializer::new(git);
         let result = materializer
@@ -707,11 +691,7 @@ mod tests {
         let event_store = MockEventStore::new();
         let analyzer = MockAnalyzer::new();
 
-        let changeset = make_changeset(
-            "cs-4",
-            base,
-            vec![PathBuf::from("src/new_module.rs")],
-        );
+        let changeset = make_changeset("cs-4", base, vec![PathBuf::from("src/new_module.rs")]);
 
         let materializer = Materializer::new(git);
         let result = materializer
@@ -739,11 +719,14 @@ mod tests {
         ]);
         let base = git.head_oid().unwrap();
 
-        advance_trunk(&git, &[
-            ("file_a.rs", b"fn a() { /* trunk */ }"),
-            ("file_b.rs", b"fn b() { /* trunk */ }"),
-            ("file_c.rs", b"fn c() { /* trunk */ }"),
-        ]);
+        advance_trunk(
+            &git,
+            &[
+                ("file_a.rs", b"fn a() { /* trunk */ }"),
+                ("file_b.rs", b"fn b() { /* trunk */ }"),
+                ("file_c.rs", b"fn c() { /* trunk */ }"),
+            ],
+        );
 
         let upper = make_upper(&[
             ("file_a.rs", b"fn a() { /* agent */ }"),
@@ -813,11 +796,7 @@ mod tests {
         let event_store = MockEventStore::new();
         let analyzer = MockAnalyzer::new();
 
-        let changeset = make_changeset(
-            "cs-6",
-            base,
-            vec![PathBuf::from("src/api.rs")],
-        );
+        let changeset = make_changeset("cs-6", base, vec![PathBuf::from("src/api.rs")]);
 
         let materializer = Materializer::new(git);
         let result = materializer
@@ -847,19 +826,10 @@ mod tests {
         let event_store = MockEventStore::new();
         let analyzer = MockAnalyzer::new();
 
-        let changeset = make_changeset(
-            "cs-bad",
-            base,
-            vec![PathBuf::from("../../../etc/passwd")],
-        );
+        let changeset = make_changeset("cs-bad", base, vec![PathBuf::from("../../../etc/passwd")]);
 
         let materializer = Materializer::new(git);
-        let result = materializer.materialize(
-            &changeset,
-            upper.path(),
-            &event_store,
-            &analyzer,
-        );
+        let result = materializer.materialize(&changeset, upper.path(), &event_store, &analyzer);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -877,19 +847,10 @@ mod tests {
         let event_store = MockEventStore::new();
         let analyzer = MockAnalyzer::new();
 
-        let changeset = make_changeset(
-            "cs-abs",
-            base,
-            vec![PathBuf::from("/etc/passwd")],
-        );
+        let changeset = make_changeset("cs-abs", base, vec![PathBuf::from("/etc/passwd")]);
 
         let materializer = Materializer::new(git);
-        let result = materializer.materialize(
-            &changeset,
-            upper.path(),
-            &event_store,
-            &analyzer,
-        );
+        let result = materializer.materialize(&changeset, upper.path(), &event_store, &analyzer);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

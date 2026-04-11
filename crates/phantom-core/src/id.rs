@@ -1,7 +1,7 @@
 //! Newtype identifiers used throughout Phantom.
 //!
-//! Each ID type wraps a simple inner value and provides [`Display`], [`Serialize`],
-//! and [`Deserialize`] implementations. Keeping IDs as distinct newtypes prevents
+//! Each ID type wraps a simple inner value and provides `Display`, `Serialize`,
+//! and `Deserialize` implementations. Keeping IDs as distinct newtypes prevents
 //! accidental misuse (e.g. passing an [`AgentId`] where a [`ChangesetId`] is expected).
 
 use std::fmt;
@@ -168,7 +168,10 @@ mod tests {
         assert_eq!(ChangesetId("cs-1".into()).to_string(), "cs-1");
         assert_eq!(AgentId("agent-a".into()).to_string(), "agent-a");
         assert_eq!(EventId(42).to_string(), "42");
-        assert_eq!(SymbolId("mod::foo::Function".into()).to_string(), "mod::foo::Function");
+        assert_eq!(
+            SymbolId("mod::foo::Function".into()).to_string(),
+            "mod::foo::Function"
+        );
     }
 
     #[test]

@@ -56,7 +56,15 @@ fn extract_py_node(
         "class_definition" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts);
-                push_symbol(symbols, &scope, &name, SymbolKind::Class, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &name,
+                    SymbolKind::Class,
+                    node,
+                    source,
+                    file_path,
+                );
                 // Recurse into class body
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut new_scope = scope_parts.to_vec();
@@ -72,7 +80,15 @@ fn extract_py_node(
         "import_statement" | "import_from_statement" => {
             let text = node_text(node, source);
             let scope = build_scope(scope_parts);
-            push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
+            push_symbol(
+                symbols,
+                &scope,
+                &text,
+                SymbolKind::Import,
+                node,
+                source,
+                file_path,
+            );
         }
         _ => {}
     }
@@ -154,10 +170,26 @@ class User:
         return self.name
 "#;
         let symbols = parse_py(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function && s.name == "greet"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Class && s.name == "User"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Method && s.name == "__init__"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Method && s.name == "get_name"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Function && s.name == "greet")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Class && s.name == "User")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Method && s.name == "__init__")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Method && s.name == "get_name")
+        );
     }
 
     #[test]
@@ -167,7 +199,10 @@ import os
 from pathlib import Path
 "#;
         let symbols = parse_py(src);
-        let imports: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Import).collect();
+        let imports: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Import)
+            .collect();
         assert_eq!(imports.len(), 2);
     }
 }

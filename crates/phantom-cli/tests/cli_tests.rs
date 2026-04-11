@@ -131,12 +131,7 @@ fn phantom_dispatch_interactive_with_echo() {
 
     // Use `echo` as a stand-in for claude — it exits immediately
     phantom(dir.path())
-        .args([
-            "dispatch",
-            "agent-b",
-            "--command",
-            "echo",
-        ])
+        .args(["dispatch", "agent-b", "--command", "echo"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Agent 'agent-b' dispatched"))
@@ -245,13 +240,7 @@ fn phantom_dispatch_interactive_auto_submit_with_no_changes() {
 
     // echo exits immediately with no changes — auto-submit should report "no changes"
     phantom(dir.path())
-        .args([
-            "dispatch",
-            "agent-c",
-            "--command",
-            "echo",
-            "--auto-submit",
-        ])
+        .args(["dispatch", "agent-c", "--command", "echo", "--auto-submit"])
         .assert()
         .success()
         .stdout(predicate::str::contains("No changes detected"));

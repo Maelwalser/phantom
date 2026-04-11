@@ -31,10 +31,7 @@ pub struct EventQuery {
 
 impl SqliteEventStore {
     /// Execute a flexible query against the event store.
-    pub fn query(
-        &self,
-        q: &EventQuery,
-    ) -> Result<Vec<phantom_core::Event>, EventStoreError> {
+    pub fn query(&self, q: &EventQuery) -> Result<Vec<phantom_core::Event>, EventStoreError> {
         let mut conditions = vec!["dropped = 0".to_string()];
         let mut param_values: Vec<String> = Vec::new();
 
@@ -59,10 +56,7 @@ impl SqliteEventStore {
         }
 
         let where_clause = conditions.join(" AND ");
-        let limit_clause = q
-            .limit
-            .map(|n| format!(" LIMIT {n}"))
-            .unwrap_or_default();
+        let limit_clause = q.limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
 
         let sql = format!(
             "SELECT id, timestamp, changeset_id, agent_id, kind
@@ -107,10 +101,7 @@ impl SqliteEventStore {
     /// Mark all events belonging to a changeset as dropped.
     ///
     /// Returns the number of rows affected.
-    pub fn mark_dropped(
-        &self,
-        changeset_id: &ChangesetId,
-    ) -> Result<u64, EventStoreError> {
+    pub fn mark_dropped(&self, changeset_id: &ChangesetId) -> Result<u64, EventStoreError> {
         let conn = self.conn.lock().expect("lock poisoned");
         let affected = conn.execute(
             "UPDATE events SET dropped = 1 WHERE changeset_id = ?1",

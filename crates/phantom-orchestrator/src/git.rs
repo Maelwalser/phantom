@@ -84,20 +84,14 @@ impl GitOps {
         })?;
 
         let blob = self.repo.find_blob(entry.id()).map_err(|_| {
-            OrchestratorError::NotFound(format!(
-                "object at {} is not a blob",
-                path.display()
-            ))
+            OrchestratorError::NotFound(format!("object at {} is not a blob", path.display()))
         })?;
 
         Ok(blob.content().to_vec())
     }
 
     /// List every blob path in the tree of the commit identified by `oid`.
-    pub fn list_files_at_commit(
-        &self,
-        oid: &GitOid,
-    ) -> Result<Vec<PathBuf>, OrchestratorError> {
+    pub fn list_files_at_commit(&self, oid: &GitOid) -> Result<Vec<PathBuf>, OrchestratorError> {
         let git_oid = git_oid_to_oid(oid)?;
         let commit = self.repo.find_commit(git_oid)?;
         let tree = commit.tree()?;
@@ -170,7 +164,9 @@ impl GitOps {
         };
 
         let parents: Vec<&git2::Commit<'_>> = parent_commit.iter().collect();
-        let new_oid = self.repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
+        let new_oid = self
+            .repo
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
 
         debug!(commit = %new_oid, "created commit");
         Ok(oid_to_git_oid(new_oid))
@@ -182,8 +178,7 @@ impl GitOps {
         let git_oid = git_oid_to_oid(oid)?;
         let commit = self.repo.find_commit(git_oid)?;
         let obj = commit.as_object();
-        self.repo
-            .reset(obj, git2::ResetType::Hard, None)?;
+        self.repo.reset(obj, git2::ResetType::Hard, None)?;
         Ok(())
     }
 
@@ -397,8 +392,7 @@ mod tests {
 
     #[test]
     fn test_commit_overlay_changes() {
-        let (_dir, ops) =
-            init_repo_with_commit(&[("src/main.rs", b"fn main() {}")], "init");
+        let (_dir, ops) = init_repo_with_commit(&[("src/main.rs", b"fn main() {}")], "init");
         let old_oid = ops.head_oid().unwrap();
 
         // Create an upper directory simulating agent overlay writes
@@ -463,10 +457,7 @@ mod tests {
 
     #[test]
     fn test_changed_files() {
-        let (_dir, ops) = init_repo_with_commit(
-            &[("a.txt", b"aaa"), ("b.txt", b"bbb")],
-            "init",
-        );
+        let (_dir, ops) = init_repo_with_commit(&[("a.txt", b"aaa"), ("b.txt", b"bbb")], "init");
         let first_oid = ops.head_oid().unwrap();
 
         // Commit a change to a.txt and add c.txt
@@ -481,7 +472,10 @@ mod tests {
         let mut changed = ops.changed_files(&first_oid, &second_oid).unwrap();
         changed.sort();
 
-        assert_eq!(changed, vec![PathBuf::from("a.txt"), PathBuf::from("c.txt")]);
+        assert_eq!(
+            changed,
+            vec![PathBuf::from("a.txt"), PathBuf::from("c.txt")]
+        );
     }
 
     #[test]
@@ -490,8 +484,8 @@ mod tests {
 
         // Ours changes line 2, theirs changes line 4 — disjoint edits, clean merge.
         let base = b"a\nb\nc\nd\n";
-        let ours = b"a\nB\nc\nd\n";     // changed b→B
-        let theirs = b"a\nb\nc\nD\n";   // changed d→D
+        let ours = b"a\nB\nc\nd\n"; // changed b→B
+        let theirs = b"a\nb\nc\nD\n"; // changed d→D
 
         let result = ops.text_merge(base, ours, theirs).unwrap();
         match result {

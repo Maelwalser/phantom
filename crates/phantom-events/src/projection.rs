@@ -52,10 +52,12 @@ impl Projection {
                                 file, ..
                             }
                             | phantom_core::changeset::SemanticOperation::ModifySymbol {
-                                file, ..
+                                file,
+                                ..
                             }
                             | phantom_core::changeset::SemanticOperation::DeleteSymbol {
-                                file, ..
+                                file,
+                                ..
                             } => Some(file.clone()),
                             phantom_core::changeset::SemanticOperation::AddFile { path } => {
                                 Some(path.clone())
@@ -63,14 +65,14 @@ impl Projection {
                             phantom_core::changeset::SemanticOperation::DeleteFile { path } => {
                                 Some(path.clone())
                             }
-                            phantom_core::changeset::SemanticOperation::RawDiff { path, .. } => {
-                                Some(path.clone())
-                            }
+                            phantom_core::changeset::SemanticOperation::RawDiff {
+                                path, ..
+                            } => Some(path.clone()),
                         };
-                        if let Some(p) = path {
-                            if !cs.files_touched.contains(&p) {
-                                cs.files_touched.push(p);
-                            }
+                        if let Some(p) = path
+                            && !cs.files_touched.contains(&p)
+                        {
+                            cs.files_touched.push(p);
                         }
                     }
                 }
@@ -197,9 +199,11 @@ mod tests {
     #[test]
     fn latest_submitted_changeset_returns_none_when_no_changesets() {
         let projection = Projection::from_events(&[]);
-        assert!(projection
-            .latest_submitted_changeset(&AgentId("agent-a".into()))
-            .is_none());
+        assert!(
+            projection
+                .latest_submitted_changeset(&AgentId("agent-a".into()))
+                .is_none()
+        );
     }
 
     #[test]
@@ -216,9 +220,11 @@ mod tests {
             t,
         )];
         let projection = Projection::from_events(&events);
-        assert!(projection
-            .latest_submitted_changeset(&AgentId("agent-a".into()))
-            .is_none());
+        assert!(
+            projection
+                .latest_submitted_changeset(&AgentId("agent-a".into()))
+                .is_none()
+        );
     }
 
     #[test]
@@ -240,9 +246,7 @@ mod tests {
                 2,
                 "cs-0001",
                 "agent-a",
-                EventKind::ChangesetSubmitted {
-                    operations: vec![],
-                },
+                EventKind::ChangesetSubmitted { operations: vec![] },
                 t,
             ),
             // Agent B: overlay created then submitted
@@ -260,9 +264,7 @@ mod tests {
                 4,
                 "cs-0002",
                 "agent-b",
-                EventKind::ChangesetSubmitted {
-                    operations: vec![],
-                },
+                EventKind::ChangesetSubmitted { operations: vec![] },
                 t,
             ),
         ];
@@ -301,9 +303,7 @@ mod tests {
                 2,
                 "cs-0001",
                 "agent-a",
-                EventKind::ChangesetSubmitted {
-                    operations: vec![],
-                },
+                EventKind::ChangesetSubmitted { operations: vec![] },
                 t1,
             ),
             // Second changeset: created at t2, submitted (newer)
@@ -321,9 +321,7 @@ mod tests {
                 4,
                 "cs-0002",
                 "agent-a",
-                EventKind::ChangesetSubmitted {
-                    operations: vec![],
-                },
+                EventKind::ChangesetSubmitted { operations: vec![] },
                 t2,
             ),
         ];
@@ -362,9 +360,7 @@ mod tests {
                 2,
                 "cs-0001",
                 "agent-a",
-                EventKind::ChangesetSubmitted {
-                    operations: vec![],
-                },
+                EventKind::ChangesetSubmitted { operations: vec![] },
                 t1,
             ),
             make_event(
@@ -391,9 +387,7 @@ mod tests {
                 5,
                 "cs-0002",
                 "agent-a",
-                EventKind::ChangesetSubmitted {
-                    operations: vec![],
-                },
+                EventKind::ChangesetSubmitted { operations: vec![] },
                 t2,
             ),
             // cs-0003: submitted then conflicted
@@ -411,9 +405,7 @@ mod tests {
                 7,
                 "cs-0003",
                 "agent-a",
-                EventKind::ChangesetSubmitted {
-                    operations: vec![],
-                },
+                EventKind::ChangesetSubmitted { operations: vec![] },
                 t3,
             ),
             make_event(

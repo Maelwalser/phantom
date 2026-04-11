@@ -146,11 +146,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let src_dir = dir.path().join("src");
         fs::create_dir(&src_dir).unwrap();
-        fs::write(
-            src_dir.join("main.rs"),
-            "fn main() {}\nfn helper() {}",
-        )
-        .unwrap();
+        fs::write(src_dir.join("main.rs"), "fn main() {}\nfn helper() {}").unwrap();
         fs::write(src_dir.join("lib.rs"), "pub fn public_fn() {}").unwrap();
 
         let parser = Parser::new();

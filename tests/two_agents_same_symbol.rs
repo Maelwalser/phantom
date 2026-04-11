@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use phantom_core::conflict::ConflictKind;
 use phantom_orchestrator::materializer::MaterializeResult;
@@ -14,19 +14,19 @@ fn test_two_agents_same_symbol_conflicts() {
     let ctx = TestContext::new();
 
     // Seed trunk with a lib file containing compute().
-    let base = ctx.commit_files(&[
-        ("src/lib.rs", "fn compute() -> i32 { 42 }\n"),
-    ]);
+    let base = ctx.commit_files(&[("src/lib.rs", "fn compute() -> i32 { 42 }\n")]);
 
     // Agent-a changes compute() to return 100.
-    let (agent_a, upper_a) = ctx.create_agent("agent-a", &[
-        ("src/lib.rs", "fn compute() -> i32 { 100 }\n"),
-    ]);
+    let (agent_a, upper_a) = ctx.create_agent(
+        "agent-a",
+        &[("src/lib.rs", "fn compute() -> i32 { 100 }\n")],
+    );
 
     // Agent-b changes compute() to return 200.
-    let (agent_b, upper_b) = ctx.create_agent("agent-b", &[
-        ("src/lib.rs", "fn compute() -> i32 { 200 }\n"),
-    ]);
+    let (agent_b, upper_b) = ctx.create_agent(
+        "agent-b",
+        &[("src/lib.rs", "fn compute() -> i32 { 200 }\n")],
+    );
 
     let cs_a = ctx.build_changeset(
         "cs-a",
@@ -78,9 +78,7 @@ fn test_two_agents_same_symbol_conflicts() {
             );
 
             // Verify the conflict references the correct file.
-            let references_lib = details
-                .iter()
-                .any(|d| d.file == PathBuf::from("src/lib.rs"));
+            let references_lib = details.iter().any(|d| d.file == Path::new("src/lib.rs"));
             assert!(
                 references_lib,
                 "conflict should reference src/lib.rs, got {details:?}"

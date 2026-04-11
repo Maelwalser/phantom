@@ -16,14 +16,13 @@ fn test_ripple_notification_after_materialize() {
     let ctx = TestContext::new();
 
     // Seed trunk with a shared file.
-    let base = ctx.commit_files(&[
-        ("src/shared.rs", "fn helper() {}\n"),
-    ]);
+    let base = ctx.commit_files(&[("src/shared.rs", "fn helper() {}\n")]);
 
     // Agent-a adds a new function to shared.rs.
-    let (agent_a, upper_a) = ctx.create_agent("agent-a", &[
-        ("src/shared.rs", "fn helper() {}\nfn new_func() {}\n"),
-    ]);
+    let (agent_a, upper_a) = ctx.create_agent(
+        "agent-a",
+        &[("src/shared.rs", "fn helper() {}\nfn new_func() {}\n")],
+    );
 
     let cs_a = ctx.build_changeset(
         "cs-a",
@@ -64,9 +63,15 @@ fn test_ripple_notification_after_materialize() {
     let active_agents = vec![
         (
             AgentId("agent-b".into()),
-            vec![PathBuf::from("src/shared.rs"), PathBuf::from("src/other.rs")],
+            vec![
+                PathBuf::from("src/shared.rs"),
+                PathBuf::from("src/other.rs"),
+            ],
         ),
-        (AgentId("agent-c".into()), vec![PathBuf::from("src/unrelated.rs")]),
+        (
+            AgentId("agent-c".into()),
+            vec![PathBuf::from("src/unrelated.rs")],
+        ),
     ];
 
     let ripple = RippleChecker::check_ripple(&changed_files, &active_agents);
@@ -97,9 +102,7 @@ fn test_overlay_lower_layer_reflects_new_trunk() {
     let trunk_path = ctx.git.repo().workdir().unwrap().to_path_buf();
 
     // Seed trunk with a file.
-    let _base = ctx.commit_files(&[
-        ("src/data.rs", "fn original() {}\n"),
-    ]);
+    let _base = ctx.commit_files(&[("src/data.rs", "fn original() {}\n")]);
 
     // Create an overlay layer for agent-b pointing at current trunk.
     let upper_dir = tempfile::TempDir::new().unwrap();
@@ -110,15 +113,10 @@ fn test_overlay_lower_layer_reflects_new_trunk() {
     let content = layer
         .read_file(std::path::Path::new("src/data.rs"))
         .expect("should read through lower layer");
-    assert_eq!(
-        String::from_utf8_lossy(&content),
-        "fn original() {}\n"
-    );
+    assert_eq!(String::from_utf8_lossy(&content), "fn original() {}\n");
 
     // Simulate trunk advancing (agent-a materializes).
-    let _new_head = ctx.commit_files(&[
-        ("src/data.rs", "fn original() {}\nfn added_by_a() {}\n"),
-    ]);
+    let _new_head = ctx.commit_files(&[("src/data.rs", "fn original() {}\nfn added_by_a() {}\n")]);
 
     // Update the overlay's lower layer to the new trunk state.
     layer.update_lower(trunk_path);

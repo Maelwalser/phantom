@@ -19,9 +19,8 @@ fn test_rollback_middle_changeset_replays_downstream() {
     let base = ctx.commit_files(&[("src/lib.rs", "// base\n")]);
 
     // --- Materialize cs-001: adds fn one ---
-    let (agent_1, upper_1) = ctx.create_agent("agent-1", &[
-        ("src/lib.rs", "// base\nfn one() {}\n"),
-    ]);
+    let (agent_1, upper_1) =
+        ctx.create_agent("agent-1", &[("src/lib.rs", "// base\nfn one() {}\n")]);
     let cs_001 = ctx.build_changeset(
         "cs-001",
         &agent_1,
@@ -39,9 +38,10 @@ fn test_rollback_middle_changeset_replays_downstream() {
     };
 
     // --- Materialize cs-002: adds fn two ---
-    let (agent_2, upper_2) = ctx.create_agent("agent-2", &[
-        ("src/lib.rs", "// base\nfn one() {}\nfn two() {}\n"),
-    ]);
+    let (agent_2, upper_2) = ctx.create_agent(
+        "agent-2",
+        &[("src/lib.rs", "// base\nfn one() {}\nfn two() {}\n")],
+    );
     let cs_002 = ctx.build_changeset(
         "cs-002",
         &agent_2,
@@ -59,9 +59,13 @@ fn test_rollback_middle_changeset_replays_downstream() {
     };
 
     // --- Materialize cs-003: adds fn three (independent of cs-002) ---
-    let (agent_3, upper_3) = ctx.create_agent("agent-3", &[
-        ("src/lib.rs", "// base\nfn one() {}\nfn two() {}\nfn three() {}\n"),
-    ]);
+    let (agent_3, upper_3) = ctx.create_agent(
+        "agent-3",
+        &[(
+            "src/lib.rs",
+            "// base\nfn one() {}\nfn two() {}\nfn three() {}\n",
+        )],
+    );
     let cs_003 = ctx.build_changeset(
         "cs-003",
         &agent_3,
@@ -103,7 +107,10 @@ fn test_rollback_middle_changeset_replays_downstream() {
     assert_eq!(after_002[0].0, "cs-003");
 
     // 2. Mark cs-002 events as dropped.
-    let dropped = ctx.events.mark_dropped(&ChangesetId("cs-002".into())).unwrap();
+    let dropped = ctx
+        .events
+        .mark_dropped(&ChangesetId("cs-002".into()))
+        .unwrap();
     assert!(dropped > 0, "should have dropped at least one event");
 
     // 3. Reset trunk to commit_after_001 (before cs-002).
@@ -117,9 +124,10 @@ fn test_rollback_middle_changeset_replays_downstream() {
     //    cs-003 added fn three, which is independent of fn two, so it should
     //    succeed. We re-build the changeset against the current HEAD.
     let current_head = mat_reset.git().head_oid().unwrap();
-    let (agent_3b, upper_3b) = ctx.create_agent("agent-3b", &[
-        ("src/lib.rs", "// base\nfn one() {}\nfn three() {}\n"),
-    ]);
+    let (agent_3b, upper_3b) = ctx.create_agent(
+        "agent-3b",
+        &[("src/lib.rs", "// base\nfn one() {}\nfn three() {}\n")],
+    );
     let cs_003_replayed = ctx.build_changeset(
         "cs-003-replay",
         &agent_3b,
@@ -129,12 +137,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     );
     let mat_replay = ctx.materializer();
     let r3_replay = mat_replay
-        .materialize(
-            &cs_003_replayed,
-            upper_3b.path(),
-            &ctx.events,
-            &ctx.merger,
-        )
+        .materialize(&cs_003_replayed, upper_3b.path(), &ctx.events, &ctx.merger)
         .unwrap();
     assert!(
         matches!(r3_replay, MaterializeResult::Success { .. }),

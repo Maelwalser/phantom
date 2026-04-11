@@ -100,11 +100,11 @@ mod tests {
 
     #[test]
     fn multiple_overlapping_files() {
-        let changed = vec![
-            PathBuf::from("src/db.rs"),
-            PathBuf::from("src/cache.rs"),
-        ];
-        let agents = vec![agent("agent-a", &["src/db.rs", "src/cache.rs", "src/api.rs"])];
+        let changed = vec![PathBuf::from("src/db.rs"), PathBuf::from("src/cache.rs")];
+        let agents = vec![agent(
+            "agent-a",
+            &["src/db.rs", "src/cache.rs", "src/api.rs"],
+        )];
 
         let result = RippleChecker::check_ripple(&changed, &agents);
         let affected = result.get(&AgentId("agent-a".into())).unwrap();

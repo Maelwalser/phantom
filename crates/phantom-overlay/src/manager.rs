@@ -221,7 +221,9 @@ mod tests {
 
         // Write via mutable layer.
         let layer_mut = mgr.get_layer_mut(&agent).unwrap();
-        layer_mut.write_file(Path::new("new.txt"), b"agent wrote this").unwrap();
+        layer_mut
+            .write_file(Path::new("new.txt"), b"agent wrote this")
+            .unwrap();
         layer_mut.remove_whiteout(Path::new("new.txt"));
 
         let layer = mgr.get_layer(&agent).unwrap();

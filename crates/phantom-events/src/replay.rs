@@ -35,18 +35,14 @@ impl<'a> ReplayEngine<'a> {
 
     /// Return all materialized changeset IDs that were materialized *after*
     /// the given changeset.
-    pub fn changesets_after(
-        &self,
-        id: &ChangesetId,
-    ) -> Result<Vec<ChangesetId>, EventStoreError> {
+    pub fn changesets_after(&self, id: &ChangesetId) -> Result<Vec<ChangesetId>, EventStoreError> {
         let events = self.store.query_all()?;
 
         // Find the materialization event for the target changeset.
         let target_event_id = events
             .iter()
             .find(|e| {
-                e.changeset_id == *id
-                    && matches!(e.kind, EventKind::ChangesetMaterialized { .. })
+                e.changeset_id == *id && matches!(e.kind, EventKind::ChangesetMaterialized { .. })
             })
             .map(|e| e.id);
 
@@ -58,8 +54,7 @@ impl<'a> ReplayEngine<'a> {
         let after: Vec<ChangesetId> = events
             .into_iter()
             .filter(|e| {
-                e.id.0 > target_id.0
-                    && matches!(e.kind, EventKind::ChangesetMaterialized { .. })
+                e.id.0 > target_id.0 && matches!(e.kind, EventKind::ChangesetMaterialized { .. })
             })
             .map(|e| e.changeset_id)
             .collect();

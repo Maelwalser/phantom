@@ -122,7 +122,11 @@ fn test_event_log_queries() {
 
     // --- Query all → verify total count ---
     let all = ctx.events.query_all().unwrap();
-    assert_eq!(all.len(), total_events, "should have {total_events} total events");
+    assert_eq!(
+        all.len(),
+        total_events,
+        "should have {total_events} total events"
+    );
 
     // --- Query by agent-a → only agent-a events ---
     let agent_a_events = ctx
@@ -217,7 +221,9 @@ fn test_event_log_queries() {
         3,
         "intersection of agent-a and cs-002 should return 3 events"
     );
-    assert!(intersection
-        .iter()
-        .all(|e| e.agent_id.0 == "agent-a" && e.changeset_id.0 == "cs-002"));
+    assert!(
+        intersection
+            .iter()
+            .all(|e| e.agent_id.0 == "agent-a" && e.changeset_id.0 == "cs-002")
+    );
 }
