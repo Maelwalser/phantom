@@ -20,6 +20,9 @@ pub enum EventStoreError {
 
 impl From<EventStoreError> for CoreError {
     fn from(err: EventStoreError) -> Self {
-        CoreError::Serialization(err.to_string())
+        match &err {
+            EventStoreError::Serialization(_) => CoreError::Serialization(err.to_string()),
+            _ => CoreError::Storage(err.to_string()),
+        }
     }
 }

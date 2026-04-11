@@ -177,7 +177,7 @@ fn extract_impl_name(node: Node<'_>, source: &[u8]) -> String {
     }
 }
 
-/// Check if a function_item has a `#[test]` attribute.
+/// Check if a function_item has a `#[test]` or `#[tokio::test]` attribute.
 ///
 /// In tree-sitter-rust, attributes are preceding siblings of the function_item,
 /// not children. We check the previous sibling(s) for `attribute_item` nodes.
@@ -187,7 +187,7 @@ fn is_test_function(node: Node<'_>, source: &[u8]) -> bool {
     for child in node.children(&mut cursor) {
         if child.kind() == "attribute_item" || child.kind() == "attribute" {
             let text = node_text(child, source);
-            if text.contains("test") {
+            if is_test_attribute(&text) {
                 return true;
             }
         }
@@ -197,7 +197,7 @@ fn is_test_function(node: Node<'_>, source: &[u8]) -> bool {
     while let Some(sibling) = prev {
         if sibling.kind() == "attribute_item" {
             let text = node_text(sibling, source);
-            if text.contains("test") {
+            if is_test_attribute(&text) {
                 return true;
             }
         } else if sibling.kind() != "line_comment" && sibling.kind() != "block_comment" {
@@ -208,9 +208,32 @@ fn is_test_function(node: Node<'_>, source: &[u8]) -> bool {
     false
 }
 
+/// Check if an attribute text matches known test attributes.
+///
+/// Matches `#[test]`, `#[tokio::test]`, `#[rstest]`, `#[test_case(...)]`
+/// but NOT `#[tested]`, `#[contest]`, etc.
+fn is_test_attribute(text: &str) -> bool {
+    let trimmed = text.trim();
+    // Strip outer #[ ... ]
+    let inner = trimmed
+        .strip_prefix("#[")
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(trimmed);
+    let inner = inner.trim();
+    // Check for exact matches or known prefixes
+    inner == "test"
+        || inner.starts_with("test(")
+        || inner == "tokio::test"
+        || inner.starts_with("tokio::test(")
+        || inner == "rstest"
+        || inner.starts_with("rstest(")
+        || inner.starts_with("test_case(")
+}
+
 /// Push a symbol entry with method-detection logic.
 ///
-/// If the scope indicates we're inside an impl block, treat function_items as Method.
+/// If the function is directly inside an impl block, treat it as Method.
+/// We detect this by checking if the node's parent is an `impl_item` body.
 fn push_symbol(
     symbols: &mut Vec<SymbolEntry>,
     scope: &str,
@@ -220,14 +243,21 @@ fn push_symbol(
     source: &[u8],
     file_path: &Path,
 ) {
-    // If this is a function inside an impl block (scope has more than just "crate"),
-    // and it's a Function kind, promote to Method.
+    // Promote Function to Method only if the direct parent chain contains an impl block.
+    // Check by walking tree-sitter parents, not by scope depth (which false-positives
+    // on nested modules).
     if kind == SymbolKind::Function {
-        let scope_depth = scope.split("::").count();
-        if scope_depth > 1 && scope != "crate" {
-            // Check if any parent scope part looks like an impl target
-            // (impl targets are added as scope segments by impl_item handling)
-            kind = SymbolKind::Method;
+        let mut parent = node.parent();
+        while let Some(p) = parent {
+            if p.kind() == "impl_item" {
+                kind = SymbolKind::Method;
+                break;
+            }
+            // Stop at source_file or other top-level containers — don't go higher.
+            if p.kind() == "source_file" || p.kind() == "mod_item" {
+                break;
+            }
+            parent = p.parent();
         }
     }
 

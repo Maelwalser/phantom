@@ -30,4 +30,8 @@ pub enum OverlayError {
     /// The path does not exist in either overlay layer.
     #[error("path not found: {}", _0.display())]
     PathNotFound(PathBuf),
+
+    /// JSON serialization/deserialization of whiteout data failed.
+    #[error("serialization error: {0}")]
+    Serialization(String),
 }

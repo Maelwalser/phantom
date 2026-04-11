@@ -105,28 +105,18 @@ impl OverlayLayer {
 
     /// Write a file to the upper layer.
     ///
-    /// Creates parent directories as needed. Removes the path from the
-    /// whiteout set if it was previously deleted.
-    pub fn write_file(&self, rel_path: &Path, data: &[u8]) -> Result<(), OverlayError> {
+    /// Creates parent directories as needed. Automatically removes the path
+    /// from the whiteout set if it was previously deleted.
+    pub fn write_file(&mut self, rel_path: &Path, data: &[u8]) -> Result<(), OverlayError> {
         let upper_path = self.upper.join(rel_path);
         if let Some(parent) = upper_path.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::write(&upper_path, data)?;
 
-        // The borrow checker won't let us call &mut self here, so we use
-        // interior mutability indirectly by taking &self and casting away
-        // const-ness is wrong. Instead we'll have write_file take &mut self.
-        // Actually, let's keep &self and note that whiteout removal needs
-        // the caller to also call remove_whiteout. But per the spec, write_file
-        // should remove from whiteouts. Let's make write_file take &mut self.
-
-        // Actually the spec says write_file takes &self for the read methods
-        // and &mut self for write. Let me just use &mut self.
-        // We can't do that with the current signature. Let me redesign.
-
-        // For now, the whiteout removal is handled in write_file_mut below.
-        // This is a compile-time workaround. The real impl uses &mut self.
+        if self.whiteouts.remove(rel_path) {
+            let _ = self.persist_whiteouts();
+        }
 
         Ok(())
     }
@@ -258,7 +248,7 @@ impl OverlayLayer {
                 .collect(),
         };
         let json = serde_json::to_string_pretty(&ws)
-            .map_err(|e| OverlayError::Fuse(e.to_string()))?;
+            .map_err(|e| OverlayError::Serialization(e.to_string()))?;
         fs::write(self.upper.join(WHITEOUT_FILE), json)?;
         Ok(())
     }
@@ -291,8 +281,8 @@ fn load_whiteouts(upper: &Path) -> Result<HashSet<PathBuf>, OverlayError> {
         return Ok(HashSet::new());
     }
     let data = fs::read_to_string(&path)?;
-    let ws: WhiteoutSet =
-        serde_json::from_str(&data).map_err(|e| OverlayError::Fuse(e.to_string()))?;
+    let ws: WhiteoutSet = serde_json::from_str(&data)
+        .map_err(|e| OverlayError::Serialization(e.to_string()))?;
     Ok(ws.paths.into_iter().map(PathBuf::from).collect())
 }
 
@@ -316,8 +306,6 @@ mod tests {
 
         // Write and remove from whiteouts in case.
         layer.write_file(Path::new("hello.txt"), b"world").unwrap();
-        layer.remove_whiteout(Path::new("hello.txt"));
-
         let data = layer.read_file(Path::new("hello.txt")).unwrap();
         assert_eq!(data, b"world");
     }
@@ -339,7 +327,6 @@ mod tests {
 
         let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.write_file(Path::new("shared.txt"), b"upper").unwrap();
-        layer.remove_whiteout(Path::new("shared.txt"));
 
         let data = layer.read_file(Path::new("shared.txt")).unwrap();
         assert_eq!(data, b"upper");
@@ -372,7 +359,6 @@ mod tests {
         assert!(!layer.exists(Path::new("file.txt")));
 
         layer.write_file(Path::new("file.txt"), b"v2").unwrap();
-        layer.remove_whiteout(Path::new("file.txt"));
 
         assert!(layer.exists(Path::new("file.txt")));
         let data = layer.read_file(Path::new("file.txt")).unwrap();
@@ -386,7 +372,6 @@ mod tests {
 
         let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.write_file(Path::new("new.txt"), b"agent").unwrap();
-        layer.remove_whiteout(Path::new("new.txt"));
 
         let modified = layer.modified_files().unwrap();
         assert!(modified.contains(&PathBuf::from("new.txt")));
@@ -419,7 +404,6 @@ mod tests {
 
         let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.write_file(Path::new("from_upper.txt"), b"u").unwrap();
-        layer.remove_whiteout(Path::new("from_upper.txt"));
 
         let entries = layer.read_dir(Path::new("")).unwrap();
         let names: HashSet<_> = entries.iter().map(|e| e.name.to_string_lossy().into_owned()).collect();
@@ -435,7 +419,6 @@ mod tests {
         let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         layer.write_file(Path::new("a/b/c.txt"), b"deep").unwrap();
-        layer.remove_whiteout(Path::new("a/b/c.txt"));
 
         let data = layer.read_file(Path::new("a/b/c.txt")).unwrap();
         assert_eq!(data, b"deep");

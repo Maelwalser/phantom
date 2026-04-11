@@ -244,6 +244,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "diffy"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b545b8c50194bdd008283985ab0b31dba153cfd5b3066a92770634fbc0d7d291"
+dependencies = [
+ "nu-ansi-term",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -796,6 +805,7 @@ dependencies = [
 name = "phantom-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "diffy",
  "git2",
  "phantom-core",
  "phantom-events",
@@ -825,6 +835,7 @@ name = "phantom-semantic"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "diffy",
  "phantom-core",
  "tempfile",
  "thiserror",

@@ -222,14 +222,20 @@ mod inner {
                 }
             };
 
+            // Resolve parent inode for ".." entry.
+            let parent_ino = if ino == 1 {
+                1 // root's parent is itself
+            } else {
+                // Derive parent path and look up its inode.
+                path.parent()
+                    .map(|p| self.inodes.get_or_create_inode(&p.to_path_buf()))
+                    .unwrap_or(1)
+            };
+
             // Synthetic "." and ".." entries.
             let mut all_entries: Vec<(u64, FileType, String)> = vec![
                 (ino, FileType::Directory, ".".to_string()),
-                (
-                    if ino == 1 { 1 } else { ino },
-                    FileType::Directory,
-                    "..".to_string(),
-                ),
+                (parent_ino, FileType::Directory, "..".to_string()),
             ];
 
             for entry in &entries {
@@ -464,11 +470,13 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let layer = self.layer.lock().unwrap();
+            let mut layer = self.layer.lock().unwrap();
             let upper_path = layer.upper_dir().join(&child_path);
 
             match std::fs::create_dir_all(&upper_path) {
                 Ok(()) => {
+                    // Clear whiteout if this dir was previously deleted.
+                    layer.remove_whiteout(&child_path);
                     let ino = self.inodes.get_or_create_inode(&child_path);
                     reply.entry(&TTL, &default_dir_attr(ino), 0);
                     debug!(path = %child_path.display(), "mkdir");
@@ -487,15 +495,21 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let layer = self.layer.lock().unwrap();
+            let mut layer = self.layer.lock().unwrap();
             let upper_path = layer.upper_dir().join(&child_path);
 
             if upper_path.is_dir() {
-                match std::fs::remove_dir_all(&upper_path) {
+                // Use remove_dir (not remove_dir_all) — POSIX rmdir fails on non-empty.
+                match std::fs::remove_dir(&upper_path) {
                     Ok(()) => {
+                        // Add whiteout so the dir is hidden even if it exists in lower layer.
+                        let _ = layer.delete_file(&child_path);
                         drop(layer);
                         self.inodes.remove(&child_path);
                         reply.ok();
+                    }
+                    Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) => {
+                        reply.error(libc::ENOTEMPTY);
                     }
                     Err(e) => {
                         warn!(error = %e, "rmdir failed");

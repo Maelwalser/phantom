@@ -13,6 +13,7 @@ git2 = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+diffy = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

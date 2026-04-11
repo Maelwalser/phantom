@@ -30,4 +30,12 @@ pub enum CoreError {
     /// Serialization or deserialization failed.
     #[error("serialization error: {0}")]
     Serialization(String),
+
+    /// Storage backend (event store, database) error.
+    #[error("storage error: {0}")]
+    Storage(String),
+
+    /// Semantic analysis error.
+    #[error("semantic error: {0}")]
+    Semantic(String),
 }

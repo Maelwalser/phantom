@@ -9,9 +9,10 @@ use phantom_core::changeset::SemanticOperation;
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 
 /// Entity identity key for Weave-style matching.
-type EntityKey = (String, SymbolKind, String);
+pub type EntityKey = (String, SymbolKind, String);
 
-fn entity_key(entry: &SymbolEntry) -> EntityKey {
+/// Extract the composite identity key from a symbol entry.
+pub fn entity_key(entry: &SymbolEntry) -> EntityKey {
     (entry.name.clone(), entry.kind, entry.scope.clone())
 }
 

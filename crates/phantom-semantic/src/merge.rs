@@ -10,10 +10,10 @@ use phantom_core::changeset::SemanticOperation;
 use phantom_core::conflict::{ConflictDetail, ConflictKind};
 use phantom_core::error::CoreError;
 use phantom_core::id::ChangesetId;
-use phantom_core::symbol::{SymbolEntry, SymbolKind};
+use phantom_core::symbol::SymbolEntry;
 use phantom_core::traits::{MergeResult, SemanticAnalyzer};
 
-use crate::diff;
+use crate::diff::{self, entity_key, EntityKey};
 use crate::parser::Parser;
 
 /// Semantic merge engine backed by tree-sitter.
@@ -37,13 +37,6 @@ impl Default for SemanticMerger {
     }
 }
 
-/// Entity identity key for matching.
-type EntityKey = (String, SymbolKind, String);
-
-fn entity_key(entry: &SymbolEntry) -> EntityKey {
-    (entry.name.clone(), entry.kind, entry.scope.clone())
-}
-
 impl phantom_core::traits::SemanticAnalyzer for SemanticMerger {
     fn extract_symbols(
         &self,
@@ -52,7 +45,7 @@ impl phantom_core::traits::SemanticAnalyzer for SemanticMerger {
     ) -> Result<Vec<SymbolEntry>, CoreError> {
         self.parser
             .parse_file(path, content)
-            .map_err(|e| CoreError::Serialization(e.to_string()))
+            .map_err(|e| CoreError::Semantic(e.to_string()))
     }
 
     fn diff_symbols(
@@ -332,9 +325,10 @@ fn reconstruct_merged_file(
     result
 }
 
-/// Simple line-based three-way text merge fallback.
+/// LCS-based three-way text merge fallback using `diffy`.
 ///
-/// If both sides made changes to the same line region, returns a conflict.
+/// Correctly handles insertions, deletions, and modifications at arbitrary
+/// positions. Falls back to conflict when both sides change the same region.
 fn text_merge(
     base: &[u8],
     ours: &[u8],
@@ -345,49 +339,16 @@ fn text_merge(
     let ours_str = String::from_utf8_lossy(ours);
     let theirs_str = String::from_utf8_lossy(theirs);
 
-    let base_lines: Vec<&str> = base_str.lines().collect();
-    let ours_lines: Vec<&str> = ours_str.lines().collect();
-    let theirs_lines: Vec<&str> = theirs_str.lines().collect();
-
-    let mut merged = Vec::new();
-    let max_len = base_lines.len().max(ours_lines.len()).max(theirs_lines.len());
-    let mut has_conflict = false;
-
-    for i in 0..max_len {
-        let b = base_lines.get(i).copied().unwrap_or("");
-        let o = ours_lines.get(i).copied().unwrap_or("");
-        let t = theirs_lines.get(i).copied().unwrap_or("");
-
-        if o == t {
-            merged.push(o.to_string());
-        } else if o == b {
-            merged.push(t.to_string());
-        } else if t == b {
-            merged.push(o.to_string());
-        } else {
-            // Both changed the same line differently
-            has_conflict = true;
-            break;
-        }
-    }
-
-    if has_conflict {
-        Ok(MergeResult::Conflict(vec![ConflictDetail {
+    match diffy::merge(&base_str, &ours_str, &theirs_str) {
+        Ok(merged) => Ok(MergeResult::Clean(merged.into_bytes())),
+        Err(_conflict_text) => Ok(MergeResult::Conflict(vec![ConflictDetail {
             kind: ConflictKind::RawTextConflict,
             file: path.to_path_buf(),
             symbol_id: None,
             ours_changeset: ChangesetId("unknown".into()),
             theirs_changeset: ChangesetId("unknown".into()),
             description: "line-level text conflict".into(),
-        }]))
-    } else {
-        let result = merged.join("\n");
-        // Preserve trailing newline if original had one
-        let mut bytes = result.into_bytes();
-        if base.last() == Some(&b'\n') && bytes.last() != Some(&b'\n') {
-            bytes.push(b'\n');
-        }
-        Ok(MergeResult::Clean(bytes))
+        }])),
     }
 }
 
@@ -545,9 +506,10 @@ mod tests {
 
     #[test]
     fn unsupported_file_falls_back_to_text_merge() {
-        let base = b"line1\nline2\n";
-        let ours = b"line1\nline2_modified\n";
-        let theirs = b"line1\nline2\nline3\n";
+        // Ours modifies line2, theirs adds line4 — disjoint edits, clean merge.
+        let base = b"line1\nline2\nline3\n";
+        let ours = b"line1\nline2_modified\nline3\n";
+        let theirs = b"line1\nline2\nline3\nline4\n";
 
         let result = merger()
             .three_way_merge(base, ours, theirs, Path::new("config.toml"))
@@ -556,8 +518,8 @@ mod tests {
         match result {
             MergeResult::Clean(merged) => {
                 let text = String::from_utf8_lossy(&merged);
-                assert!(text.contains("line2_modified"));
-                assert!(text.contains("line3"));
+                assert!(text.contains("line2_modified"), "should have ours' change");
+                assert!(text.contains("line4"), "should have theirs' addition");
             }
             MergeResult::Conflict(_) => panic!("expected clean text merge"),
         }
