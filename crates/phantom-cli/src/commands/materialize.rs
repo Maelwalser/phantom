@@ -11,15 +11,44 @@ use phantom_orchestrator::ripple::RippleChecker;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
+#[command(group(
+    clap::ArgGroup::new("target")
+        .required(true)
+        .args(["changeset", "agent"]),
+))]
 pub struct MaterializeArgs {
     /// Changeset ID to materialize (e.g. "cs-0042")
     #[arg(long)]
-    pub changeset: String,
+    pub changeset: Option<String>,
+
+    /// Agent whose latest submitted changeset to materialize
+    #[arg(long)]
+    pub agent: Option<String>,
 }
 
 pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::load()?;
-    let changeset_id = ChangesetId(args.changeset.clone());
+
+    // Resolve the target changeset: either directly by ID or via agent lookup.
+    let changeset_id = if let Some(cs) = &args.changeset {
+        ChangesetId(cs.clone())
+    } else {
+        // Safe to unwrap: ArgGroup guarantees exactly one of changeset/agent is set.
+        let agent_name = args.agent.as_ref().unwrap();
+        let agent_id = AgentId(agent_name.clone());
+
+        let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let projection = Projection::from_events(&all_events);
+
+        let cs = projection
+            .latest_submitted_changeset(&agent_id)
+            .with_context(|| {
+                format!("no submitted changeset found for agent '{agent_name}'")
+            })?;
+
+        println!("Resolved agent '{agent_name}' → changeset '{}'", cs.id);
+        cs.id.clone()
+    };
 
     let result = materialize_changeset(&ctx, &changeset_id)?;
 
@@ -27,12 +56,12 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
         MaterializeResult::Success { new_commit } => {
             let short = new_commit.to_hex();
             let short = &short[..12.min(short.len())];
-            println!("Materialized {} → commit {short}", args.changeset);
+            println!("Materialized {} → commit {short}", changeset_id);
         }
         MaterializeResult::Conflict { details } => {
             eprintln!(
                 "Materialization of {} failed with {} conflict(s):",
-                args.changeset,
+                changeset_id,
                 details.len()
             );
             for detail in &details {
