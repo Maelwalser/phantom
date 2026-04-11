@@ -36,25 +36,25 @@ Enter
 Sleep 3500ms
 
 # ── Submit claude-a's work as a changeset ──────────────────────
-Type "phantom submit --agent claude-a"
+Type "phantom submit claude-a"
 Sleep 500ms
 Enter
 Sleep 2500ms
 
 # ── Materialize claude-a to trunk ──────────────────────────────
-Type@60ms `phantom materialize --changeset $(phantom log --agent claude-a | grep -oP 'cs-\S+' | head -1)`
+Type@60ms `phantom materialize $(phantom log claude-a | grep -oP 'cs-\S+' | head -1)`
 Sleep 500ms
 Enter
 Sleep 3000ms
 
 # ── Submit claude-b's work ─────────────────────────────────────
-Type "phantom submit --agent claude-b"
+Type "phantom submit claude-b"
 Sleep 500ms
 Enter
 Sleep 2500ms
 
 # ── Materialize claude-b — different file, auto-merges! ────────
-Type@60ms `phantom materialize --changeset $(phantom log --agent claude-b | grep -oP 'cs-\S+' | head -1)`
+Type@60ms `phantom materialize $(phantom log claude-b | grep -oP 'cs-\S+' | head -1)`
 Sleep 500ms
 Enter
 Sleep 3000ms

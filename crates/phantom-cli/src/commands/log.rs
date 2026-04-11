@@ -8,12 +8,8 @@ use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
 pub struct LogArgs {
-    /// Filter by agent ID
-    #[arg(long)]
-    pub agent: Option<String>,
-    /// Filter by changeset ID
-    #[arg(long)]
-    pub changeset: Option<String>,
+    /// Agent name or changeset ID to filter by (auto-detected by "cs-" prefix)
+    pub filter: Option<String>,
     /// Filter by symbol ID
     #[arg(long)]
     pub symbol: Option<String>,
@@ -30,9 +26,16 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
 
     let since = args.since.as_deref().map(parse_duration_ago).transpose()?;
 
+    // Auto-detect whether the positional filter is an agent or changeset.
+    let (agent_id, changeset_id) = match &args.filter {
+        Some(f) if f.starts_with("cs-") => (None, Some(ChangesetId(f.clone()))),
+        Some(f) => (Some(AgentId(f.clone())), None),
+        None => (None, None),
+    };
+
     let query = EventQuery {
-        agent_id: args.agent.map(AgentId),
-        changeset_id: args.changeset.map(ChangesetId),
+        agent_id,
+        changeset_id,
         symbol_id: args.symbol.map(SymbolId),
         since,
         limit: Some(args.limit),

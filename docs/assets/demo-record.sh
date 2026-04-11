@@ -14,9 +14,9 @@ echo ""
 sleep 0.3
 
 echo -e "\033[1;36m# Dispatch two agents to work in parallel\033[0m"
-phantom dispatch --agent agent-a --task "add user registration"
+phantom dispatch agent-a --background --task "add user registration"
 echo ""
-phantom dispatch --agent agent-b --task "add rate limiting"
+phantom dispatch agent-b --background --task "add rate limiting"
 echo ""
 sleep 0.3
 
@@ -45,19 +45,19 @@ pub fn rate_limit(ip: &str, max_requests: u32) -> bool {
 RUST
 
 echo -e "\033[1;36m# Agent A finished — submit and materialize to trunk\033[0m"
-SUBMIT_A=$(phantom submit --agent agent-a)
+SUBMIT_A=$(phantom submit agent-a)
 echo "$SUBMIT_A"
 # Extract changeset ID from submit output
 CS_A=$(echo "$SUBMIT_A" | grep -oP 'cs-\S+' | head -1)
-phantom materialize --changeset "$CS_A"
+phantom materialize "$CS_A"
 echo ""
 sleep 0.3
 
 echo -e "\033[1;36m# Agent B finished — different file, auto-merges cleanly\033[0m"
-SUBMIT_B=$(phantom submit --agent agent-b)
+SUBMIT_B=$(phantom submit agent-b)
 echo "$SUBMIT_B"
 CS_B=$(echo "$SUBMIT_B" | grep -oP 'cs-\S+' | head -1)
-phantom materialize --changeset "$CS_B"
+phantom materialize "$CS_B"
 echo ""
 sleep 0.3
 

@@ -160,8 +160,8 @@ trunk and other agents.
 - Base commit: {base_short}
 
 ## Commands
-- `phantom submit --agent {agent_id}` — submit your changes
-- `phantom materialize --changeset {changeset_id}` — merge to trunk
+- `phantom submit {agent_id}` — submit your changes
+- `phantom materialize {changeset_id}` — merge to trunk
 - `phantom status` — view all agents and changesets
 "#
     );
@@ -207,7 +207,7 @@ fn post_session_flow(
 
     if !auto_submit {
         println!(
-            "Run `phantom submit --agent {agent_id}` to submit, then `phantom materialize --changeset {changeset_id}` to merge."
+            "Run `phantom submit {agent_id}` to submit, then `phantom materialize {changeset_id}` to merge."
         );
         return Ok(());
     }
@@ -243,7 +243,7 @@ fn post_session_flow(
                     }
                 }
             } else {
-                println!("Run `phantom materialize --changeset {cs_id}` to merge to trunk.");
+                println!("Run `phantom materialize {cs_id}` to merge to trunk.");
             }
         }
         None => {

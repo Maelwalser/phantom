@@ -105,7 +105,6 @@ fn phantom_dispatch_background_and_status() {
     phantom(dir.path())
         .args([
             "dispatch",
-            "--agent",
             "agent-a",
             "--background",
             "--task",
@@ -134,7 +133,6 @@ fn phantom_dispatch_interactive_with_echo() {
     phantom(dir.path())
         .args([
             "dispatch",
-            "--agent",
             "agent-b",
             "--command",
             "echo",
@@ -167,7 +165,6 @@ fn full_workflow_smoke_test() {
     phantom(dir.path())
         .args([
             "dispatch",
-            "--agent",
             "agent-a",
             "--background",
             "--task",
@@ -190,7 +187,7 @@ fn full_workflow_smoke_test() {
 
     // 4. Submit
     phantom(dir.path())
-        .args(["submit", "--agent", "agent-a"])
+        .args(["submit", "agent-a"])
         .assert()
         .success()
         .stdout(predicate::str::contains("submitted"));
@@ -219,7 +216,6 @@ fn phantom_dispatch_background_conflicts_with_auto_submit() {
     phantom(dir.path())
         .args([
             "dispatch",
-            "--agent",
             "agent-a",
             "--background",
             "--task",
@@ -237,7 +233,7 @@ fn phantom_dispatch_background_requires_task() {
 
     // --background without --task should fail
     phantom(dir.path())
-        .args(["dispatch", "--agent", "agent-a", "--background"])
+        .args(["dispatch", "agent-a", "--background"])
         .assert()
         .failure();
 }
@@ -251,7 +247,6 @@ fn phantom_dispatch_interactive_auto_submit_with_no_changes() {
     phantom(dir.path())
         .args([
             "dispatch",
-            "--agent",
             "agent-c",
             "--command",
             "echo",

@@ -15,10 +15,9 @@ use crate::context::PhantomContext;
 #[derive(clap::Args)]
 pub struct DispatchArgs {
     /// Agent identifier (e.g. "agent-a")
-    #[arg(long)]
     pub agent: String,
-    /// Task description for the agent (required for --background)
-    #[arg(long)]
+    /// Task description for the agent (only available with --background)
+    #[arg(long, requires = "background")]
     pub task: Option<String>,
     /// Create the overlay without launching a CLI session (for scripted agents)
     #[arg(long, short = 'b', requires = "task")]

@@ -1,9 +1,11 @@
+<div align="center">
 <pre>
 .----. .-. .-.  .--.  .-. .-. .---.  .----. .-.   .-.
 | {}  }| {_} | / {} \ |  `| |{_   _}/  {}  \|  `.'  |
 | .--' | { } |/  /\  \| |\  |  | |  \      /| |\ /| |
 `-'    `-' `-'`-'  `-'`-' `-'  `-'   `----' `-' ` `-'
 </pre>
+</div>
 
 **Event-sourced semantic version control for parallel AI agents**
 
@@ -54,18 +56,18 @@ cd /path/to/your/repo
 phantom up
 
 # Dispatch two agents in parallel
-phantom dispatch --agent agent-a --task "add user authentication"
-phantom dispatch --agent agent-b --task "add rate limiting"
+phantom d agent-a --background --task "add user authentication"
+phantom d agent-b --background --task "add rate limiting"
 
 # Agents work on their isolated overlays...
 # When done, submit and materialize
-phantom submit --agent agent-a
-phantom materialize --changeset cs-0001
+phantom sub agent-a
+phantom mat cs-0001
 
 # Agent B's overlay automatically sees Agent A's changes.
 # If Agent B touched different symbols, it merges cleanly.
-phantom submit --agent agent-b
-phantom materialize --changeset cs-0002
+phantom sub agent-b
+phantom mat cs-0002
 ```
 
 ## Installation
@@ -117,16 +119,16 @@ phantom --help
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `phantom up` | Initialize Phantom in the current git repository |
-| `phantom dispatch` | Create an isolated overlay and assign a task to an agent |
-| `phantom submit` | Package an agent's changes into a changeset with semantic operations |
-| `phantom materialize` | Run semantic merge and commit a changeset to trunk |
-| `phantom status` | Show active overlays, pending changesets, and trunk state |
-| `phantom rollback` | Drop a changeset and identify downstream work needing re-dispatch |
-| `phantom log` | Query the event log with filters |
-| `phantom destroy` | Tear down an agent's overlay |
+| Command | Shortcut | Description |
+|---------|----------|-------------|
+| `phantom up` | | Initialize Phantom in the current git repository |
+| `phantom dispatch` | `phantom d` | Create an isolated overlay and assign a task to an agent |
+| `phantom submit` | `phantom sub` | Package an agent's changes into a changeset with semantic operations |
+| `phantom materialize` | `phantom mat` | Run semantic merge and commit a changeset to trunk |
+| `phantom status` | `phantom st` | Show active overlays, pending changesets, and trunk state |
+| `phantom rollback` | `phantom rb` | Drop a changeset and identify downstream work needing re-dispatch |
+| `phantom log` | `phantom l` | Query the event log with filters |
+| `phantom destroy` | `phantom rm` | Tear down an agent's overlay |
 
 ### `phantom up`
 
@@ -137,82 +139,86 @@ cd /path/to/your/repo
 phantom up
 ```
 
-### `phantom dispatch`
+### `phantom dispatch` / `d`
 
 Assign a task to a new agent. Creates a copy-on-write overlay filesystem where the agent can read trunk files and write modifications in isolation.
 
 ```bash
-phantom dispatch --agent agent-a --task "implement caching layer"
+# Interactive — launches a Claude Code session inside the overlay
+phantom d agent-a
+
+# Background — for scripted/headless agents (--task required)
+phantom dispatch agent-a --background --task "implement caching layer"
 ```
 
 The agent works in `.phantom/overlays/agent-a/` — a normal directory where reads fall through to trunk and writes are captured.
 
-### `phantom submit`
+### `phantom submit` / `sub`
 
 When an agent finishes, submit its work. Phantom parses the modified files with tree-sitter, extracts semantic operations (functions added, structs modified, imports changed), and records everything in the event log.
 
 ```bash
-phantom submit --agent agent-a
+phantom sub agent-a
 ```
 
-### `phantom materialize`
+### `phantom materialize` / `mat`
 
 Apply a submitted changeset to trunk. Phantom runs a three-way semantic merge: if the trunk has advanced since the changeset's base commit, it checks for symbol-level conflicts rather than line-level conflicts.
 
 ```bash
-phantom materialize --changeset cs-0001
+phantom mat cs-0001
 ```
 
 **Possible outcomes:**
 - **Success** — Changes committed to trunk. Other agents' overlays automatically reflect the new trunk.
 - **Conflict** — Two agents modified the same symbol. The changeset is marked conflicted; re-dispatch the agent.
 
-### `phantom rollback`
+### `phantom rollback` / `rb`
 
 Surgically remove a changeset from history. Phantom marks the changeset's events as dropped and identifies any downstream changesets that depend on it.
 
 ```bash
-phantom rollback --changeset cs-0001
+phantom rb cs-0001
 ```
 
-### `phantom log`
+### `phantom log` / `l`
 
 Query the append-only event log. Every agent action, every materialization, and every conflict is recorded.
 
 ```bash
 # All recent events
-phantom log
+phantom l
 
 # Filter by agent
-phantom log --agent agent-b
+phantom l agent-b
 
 # Filter by changeset
-phantom log --changeset cs-0042
+phantom log cs-0042
 
 # Filter by time
-phantom log --since 2h
+phantom l --since 2h
 
 # Filter by symbol
 phantom log --symbol "handlers::handle_login"
 
 # Limit results
-phantom log --limit 20
+phantom l --limit 20
 ```
 
-### `phantom status`
+### `phantom status` / `st`
 
 View the current state of the system: active agents, pending changesets, trunk HEAD, and event count.
 
 ```bash
-phantom status
+phantom st
 ```
 
-### `phantom destroy`
+### `phantom destroy` / `rm`
 
 Remove an agent's overlay and clean up its resources.
 
 ```bash
-phantom destroy --agent agent-a
+phantom rm agent-a
 ```
 
 ## How It Works
@@ -271,13 +277,13 @@ Phantom sits between your AI agents and the Git repository. Each agent works in 
 
 ### How it flows
 
-1. **Dispatch** — `phantom dispatch --agent claude-a --task "..."` creates a FUSE overlay. The agent sees the repo normally but writes go to a private upper layer.
+1. **Dispatch** — `phantom d claude-a` creates a FUSE overlay and launches an interactive session. Use `--background --task "..."` for headless agents.
 
 2. **Work** — The agent (Claude, Cursor, Codex, etc.) writes code. It reads trunk files through the overlay's lower layer and writes changes to the upper layer. Other agents can't see or interfere with its work.
 
-3. **Submit** — `phantom submit --agent claude-a` parses the modified files with tree-sitter, extracts what changed at the symbol level (functions added, structs modified, imports changed), and records a changeset in the event log.
+3. **Submit** — `phantom sub claude-a` parses the modified files with tree-sitter, extracts what changed at the symbol level (functions added, structs modified, imports changed), and records a changeset in the event log.
 
-4. **Materialize** — `phantom materialize --changeset cs-0001` runs a three-way semantic merge against trunk. If the symbols an agent touched are disjoint from what changed on trunk, it auto-merges. If the same symbol was modified by two agents, it reports a conflict.
+4. **Materialize** — `phantom mat cs-0001` runs a three-way semantic merge against trunk. If the symbols an agent touched are disjoint from what changed on trunk, it auto-merges. If the same symbol was modified by two agents, it reports a conflict.
 
 5. **Ripple** — After materialization, Phantom checks which other running agents might be affected by the trunk change and notifies them. Their overlays automatically see the new trunk on the next read.
 

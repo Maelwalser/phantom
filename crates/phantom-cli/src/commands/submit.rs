@@ -12,7 +12,6 @@ use crate::context::PhantomContext;
 #[derive(clap::Args)]
 pub struct SubmitArgs {
     /// Agent identifier whose work to submit
-    #[arg(long)]
     pub agent: String,
 }
 

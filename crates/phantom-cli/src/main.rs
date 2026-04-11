@@ -20,18 +20,25 @@ enum Commands {
     /// Initialize Phantom in an existing git repository
     Up,
     /// Assign a task to a new agent overlay
+    #[command(visible_alias = "d")]
     Dispatch(commands::dispatch::DispatchArgs),
     /// Submit an agent's work as a changeset
+    #[command(visible_alias = "sub")]
     Submit(commands::submit::SubmitArgs),
     /// Show status of overlays and changesets
+    #[command(visible_alias = "st")]
     Status,
     /// Materialize a changeset to trunk
+    #[command(visible_alias = "mat")]
     Materialize(commands::materialize::MaterializeArgs),
     /// Roll back a changeset and replay downstream
+    #[command(visible_alias = "rb")]
     Rollback(commands::rollback::RollbackArgs),
     /// Query the event log
+    #[command(visible_alias = "l")]
     Log(commands::log::LogArgs),
     /// Destroy an agent's overlay
+    #[command(visible_alias = "rm")]
     Destroy(commands::destroy::DestroyArgs),
 }
 

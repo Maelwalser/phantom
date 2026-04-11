@@ -10,7 +10,6 @@ use crate::context::PhantomContext;
 #[derive(clap::Args)]
 pub struct DestroyArgs {
     /// Agent identifier whose overlay to destroy
-    #[arg(long)]
     pub agent: String,
 }
 

@@ -10,7 +10,6 @@ use crate::context::PhantomContext;
 #[derive(clap::Args)]
 pub struct RollbackArgs {
     /// Changeset ID to roll back (e.g. "cs-0040")
-    #[arg(long)]
     pub changeset: String,
 }
 

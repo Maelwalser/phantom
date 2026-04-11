@@ -32,8 +32,8 @@ git commit -m "initial commit" --quiet
 
 # Initialize phantom and dispatch agents
 phantom up >/dev/null 2>&1
-phantom dispatch --agent claude-a --task "add user registration" >/dev/null 2>&1
-phantom dispatch --agent claude-b --task "add rate limiting" >/dev/null 2>&1
+phantom dispatch claude-a --background --task "add user registration" >/dev/null 2>&1
+phantom dispatch claude-b --background --task "add rate limiting" >/dev/null 2>&1
 
 # Simulate agent work: write files into overlays
 # (In real usage, Claude/Cursor writes through the FUSE mount)

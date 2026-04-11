@@ -11,30 +11,21 @@ use phantom_orchestrator::ripple::RippleChecker;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
-#[command(group(
-    clap::ArgGroup::new("target")
-        .required(true)
-        .args(["changeset", "agent"]),
-))]
 pub struct MaterializeArgs {
-    /// Changeset ID to materialize (e.g. "cs-0042")
-    #[arg(long)]
-    pub changeset: Option<String>,
-
-    /// Agent whose latest submitted changeset to materialize
-    #[arg(long)]
-    pub agent: Option<String>,
+    /// Changeset ID (e.g. "cs-0042") or agent name (e.g. "agent-a")
+    pub target: String,
 }
 
 pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
     let mut ctx = PhantomContext::load()?;
 
-    // Resolve the target changeset: either directly by ID or via agent lookup.
-    let changeset_id = if let Some(cs) = &args.changeset {
-        ChangesetId(cs.clone())
+    // Resolve the target changeset: if it looks like a changeset ID use it
+    // directly, otherwise treat it as an agent name and find their latest
+    // submitted changeset.
+    let changeset_id = if args.target.starts_with("cs-") {
+        ChangesetId(args.target.clone())
     } else {
-        // Safe to unwrap: ArgGroup guarantees exactly one of changeset/agent is set.
-        let agent_name = args.agent.as_ref().unwrap();
+        let agent_name = &args.target;
         let agent_id = AgentId(agent_name.clone());
 
         let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
