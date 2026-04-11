@@ -800,6 +800,7 @@ dependencies = [
  "phantom-core",
  "phantom-events",
  "phantom-semantic",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
