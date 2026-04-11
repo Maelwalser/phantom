@@ -1,9 +1,9 @@
-```
+<pre>
 .----. .-. .-.  .--.  .-. .-. .---.  .----. .-.   .-.
 | {}  }| {_} | / {} \ |  `| |{_   _}/  {}  \|  `.'  |
 | .--' | { } |/  /\  \| |\  |  | |  \      /| |\ /| |
 `-'    `-' `-'`-'  `-'`-' `-'  `-'   `----' `-' ` `-'
-```
+</pre>
 
 **Event-sourced semantic version control for parallel AI agents**
 
@@ -220,51 +220,38 @@ phantom destroy --agent agent-a
 Phantom sits between your AI agents and the Git repository. Each agent works in an isolated overlay — it sees the latest trunk but writes to its own private layer. When an agent finishes, Phantom analyzes the changes at the AST level and merges them into trunk automatically.
 
 ```
-  You run:                        phantom dispatch --agent claude-a
-                                  phantom dispatch --agent claude-b
-                                          │
-                                          ▼
-                              ┌───────────────────────┐
-                              │     Orchestrator      │
-                              │  dispatch · schedule  │
-                              │  materialize · ripple │
-                              └───────────┬───────────┘
-                                          │
-                    ┌─────────────────────┼─────────────────────┐
-                    │                     │                     │
-                    ▼                     ▼                     ▼
-           ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-           │   claude-a   │     │   claude-b   │     │   claude-c   │
-           │              │     │              │     │              │
-           │  upper: writes     │  upper: writes     │  upper: writes
-           │  lower: trunk│     │  lower: trunk│     │  lower: trunk│
-           └──────┬───────┘     └──────┬───────┘     └──────┬───────┘
-                  │  Copy-on-write     │  FUSE overlays     │
-                  │  isolation         │                     │
-                  ▼                    ▼                     ▼
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                                                                 │
-  │   Semantic Index               Trunk (git main)                 │
-  │   ┌─────────────────┐         ┌────────────────────────────┐    │
-  │   │ fn handle_login │ ◄────── │  src/handlers.rs           │    │
-  │   │ fn greet        │         │  src/lib.rs                │    │
-  │   │ fn main         │         │  main.rs                   │    │
-  │   │ ...             │         │  ...                       │    │
-  │   └─────────────────┘         └────────────────────────────┘    │
-  │   tree-sitter AST map         single source of truth            │
-  │   of every symbol                                               │
-  └─────────────────────────────────────────────────────────────────┘
-                  │
-                  ▼
-  ┌─────────────────────────────────────────────────────────────────┐
-  │  Event Log (SQLite, append-only)                                │
-  │                                                                 │
-  │  [15:22:44] cs-0001 claude-a  OverlayCreated { base: d4aa76f }  │
-  │  [15:22:58] cs-0001 claude-a  ChangesetSubmitted { 1 op(s) }   │
-  │  [15:22:58] cs-0001 claude-a  Materialized { commit: aef74e7 }  │
-  │  [15:22:58] cs-0002 claude-b  ChangesetSubmitted { 1 op(s) }   │
-  │  [15:22:58] cs-0002 claude-b  Materialized { commit: 2e3015f }  │
-  └─────────────────────────────────────────────────────────────────┘
+                     ┌─────────────────┐
+                     │  Orchestrator   │
+                     └────────┬────────┘
+                          dispatch
+            ┌─────────────────┼─────────────────┐
+            ▼                 ▼                 ▼
+      ┌───────────┐    ┌───────────┐    ┌───────────┐
+      │  Agent A  │    │  Agent B  │    │  Agent C  │
+      │  (FUSE)   │    │  (FUSE)   │    │  (FUSE)   │
+      └─────┬─────┘    └─────┬─────┘    └─────┬─────┘
+          submit             │                │
+            ▼                ▼                ▼
+      ┌───────────────────────────────────────────┐
+      │            Changesets (upper)             │
+      └─────────────────────┬─────────────────────┘
+                            │ check
+                            ▼
+                  ┌──────────────────┐
+                  │  Semantic Index  │◄──┐
+                  │  (tree-sitter)   │   │ parse
+                  └────────┬─────────┘   │
+                           │ merge       │
+                           ▼             │
+                  ┌──────────────────┐   │
+                  │  Trunk (git main)├───┘
+                  └────────┬─────────┘
+                           │ log
+                           ▼
+                  ┌──────────────────┐
+                  │  Event Log       │
+                  │  (SQLite)        │
+                  └──────────────────┘
 ```
 
 ### The merge problem Phantom solves
