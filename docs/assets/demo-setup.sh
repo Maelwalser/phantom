@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Sets up the demo repo for the VHS tape.
+# Sets up the demo: repo + phantom init + dispatched agents with staged work.
 # Run BEFORE: vhs docs/assets/demo.tape
 set -euo pipefail
+export RUST_LOG=off
 
 DEMO_DIR="/tmp/phantom-demo"
 rm -rf "$DEMO_DIR"
@@ -29,10 +30,15 @@ RUST
 git add .
 git commit -m "initial commit" --quiet
 
-# Pre-write agent overlay files so the demo doesn't need heredocs.
-# The tape runs a one-liner to stage them after dispatch.
-mkdir -p /tmp/phantom-staged/claude-a/src
-cat > /tmp/phantom-staged/claude-a/src/handlers.rs << 'RUST'
+# Initialize phantom and dispatch agents
+phantom up >/dev/null 2>&1
+phantom dispatch --agent claude-a --task "add user registration" >/dev/null 2>&1
+phantom dispatch --agent claude-b --task "add rate limiting" >/dev/null 2>&1
+
+# Simulate agent work: write files into overlays
+# (In real usage, Claude/Cursor writes through the FUSE mount)
+mkdir -p .phantom/overlays/claude-a/upper/src
+cat > .phantom/overlays/claude-a/upper/src/handlers.rs << 'RUST'
 pub fn handle_login(user: &str) -> bool {
     !user.is_empty()
 }
@@ -42,8 +48,8 @@ pub fn handle_register(user: &str, email: &str) -> String {
 }
 RUST
 
-mkdir -p /tmp/phantom-staged/claude-b/src
-cat > /tmp/phantom-staged/claude-b/src/lib.rs << 'RUST'
+mkdir -p .phantom/overlays/claude-b/upper/src
+cat > .phantom/overlays/claude-b/upper/src/lib.rs << 'RUST'
 pub fn greet(name: &str) -> String {
     format!("Hello, {name}!")
 }
@@ -53,4 +59,5 @@ pub fn rate_limit(ip: &str, max_requests: u32) -> bool {
 }
 RUST
 
-echo "Demo repo ready at $DEMO_DIR"
+echo "Demo ready: phantom initialized, agents dispatched, code staged."
+echo "Run: vhs docs/assets/demo.tape"
