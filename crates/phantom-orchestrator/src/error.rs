@@ -1,1 +1,33 @@
-// TODO: implement OrchestratorError
+//! Error types for the orchestrator crate.
+
+/// Errors produced by orchestrator operations (git, materialization, scheduling).
+#[derive(Debug, thiserror::Error)]
+pub enum OrchestratorError {
+    /// A `git2` operation failed.
+    #[error("git error: {0}")]
+    Git(#[from] git2::Error),
+
+    /// The event store returned an error.
+    #[error("event store error: {0}")]
+    EventStore(String),
+
+    /// A semantic analysis operation failed.
+    #[error("semantic error: {0}")]
+    Semantic(String),
+
+    /// An overlay filesystem operation failed.
+    #[error("overlay error: {0}")]
+    Overlay(String),
+
+    /// A standard I/O error occurred.
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Materialization of a changeset to trunk failed.
+    #[error("materialization failed: {0}")]
+    MaterializationFailed(String),
+
+    /// A requested resource (commit, file, changeset) was not found.
+    #[error("not found: {0}")]
+    NotFound(String),
+}
