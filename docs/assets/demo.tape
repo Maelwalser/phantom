@@ -15,29 +15,27 @@ Set Padding 16
 Set Framerate 24
 Set CursorBlink false
 
-# Start in the demo repo with logging suppressed
+# Hidden env setup — use Sleep to let terminal settle before Show
 Hide
-Type "export RUST_LOG=off"
+Type "export RUST_LOG=off && cd /tmp/phantom-demo && clear"
 Enter
-Type "cd /tmp/phantom-demo"
-Enter
-Sleep 300ms
+Sleep 500ms
 Show
 
 # ── Initialize ─────────────────────────────────────────────────
-Sleep 500ms
+Sleep 400ms
 Type "phantom up"
-Sleep 500ms
+Sleep 400ms
 Enter
 Sleep 1500ms
 
-# ── Dispatch two agents ────────────────────────────────────────
-Type@50ms `phantom dispatch --agent agent-a --task "add user registration"`
+# ── Dispatch two Claude agents ─────────────────────────────────
+Type@45ms `phantom dispatch --agent claude-a --task "add user registration"`
 Sleep 300ms
 Enter
 Sleep 1500ms
 
-Type@50ms `phantom dispatch --agent agent-b --task "add rate limiting"`
+Type@45ms `phantom dispatch --agent claude-b --task "add rate limiting"`
 Sleep 300ms
 Enter
 Sleep 1500ms
@@ -48,51 +46,45 @@ Sleep 300ms
 Enter
 Sleep 2500ms
 
-# ── Simulate agent work (hidden) ───────────────────────────────
+# ── Agents do their work (write overlay files silently) ────────
 Hide
-Type@0 `mkdir -p .phantom/overlays/agent-a/upper/src`
+Type "bash /tmp/phantom-demo-agent-a.sh && bash /tmp/phantom-demo-agent-b.sh && clear"
 Enter
-Sleep 100ms
-Type@0 `printf 'pub fn handle_login(user: &str) -> bool { !user.is_empty() }\n\npub fn handle_register(user: &str, email: &str) -> String {\n    format!("Registered {user} with {email}")\n}\n' > .phantom/overlays/agent-a/upper/src/handlers.rs`
-Enter
-Sleep 100ms
-Type@0 `mkdir -p .phantom/overlays/agent-b/upper/src`
-Enter
-Sleep 100ms
-Type@0 `printf 'pub fn greet(name: &str) -> String { format!("Hello, {name}!") }\n\npub fn rate_limit(ip: &str, max_requests: u32) -> bool {\n    max_requests > 0 && !ip.is_empty()\n}\n' > .phantom/overlays/agent-b/upper/src/lib.rs`
-Enter
-Sleep 200ms
+Sleep 500ms
 Show
 
-# ── Submit + materialize Agent A ───────────────────────────────
-Type "phantom submit --agent agent-a"
+# ── Submit + materialize claude-a ──────────────────────────────
+Sleep 300ms
+Type "phantom submit --agent claude-a"
 Sleep 300ms
 Enter
 Sleep 1500ms
 
-# Materialize — capture changeset ID dynamically
+# Capture changeset ID silently, then type the materialize command
 Hide
-Type@0 `CS_A=$(phantom log --agent agent-a --limit 1 2>/dev/null | grep -oP 'cs-\S+' | head -1)`
+Type `CS=$(phantom log --agent claude-a --limit 10 2>/dev/null | grep -oP 'cs-\S+' | head -1) && clear`
 Enter
-Sleep 300ms
+Sleep 500ms
 Show
-Type@30ms "phantom materialize --changeset $CS_A"
+Sleep 200ms
+Type@35ms "phantom materialize --changeset $CS"
 Sleep 300ms
 Enter
 Sleep 2000ms
 
-# ── Submit + materialize Agent B (semantic merge!) ─────────────
-Type "phantom submit --agent agent-b"
+# ── Submit + materialize claude-b (auto-merge!) ────────────────
+Type "phantom submit --agent claude-b"
 Sleep 300ms
 Enter
 Sleep 1500ms
 
 Hide
-Type@0 `CS_B=$(phantom log --agent agent-b --limit 1 2>/dev/null | grep -oP 'cs-\S+' | head -1)`
+Type `CS=$(phantom log --agent claude-b --limit 10 2>/dev/null | grep -oP 'cs-\S+' | head -1) && clear`
 Enter
-Sleep 300ms
+Sleep 500ms
 Show
-Type@30ms "phantom materialize --changeset $CS_B"
+Sleep 200ms
+Type@35ms "phantom materialize --changeset $CS"
 Sleep 300ms
 Enter
 Sleep 2000ms
