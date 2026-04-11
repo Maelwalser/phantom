@@ -51,8 +51,8 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
         }
         Some(commit_oid) => {
             // Actually revert the git commit
-            let git = GitOps::open(&ctx.repo_root)
-                .context("failed to open git repo for rollback")?;
+            let git =
+                GitOps::open(&ctx.repo_root).context("failed to open git repo for rollback")?;
 
             let message = format!("phantom: rollback {}", args.changeset);
             match git.revert_commit_oid(&commit_oid, &message) {
@@ -63,9 +63,7 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     eprintln!("Warning: git revert failed: {e}");
-                    eprintln!(
-                        "The rolled-back changes may have been modified by later commits."
-                    );
+                    eprintln!("The rolled-back changes may have been modified by later commits.");
                     eprintln!("Manual resolution with `git revert` may be needed.");
                 }
             }

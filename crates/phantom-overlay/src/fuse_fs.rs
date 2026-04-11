@@ -13,8 +13,9 @@ mod inner {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use fuser::{
-        FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-        ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request,
+        BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
+        INodeNo, LockOwner, OpenFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+        ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, WriteFlags,
     };
     use phantom_core::AgentId;
     use tracing::{debug, warn};
@@ -115,7 +116,7 @@ mod inner {
         let ctime = mtime; // Unix ctime ≈ mtime for our purposes.
 
         FileAttr {
-            ino,
+            ino: INodeNo(ino),
             size: meta.len(),
             blocks: meta.len().div_ceil(512),
             atime,
@@ -137,7 +138,7 @@ mod inner {
     fn default_dir_attr(ino: u64) -> FileAttr {
         let now = SystemTime::now();
         FileAttr {
-            ino,
+            ino: INodeNo(ino),
             size: 0,
             blocks: 0,
             atime: now,
@@ -156,9 +157,9 @@ mod inner {
     }
 
     impl Filesystem for PhantomFs {
-        fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-            let Some(parent_path) = self.inodes.get_path(parent) else {
-                reply.error(libc::ENOENT);
+        fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+            let Some(parent_path) = self.inodes.get_path(parent.0) else {
+                reply.error(Errno::ENOENT);
                 return;
             };
 
@@ -169,47 +170,47 @@ mod inner {
                 Ok(meta) => {
                     let ino = self.inodes.get_or_create_inode(&child_path);
                     let attr = metadata_to_attr(ino, &meta);
-                    reply.entry(&TTL, &attr, 0);
+                    reply.entry(&TTL, &attr, Generation(0));
                 }
                 Err(_) => {
-                    reply.error(libc::ENOENT);
+                    reply.error(Errno::ENOENT);
                 }
             }
         }
 
-        fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
-            let Some(path) = self.inodes.get_path(ino) else {
-                reply.error(libc::ENOENT);
+        fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+            let Some(path) = self.inodes.get_path(ino.0) else {
+                reply.error(Errno::ENOENT);
                 return;
             };
 
             // Root directory special case.
-            if ino == 1 {
+            if ino.0 == 1 {
                 let layer = self.layer.lock().unwrap();
                 match layer.getattr(&path) {
-                    Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino, &meta)),
-                    Err(_) => reply.attr(&TTL, &default_dir_attr(ino)),
+                    Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
+                    Err(_) => reply.attr(&TTL, &default_dir_attr(ino.0)),
                 }
                 return;
             }
 
             let layer = self.layer.lock().unwrap();
             match layer.getattr(&path) {
-                Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino, &meta)),
-                Err(_) => reply.error(libc::ENOENT),
+                Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
+                Err(_) => reply.error(Errno::ENOENT),
             }
         }
 
         fn readdir(
-            &mut self,
+            &self,
             _req: &Request,
-            ino: u64,
-            _fh: u64,
-            offset: i64,
+            ino: INodeNo,
+            _fh: FileHandle,
+            offset: u64,
             mut reply: ReplyDirectory,
         ) {
-            let Some(path) = self.inodes.get_path(ino) else {
-                reply.error(libc::ENOENT);
+            let Some(path) = self.inodes.get_path(ino.0) else {
+                reply.error(Errno::ENOENT);
                 return;
             };
 
@@ -217,13 +218,13 @@ mod inner {
             let entries = match layer.read_dir(&path) {
                 Ok(e) => e,
                 Err(_) => {
-                    reply.error(libc::ENOENT);
+                    reply.error(Errno::ENOENT);
                     return;
                 }
             };
 
             // Resolve parent inode for ".." entry.
-            let parent_ino = if ino == 1 {
+            let parent_ino = if ino.0 == 1 {
                 1 // root's parent is itself
             } else {
                 // Derive parent path and look up its inode.
@@ -234,7 +235,7 @@ mod inner {
 
             // Synthetic "." and ".." entries.
             let mut all_entries: Vec<(u64, FileType, String)> = vec![
-                (ino, FileType::Directory, ".".to_string()),
+                (ino.0, FileType::Directory, ".".to_string()),
                 (parent_ino, FileType::Directory, "..".to_string()),
             ];
 
@@ -250,34 +251,34 @@ mod inner {
             }
 
             for (i, (child_ino, ft, name)) in all_entries.iter().enumerate().skip(offset as usize) {
-                if reply.add(*child_ino, (i + 1) as i64, *ft, name) {
+                if reply.add(INodeNo(*child_ino), (i + 1) as u64, *ft, name) {
                     break;
                 }
             }
             reply.ok();
         }
 
-        fn open(&mut self, _req: &Request, ino: u64, _flags: i32, reply: ReplyOpen) {
-            if self.inodes.get_path(ino).is_some() {
-                reply.opened(0, 0);
+        fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+            if self.inodes.get_path(ino.0).is_some() {
+                reply.opened(FileHandle(0), FopenFlags::empty());
             } else {
-                reply.error(libc::ENOENT);
+                reply.error(Errno::ENOENT);
             }
         }
 
         fn read(
-            &mut self,
+            &self,
             _req: &Request,
-            ino: u64,
-            _fh: u64,
-            offset: i64,
+            ino: INodeNo,
+            _fh: FileHandle,
+            offset: u64,
             size: u32,
-            _flags: i32,
-            _lock_owner: Option<u64>,
+            _flags: OpenFlags,
+            _lock_owner: Option<LockOwner>,
             reply: ReplyData,
         ) {
-            let Some(path) = self.inodes.get_path(ino) else {
-                reply.error(libc::ENOENT);
+            let Some(path) = self.inodes.get_path(ino.0) else {
+                reply.error(Errno::ENOENT);
                 return;
             };
 
@@ -292,24 +293,24 @@ mod inner {
                         reply.data(&data[start..end]);
                     }
                 }
-                Err(_) => reply.error(libc::ENOENT),
+                Err(_) => reply.error(Errno::ENOENT),
             }
         }
 
         fn write(
-            &mut self,
+            &self,
             _req: &Request,
-            ino: u64,
-            _fh: u64,
-            offset: i64,
+            ino: INodeNo,
+            _fh: FileHandle,
+            offset: u64,
             data: &[u8],
-            _write_flags: u32,
-            _flags: i32,
-            _lock_owner: Option<u64>,
+            _write_flags: WriteFlags,
+            _flags: OpenFlags,
+            _lock_owner: Option<LockOwner>,
             reply: ReplyWrite,
         ) {
-            let Some(path) = self.inodes.get_path(ino) else {
-                reply.error(libc::ENOENT);
+            let Some(path) = self.inodes.get_path(ino.0) else {
+                reply.error(Errno::ENOENT);
                 return;
             };
 
@@ -336,23 +337,23 @@ mod inner {
                 }
                 Err(e) => {
                     warn!(error = %e, "write failed");
-                    reply.error(libc::EIO);
+                    reply.error(Errno::EIO);
                 }
             }
         }
 
         fn create(
-            &mut self,
+            &self,
             _req: &Request,
-            parent: u64,
+            parent: INodeNo,
             name: &OsStr,
             _mode: u32,
             _umask: u32,
             _flags: i32,
             reply: ReplyCreate,
         ) {
-            let Some(parent_path) = self.inodes.get_path(parent) else {
-                reply.error(libc::ENOENT);
+            let Some(parent_path) = self.inodes.get_path(parent.0) else {
+                reply.error(Errno::ENOENT);
                 return;
             };
 
@@ -365,7 +366,7 @@ mod inner {
                     let ino = self.inodes.get_or_create_inode(&child_path);
                     let now = SystemTime::now();
                     let attr = FileAttr {
-                        ino,
+                        ino: INodeNo(ino),
                         size: 0,
                         blocks: 0,
                         atime: now,
@@ -381,18 +382,24 @@ mod inner {
                         blksize: 4096,
                         flags: 0,
                     };
-                    reply.created(&TTL, &attr, 0, 0, 0);
+                    reply.created(
+                        &TTL,
+                        &attr,
+                        Generation(0),
+                        FileHandle(0),
+                        FopenFlags::empty(),
+                    );
                 }
                 Err(e) => {
                     warn!(error = %e, "create failed");
-                    reply.error(libc::EIO);
+                    reply.error(Errno::EIO);
                 }
             }
         }
 
-        fn unlink(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-            let Some(parent_path) = self.inodes.get_path(parent) else {
-                reply.error(libc::ENOENT);
+        fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+            let Some(parent_path) = self.inodes.get_path(parent.0) else {
+                reply.error(Errno::ENOENT);
                 return;
             };
 
@@ -407,15 +414,15 @@ mod inner {
                 }
                 Err(e) => {
                     warn!(error = %e, "unlink failed");
-                    reply.error(libc::EIO);
+                    reply.error(Errno::EIO);
                 }
             }
         }
 
         fn setattr(
-            &mut self,
+            &self,
             _req: &Request,
-            ino: u64,
+            ino: INodeNo,
             _mode: Option<u32>,
             _uid: Option<u32>,
             _gid: Option<u32>,
@@ -423,15 +430,15 @@ mod inner {
             _atime: Option<fuser::TimeOrNow>,
             _mtime: Option<fuser::TimeOrNow>,
             _ctime: Option<SystemTime>,
-            _fh: Option<u64>,
+            _fh: Option<FileHandle>,
             _crtime: Option<SystemTime>,
             _chgtime: Option<SystemTime>,
             _bkuptime: Option<SystemTime>,
-            _flags: Option<u32>,
+            _flags: Option<BsdFileFlags>,
             reply: ReplyAttr,
         ) {
-            let Some(path) = self.inodes.get_path(ino) else {
-                reply.error(libc::ENOENT);
+            let Some(path) = self.inodes.get_path(ino.0) else {
+                reply.error(Errno::ENOENT);
                 return;
             };
 
@@ -442,7 +449,7 @@ mod inner {
                 content.resize(new_size as usize, 0);
                 if let Err(e) = layer.write_file(&path, &content) {
                     warn!(error = %e, "setattr truncate failed");
-                    reply.error(libc::EIO);
+                    reply.error(Errno::EIO);
                     return;
                 }
                 layer.remove_whiteout(&path);
@@ -450,22 +457,22 @@ mod inner {
 
             let layer = self.layer.lock().unwrap();
             match layer.getattr(&path) {
-                Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino, &meta)),
-                Err(_) => reply.error(libc::ENOENT),
+                Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
+                Err(_) => reply.error(Errno::ENOENT),
             }
         }
 
         fn mkdir(
-            &mut self,
+            &self,
             _req: &Request,
-            parent: u64,
+            parent: INodeNo,
             name: &OsStr,
             _mode: u32,
             _umask: u32,
             reply: ReplyEntry,
         ) {
-            let Some(parent_path) = self.inodes.get_path(parent) else {
-                reply.error(libc::ENOENT);
+            let Some(parent_path) = self.inodes.get_path(parent.0) else {
+                reply.error(Errno::ENOENT);
                 return;
             };
 
@@ -478,19 +485,19 @@ mod inner {
                     // Clear whiteout if this dir was previously deleted.
                     layer.remove_whiteout(&child_path);
                     let ino = self.inodes.get_or_create_inode(&child_path);
-                    reply.entry(&TTL, &default_dir_attr(ino), 0);
+                    reply.entry(&TTL, &default_dir_attr(ino), Generation(0));
                     debug!(path = %child_path.display(), "mkdir");
                 }
                 Err(e) => {
                     warn!(error = %e, "mkdir failed");
-                    reply.error(libc::EIO);
+                    reply.error(Errno::EIO);
                 }
             }
         }
 
-        fn rmdir(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-            let Some(parent_path) = self.inodes.get_path(parent) else {
-                reply.error(libc::ENOENT);
+        fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+            let Some(parent_path) = self.inodes.get_path(parent.0) else {
+                reply.error(Errno::ENOENT);
                 return;
             };
 
@@ -509,15 +516,15 @@ mod inner {
                         reply.ok();
                     }
                     Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) => {
-                        reply.error(libc::ENOTEMPTY);
+                        reply.error(Errno::ENOTEMPTY);
                     }
                     Err(e) => {
                         warn!(error = %e, "rmdir failed");
-                        reply.error(libc::EIO);
+                        reply.error(Errno::EIO);
                     }
                 }
             } else {
-                reply.error(libc::ENOENT);
+                reply.error(Errno::ENOENT);
             }
         }
     }

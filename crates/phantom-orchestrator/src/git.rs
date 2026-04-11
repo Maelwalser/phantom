@@ -209,14 +209,13 @@ impl GitOps {
         let tree = self.repo.find_tree(tree_oid)?;
         let sig = git2::Signature::now("phantom", "phantom@rollback")?;
 
-        let new_oid =
-            self.repo
-                .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&our_commit])?;
+        let new_oid = self
+            .repo
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&our_commit])?;
 
         // Update working directory to match
-        self.repo.checkout_head(Some(
-            git2::build::CheckoutBuilder::new().force(),
-        ))?;
+        self.repo
+            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
 
         info!(reverted = %commit_oid, new_commit = %new_oid, "reverted commit");
         Ok(oid_to_git_oid(new_oid))

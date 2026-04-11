@@ -10,6 +10,9 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
 
+permissions:
+  contents: read
+
 jobs:
   fmt:
     name: Formatting
@@ -63,7 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -81,13 +84,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.85
       - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-msrv
-        run: cargo install cargo-msrv
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
-      - run: cargo msrv --workspace verify
+      - run: cargo check --workspace
 
   coverage:
     name: Code Coverage
@@ -105,7 +106,7 @@ jobs:
       - name: Generate coverage
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: lcov.info
           fail_ci_if_error: false
