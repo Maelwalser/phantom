@@ -35,9 +35,10 @@ impl Projection {
                 .or_insert_with(|| new_changeset(&event.changeset_id, &event.agent_id));
 
             match &event.kind {
-                EventKind::OverlayCreated { base_commit } => {
+                EventKind::OverlayCreated { base_commit, task } => {
                     cs.status = ChangesetStatus::InProgress;
                     cs.base_commit = *base_commit;
+                    cs.task = task.clone();
                     cs.created_at = event.timestamp;
                 }
                 EventKind::ChangesetSubmitted { operations } => {
@@ -95,6 +96,12 @@ impl Projection {
                         cs.files_touched.push(path.clone());
                     }
                 }
+                EventKind::InteractiveSessionStarted { .. } => {
+                    cs.interactive_session_active = true;
+                }
+                EventKind::InteractiveSessionEnded { .. } => {
+                    cs.interactive_session_active = false;
+                }
                 // Other event kinds don't affect changeset state.
                 _ => {}
             }
@@ -148,5 +155,6 @@ fn new_changeset(id: &ChangesetId, agent_id: &AgentId) -> Changeset {
         test_result: None,
         created_at: chrono::Utc::now(),
         status: ChangesetStatus::InProgress,
+        interactive_session_active: false,
     }
 }

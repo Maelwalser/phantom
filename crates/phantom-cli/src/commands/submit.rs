@@ -4,7 +4,7 @@ use anyhow::Context;
 use chrono::Utc;
 use phantom_core::changeset::SemanticOperation;
 use phantom_core::event::{Event, EventKind};
-use phantom_core::id::{AgentId, EventId};
+use phantom_core::id::{AgentId, ChangesetId, EventId};
 use phantom_core::traits::{EventStore, SemanticAnalyzer};
 
 use crate::context::PhantomContext;
@@ -18,32 +18,50 @@ pub struct SubmitArgs {
 
 pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::load()?;
-
     let agent_id = AgentId(args.agent.clone());
 
+    match submit_agent(&ctx, &agent_id)? {
+        Some(changeset_id) => {
+            println!("Changeset {changeset_id} submitted.");
+        }
+        None => {
+            println!("No modified files found for agent '{}'.", args.agent);
+        }
+    }
+
+    Ok(())
+}
+
+/// Submit an agent's overlay work as a changeset.
+///
+/// Returns `Some(changeset_id)` if changes were found and submitted,
+/// or `None` if the overlay has no modifications.
+pub fn submit_agent(
+    ctx: &PhantomContext,
+    agent_id: &AgentId,
+) -> anyhow::Result<Option<ChangesetId>> {
     let layer = ctx
         .overlays
-        .get_layer(&agent_id)
+        .get_layer(agent_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let modified = layer.modified_files().map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if modified.is_empty() {
-        println!("No modified files found for agent '{}'.", args.agent);
-        return Ok(());
+        return Ok(None);
     }
 
     // Find the changeset ID and base commit for this agent from events
     let events = ctx
         .events
-        .query_by_agent(&agent_id)
+        .query_by_agent(agent_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let (changeset_id, base_commit) = events
         .iter()
         .rev()
         .find_map(|e| {
-            if let EventKind::OverlayCreated { base_commit } = &e.kind {
+            if let EventKind::OverlayCreated { base_commit, .. } = &e.kind {
                 Some((e.changeset_id.clone(), *base_commit))
             } else {
                 None
@@ -53,7 +71,7 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
 
     let upper_dir = ctx
         .overlays
-        .upper_dir(&agent_id)
+        .upper_dir(agent_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let mut all_ops: Vec<SemanticOperation> = Vec::new();
@@ -127,7 +145,7 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
         id: EventId(0),
         timestamp: Utc::now(),
         changeset_id: changeset_id.clone(),
-        agent_id,
+        agent_id: agent_id.clone(),
         kind: EventKind::ChangesetSubmitted {
             operations: all_ops,
         },
@@ -137,11 +155,12 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!(
-        "Changeset {changeset_id} submitted: {additions} additions, {modifications} modifications, {deletions} deletions"
+        "  {additions} additions, {modifications} modifications, {deletions} deletions across {} file(s)",
+        modified.len()
     );
-    println!("  Files: {}", modified.len());
     for f in &modified {
         println!("    {}", f.display());
     }
-    Ok(())
+
+    Ok(Some(changeset_id))
 }

@@ -90,7 +90,7 @@ fn parse_duration_ago(s: &str) -> anyhow::Result<chrono::DateTime<Utc>> {
 fn format_event_kind(kind: &phantom_core::EventKind) -> String {
     use phantom_core::EventKind;
     match kind {
-        EventKind::OverlayCreated { base_commit } => {
+        EventKind::OverlayCreated { base_commit, .. } => {
             format!(
                 "OverlayCreated {{ base: {} }}",
                 short_hex(&base_commit.to_hex())
@@ -145,6 +145,18 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
                 "TestsRun {{ passed: {}, failed: {}, skipped: {} }}",
                 result.passed, result.failed, result.skipped
             )
+        }
+        EventKind::InteractiveSessionStarted { command, pid } => {
+            format!("InteractiveSessionStarted {{ {command}, pid: {pid} }}")
+        }
+        EventKind::InteractiveSessionEnded {
+            exit_code,
+            duration_secs,
+        } => {
+            let code = exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into());
+            format!("InteractiveSessionEnded {{ exit: {code}, {duration_secs}s }}")
         }
     }
 }

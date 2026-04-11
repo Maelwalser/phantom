@@ -19,78 +19,15 @@ pub struct MaterializeArgs {
 
 pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::load()?;
-
     let changeset_id = ChangesetId(args.changeset.clone());
 
-    let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    let projection = Projection::from_events(&all_events);
-
-    let changeset = projection
-        .changeset(&changeset_id)
-        .with_context(|| format!("changeset '{}' not found", args.changeset))?
-        .clone();
-
-    let upper_dir = ctx
-        .overlays
-        .upper_dir(&changeset.agent_id)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .to_path_buf();
-
-    let materializer = Materializer::new(
-        phantom_orchestrator::git::GitOps::open(&ctx.repo_root)
-            .context("failed to open git repo for materialization")?,
-    );
-
-    let result = materializer
-        .materialize(&changeset, &upper_dir, &ctx.events, &ctx.semantic)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let result = materialize_changeset(&ctx, &changeset_id)?;
 
     match result {
         MaterializeResult::Success { new_commit } => {
             let short = new_commit.to_hex();
             let short = &short[..12.min(short.len())];
             println!("Materialized {} → commit {short}", args.changeset);
-
-            // Run ripple check
-            let head = materializer
-                .git()
-                .head_oid()
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-            if let Ok(changed_files) = materializer
-                .git()
-                .changed_files(&changeset.base_commit, &head)
-            {
-                let active: Vec<(AgentId, Vec<std::path::PathBuf>)> = projection
-                    .active_agents()
-                    .into_iter()
-                    .filter(|a| *a != changeset.agent_id)
-                    .filter_map(|a| {
-                        // Look up this agent's own active changeset to get their touched files.
-                        let agent_cs = all_events
-                            .iter()
-                            .filter(|e| e.agent_id == a)
-                            .find_map(|e| match &e.kind {
-                                EventKind::OverlayCreated { .. } => Some(e.changeset_id.clone()),
-                                _ => None,
-                            });
-                        agent_cs.and_then(|cs_id| {
-                            projection
-                                .changeset(&cs_id)
-                                .map(|cs| (a.clone(), cs.files_touched.clone()))
-                        })
-                    })
-                    .collect();
-
-                let affected = RippleChecker::check_ripple(&changed_files, &active);
-                if !affected.is_empty() {
-                    println!("Ripple: the following agents may be affected:");
-                    for (agent, files) in &affected {
-                        println!("  {agent}: {} file(s)", files.len());
-                    }
-                }
-            }
         }
         MaterializeResult::Conflict { details } => {
             eprintln!(
@@ -111,4 +48,77 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Materialize a changeset to trunk.
+///
+/// Runs the semantic merge, commits to git, and checks for ripple effects on
+/// other active agents. Returns the [`MaterializeResult`].
+pub fn materialize_changeset(
+    ctx: &PhantomContext,
+    changeset_id: &ChangesetId,
+) -> anyhow::Result<MaterializeResult> {
+    let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let projection = Projection::from_events(&all_events);
+
+    let changeset = projection
+        .changeset(changeset_id)
+        .with_context(|| format!("changeset '{changeset_id}' not found"))?
+        .clone();
+
+    let upper_dir = ctx
+        .overlays
+        .upper_dir(&changeset.agent_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .to_path_buf();
+
+    let materializer = Materializer::new(
+        phantom_orchestrator::git::GitOps::open(&ctx.repo_root)
+            .context("failed to open git repo for materialization")?,
+    );
+
+    let result = materializer
+        .materialize(&changeset, &upper_dir, &ctx.events, &ctx.semantic)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Run ripple check on success
+    if let MaterializeResult::Success { .. } = &result {
+        if let Ok(head) = materializer.git().head_oid() {
+            if let Ok(changed_files) =
+                materializer.git().changed_files(&changeset.base_commit, &head)
+            {
+                let active: Vec<(AgentId, Vec<std::path::PathBuf>)> = projection
+                    .active_agents()
+                    .into_iter()
+                    .filter(|a| *a != changeset.agent_id)
+                    .filter_map(|a| {
+                        let agent_cs = all_events
+                            .iter()
+                            .filter(|e| e.agent_id == a)
+                            .find_map(|e| match &e.kind {
+                                EventKind::OverlayCreated { .. } => {
+                                    Some(e.changeset_id.clone())
+                                }
+                                _ => None,
+                            });
+                        agent_cs.and_then(|cs_id| {
+                            projection
+                                .changeset(&cs_id)
+                                .map(|cs| (a.clone(), cs.files_touched.clone()))
+                        })
+                    })
+                    .collect();
+
+                let affected = RippleChecker::check_ripple(&changed_files, &active);
+                if !affected.is_empty() {
+                    println!("Ripple: the following agents may be affected:");
+                    for (agent, files) in &affected {
+                        println!("  {agent}: {} file(s)", files.len());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(result)
 }

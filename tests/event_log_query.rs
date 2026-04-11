@@ -90,6 +90,7 @@ fn test_event_log_queries() {
             "agent-a",
             EventKind::OverlayCreated {
                 base_commit: GitOid::zero(),
+                task: String::new(),
             },
             base_time - Duration::seconds(10),
         ))

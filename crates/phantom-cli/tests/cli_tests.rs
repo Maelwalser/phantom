@@ -98,7 +98,7 @@ fn phantom_up_fails_if_already_initialized() {
 }
 
 #[test]
-fn phantom_dispatch_and_status() {
+fn phantom_dispatch_background_and_status() {
     let dir = init_git_repo();
     phantom(dir.path()).arg("up").assert().success();
 
@@ -107,13 +107,15 @@ fn phantom_dispatch_and_status() {
             "dispatch",
             "--agent",
             "agent-a",
+            "--background",
             "--task",
             "add rate limiting",
         ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Agent 'agent-a' dispatched"))
-        .stdout(predicate::str::contains("cs-0001"));
+        .stdout(predicate::str::contains("cs-0001"))
+        .stdout(predicate::str::contains("add rate limiting"));
 
     phantom(dir.path())
         .arg("status")
@@ -121,6 +123,27 @@ fn phantom_dispatch_and_status() {
         .success()
         .stdout(predicate::str::contains("Trunk HEAD:"))
         .stdout(predicate::str::contains("Total events:"));
+}
+
+#[test]
+fn phantom_dispatch_interactive_with_echo() {
+    let dir = init_git_repo();
+    phantom(dir.path()).arg("up").assert().success();
+
+    // Use `echo` as a stand-in for claude — it exits immediately
+    phantom(dir.path())
+        .args([
+            "dispatch",
+            "--agent",
+            "agent-b",
+            "--command",
+            "echo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Agent 'agent-b' dispatched"))
+        .stdout(predicate::str::contains("Interactive session ended"))
+        .stdout(predicate::str::contains("No changes detected"));
 }
 
 #[test]
@@ -140,9 +163,16 @@ fn full_workflow_smoke_test() {
     // 1. Initialize
     phantom(dir.path()).arg("up").assert().success();
 
-    // 2. Dispatch
+    // 2. Dispatch in background mode
     phantom(dir.path())
-        .args(["dispatch", "--agent", "agent-a", "--task", "add feature X"])
+        .args([
+            "dispatch",
+            "--agent",
+            "agent-a",
+            "--background",
+            "--task",
+            "add feature X",
+        ])
         .assert()
         .success();
 
@@ -179,4 +209,55 @@ fn full_workflow_smoke_test() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Total events:"));
+}
+
+#[test]
+fn phantom_dispatch_background_conflicts_with_auto_submit() {
+    let dir = init_git_repo();
+    phantom(dir.path()).arg("up").assert().success();
+
+    phantom(dir.path())
+        .args([
+            "dispatch",
+            "--agent",
+            "agent-a",
+            "--background",
+            "--task",
+            "test",
+            "--auto-submit",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn phantom_dispatch_background_requires_task() {
+    let dir = init_git_repo();
+    phantom(dir.path()).arg("up").assert().success();
+
+    // --background without --task should fail
+    phantom(dir.path())
+        .args(["dispatch", "--agent", "agent-a", "--background"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn phantom_dispatch_interactive_auto_submit_with_no_changes() {
+    let dir = init_git_repo();
+    phantom(dir.path()).arg("up").assert().success();
+
+    // echo exits immediately with no changes — auto-submit should report "no changes"
+    phantom(dir.path())
+        .args([
+            "dispatch",
+            "--agent",
+            "agent-c",
+            "--command",
+            "echo",
+            "--auto-submit",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No changes detected"));
 }

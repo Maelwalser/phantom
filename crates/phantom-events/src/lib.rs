@@ -188,6 +188,7 @@ mod tests {
                     "agent-a",
                     EventKind::OverlayCreated {
                         base_commit: GitOid::zero(),
+                        task: String::new(),
                     },
                     *ts,
                 ))
@@ -217,6 +218,7 @@ mod tests {
                 "agent-a",
                 EventKind::OverlayCreated {
                     base_commit: GitOid::zero(),
+                    task: String::new(),
                 },
                 now,
             ))
@@ -228,6 +230,7 @@ mod tests {
                 "agent-a",
                 EventKind::OverlayCreated {
                     base_commit: GitOid::zero(),
+                    task: String::new(),
                 },
                 now,
             ))
@@ -239,6 +242,7 @@ mod tests {
                 "agent-b",
                 EventKind::OverlayCreated {
                     base_commit: GitOid::zero(),
+                    task: String::new(),
                 },
                 now,
             ))
@@ -272,6 +276,7 @@ mod tests {
                 agent,
                 EventKind::OverlayCreated {
                     base_commit: GitOid::zero(),
+                    task: String::new(),
                 },
                 now,
             ),
@@ -345,6 +350,7 @@ mod tests {
                     "agent-a",
                     EventKind::OverlayCreated {
                         base_commit: GitOid::zero(),
+                        task: String::new(),
                     },
                     now,
                 ))

@@ -1,4 +1,8 @@
-//! `phantom dispatch` — assign a task to a new agent overlay.
+//! `phantom dispatch` — create an agent overlay and launch a Claude Code session.
+//!
+//! By default, dispatching opens an interactive Claude Code CLI inside the
+//! overlay. Use `--background` to create the overlay without launching a
+//! session (for scripted / headless agents).
 
 use anyhow::Context;
 use chrono::Utc;
@@ -13,9 +17,21 @@ pub struct DispatchArgs {
     /// Agent identifier (e.g. "agent-a")
     #[arg(long)]
     pub agent: String,
-    /// Task description
+    /// Task description for the agent (required for --background)
     #[arg(long)]
-    pub task: String,
+    pub task: Option<String>,
+    /// Create the overlay without launching a CLI session (for scripted agents)
+    #[arg(long, short = 'b', requires = "task")]
+    pub background: bool,
+    /// Automatically submit the changeset when the interactive session exits
+    #[arg(long, conflicts_with = "background")]
+    pub auto_submit: bool,
+    /// Automatically materialize after submitting (implies --auto-submit)
+    #[arg(long, conflicts_with = "background")]
+    pub auto_materialize: bool,
+    /// Custom command to run instead of `claude` (e.g. for testing)
+    #[arg(long, conflicts_with = "background")]
+    pub command: Option<String>,
 }
 
 pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
@@ -38,20 +54,53 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
         timestamp: Utc::now(),
         changeset_id: changeset_id.clone(),
         agent_id: agent_id.clone(),
-        kind: EventKind::OverlayCreated { base_commit: head },
+        kind: EventKind::OverlayCreated {
+            base_commit: head,
+            task: args.task.clone().unwrap_or_default(),
+        },
     };
     ctx.events
         .append(event)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    println!("Agent '{}' dispatched.", args.agent);
-    println!("  Changeset: {changeset_id}");
-    println!("  Task:      {}", args.task);
-    println!("  Overlay:   {}", mount_point.display());
-    println!(
-        "  Base:      {}",
-        head.to_hex().chars().take(12).collect::<String>()
-    );
+    let base_short = head.to_hex().chars().take(12).collect::<String>();
+
+    if args.background {
+        let task = args.task.as_deref().unwrap_or("");
+
+        // Write context file so the background agent knows its task
+        let upper_dir = ctx
+            .overlays
+            .upper_dir(&agent_id)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        super::interactive::write_context_file(
+            upper_dir,
+            &agent_id,
+            &changeset_id,
+            &head,
+            Some(task),
+        )?;
+
+        println!("Agent '{}' dispatched (background).", args.agent);
+        println!("  Changeset: {changeset_id}");
+        println!("  Task:      {task}");
+        println!("  Overlay:   {}", mount_point.display());
+        println!("  Base:      {base_short}");
+    } else {
+        println!("Agent '{}' dispatched.", args.agent);
+        println!("  Changeset: {changeset_id}");
+        println!("  Overlay:   {}", mount_point.display());
+        println!("  Base:      {base_short}");
+        println!();
+        super::interactive::run_interactive_session(
+            &ctx,
+            &agent_id,
+            &changeset_id,
+            &head,
+            &args,
+        )?;
+    }
+
     Ok(())
 }
 

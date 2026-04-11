@@ -30,6 +30,9 @@ pub enum EventKind {
     OverlayCreated {
         /// The trunk commit the overlay is based on.
         base_commit: GitOid,
+        /// Task description for the agent (empty for interactive sessions).
+        #[serde(default)]
+        task: String,
     },
     /// An agent overlay was destroyed.
     OverlayDestroyed,
@@ -86,6 +89,20 @@ pub enum EventKind {
     },
     /// Test results were recorded.
     TestsRun(TestResult),
+    /// An interactive CLI session was started inside the overlay.
+    InteractiveSessionStarted {
+        /// The command that was launched (e.g. "claude").
+        command: String,
+        /// PID of the spawned process (for stale session detection).
+        pid: u32,
+    },
+    /// An interactive CLI session ended.
+    InteractiveSessionEnded {
+        /// Process exit code (`None` if killed by signal).
+        exit_code: Option<i32>,
+        /// Duration of the session in seconds.
+        duration_secs: u64,
+    },
 }
 
 /// An immutable record of something that happened in Phantom.
@@ -115,6 +132,7 @@ mod tests {
             agent_id: AgentId("agent-a".into()),
             kind: EventKind::OverlayCreated {
                 base_commit: GitOid::zero(),
+                task: String::new(),
             },
         }
     }
@@ -152,6 +170,7 @@ mod tests {
         let kinds = vec![
             EventKind::OverlayCreated {
                 base_commit: GitOid::zero(),
+                task: String::new(),
             },
             EventKind::OverlayDestroyed,
             EventKind::FileWritten {
@@ -187,6 +206,14 @@ mod tests {
                 failed: 0,
                 skipped: 1,
             }),
+            EventKind::InteractiveSessionStarted {
+                command: "claude".into(),
+                pid: 12345,
+            },
+            EventKind::InteractiveSessionEnded {
+                exit_code: Some(0),
+                duration_secs: 300,
+            },
         ];
 
         for kind in &kinds {
