@@ -9,90 +9,67 @@ Require phantom
 Set Shell "bash"
 Set FontSize 15
 Set Width 960
-Set Height 540
+Set Height 600
 Set Theme "Catppuccin Mocha"
 Set Padding 16
 Set Framerate 24
+Set TypingSpeed 80ms
 Set CursorBlink false
+Env RUST_LOG "off"
 
-# Hidden env setup — use Sleep to let terminal settle before Show
+# cd into demo repo — only hidden line
 Hide
-Type "export RUST_LOG=off && cd /tmp/phantom-demo && clear"
+Type "cd /tmp/phantom-demo"
 Enter
 Sleep 500ms
 Show
 
-# ── Initialize ─────────────────────────────────────────────────
-Sleep 400ms
+# ── Initialize phantom ─────────────────────────────────────────
+Sleep 600ms
 Type "phantom up"
-Sleep 400ms
+Sleep 500ms
 Enter
-Sleep 1500ms
+Sleep 2000ms
 
-# ── Dispatch two Claude agents ─────────────────────────────────
-Type@45ms `phantom dispatch --agent claude-a --task "add user registration"`
-Sleep 300ms
+# ── Dispatch two Claude agents in parallel ─────────────────────
+Type@65ms `phantom dispatch --agent claude-a --task "add user registration"`
+Sleep 500ms
 Enter
-Sleep 1500ms
+Sleep 2200ms
 
-Type@45ms `phantom dispatch --agent claude-b --task "add rate limiting"`
-Sleep 300ms
+Type@65ms `phantom dispatch --agent claude-b --task "add rate limiting"`
+Sleep 500ms
 Enter
-Sleep 1500ms
+Sleep 2200ms
 
-# ── Status check ───────────────────────────────────────────────
+# ── Check system status ────────────────────────────────────────
 Type "phantom status"
-Sleep 300ms
+Sleep 500ms
+Enter
+Sleep 3000ms
+
+# ── Agents write code to their overlays ────────────────────────
+Type@65ms "bash /tmp/phantom-demo-work.sh"
+Sleep 500ms
+Enter
+Sleep 2000ms
+
+# ── Submit and materialize claude-a to trunk ───────────────────
+Type@65ms "bash /tmp/phantom-demo-land.sh claude-a"
+Sleep 500ms
 Enter
 Sleep 2500ms
 
-# ── Agents do their work (write overlay files silently) ────────
-Hide
-Type "bash /tmp/phantom-demo-agent-a.sh && bash /tmp/phantom-demo-agent-b.sh && clear"
-Enter
+# ── Submit and materialize claude-b — auto-merges! ─────────────
+Type@65ms "bash /tmp/phantom-demo-land.sh claude-b"
 Sleep 500ms
-Show
+Enter
+Sleep 2500ms
 
-# ── Submit + materialize claude-a ──────────────────────────────
-Sleep 300ms
-Type "phantom submit --agent claude-a"
-Sleep 300ms
-Enter
-Sleep 1500ms
-
-# Capture changeset ID silently, then type the materialize command
-Hide
-Type `CS=$(phantom log --agent claude-a --limit 10 2>/dev/null | grep -oP 'cs-\S+' | head -1) && clear`
-Enter
-Sleep 500ms
-Show
-Sleep 200ms
-Type@35ms "phantom materialize --changeset $CS"
-Sleep 300ms
-Enter
-Sleep 2000ms
-
-# ── Submit + materialize claude-b (auto-merge!) ────────────────
-Type "phantom submit --agent claude-b"
-Sleep 300ms
-Enter
-Sleep 1500ms
-
-Hide
-Type `CS=$(phantom log --agent claude-b --limit 10 2>/dev/null | grep -oP 'cs-\S+' | head -1) && clear`
-Enter
-Sleep 500ms
-Show
-Sleep 200ms
-Type@35ms "phantom materialize --changeset $CS"
-Sleep 300ms
-Enter
-Sleep 2000ms
-
-# ── Event log ──────────────────────────────────────────────────
+# ── Query the full audit trail ─────────────────────────────────
 Type "phantom log"
-Sleep 300ms
+Sleep 500ms
 Enter
-Sleep 3500ms
+Sleep 4000ms
 
-Sleep 1500ms
+Sleep 2000ms
