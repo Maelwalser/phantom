@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use phantom_core::conflict::{ConflictDetail, ConflictKind};
 use phantom_core::id::{ChangesetId, GitOid};
 use phantom_core::traits::MergeResult;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::error::OrchestratorError;
 
@@ -169,6 +169,56 @@ impl GitOps {
             .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
 
         debug!(commit = %new_oid, "created commit");
+        Ok(oid_to_git_oid(new_oid))
+    }
+
+    /// Revert a specific commit by creating a new commit that undoes its
+    /// changes.
+    ///
+    /// This is the inverse of cherry-pick: it computes what the tree would look
+    /// like if the given commit had never been applied, then commits that tree
+    /// on top of the current HEAD. Subsequent commits are preserved.
+    ///
+    /// Returns the OID of the newly created revert commit, or an error if the
+    /// revert produces conflicts (e.g. the changes were modified by a later
+    /// commit).
+    pub fn revert_commit_oid(
+        &self,
+        commit_oid: &GitOid,
+        message: &str,
+    ) -> Result<GitOid, OrchestratorError> {
+        let git_oid = git_oid_to_oid(commit_oid)?;
+        let revert_commit = self.repo.find_commit(git_oid)?;
+
+        let head_oid_val = self.head_oid()?;
+        let head_git_oid = git_oid_to_oid(&head_oid_val)?;
+        let our_commit = self.repo.find_commit(head_git_oid)?;
+
+        // mainline = 0 for non-merge commits
+        let mut index = self
+            .repo
+            .revert_commit(&revert_commit, &our_commit, 0, None)?;
+
+        if index.has_conflicts() {
+            return Err(OrchestratorError::MaterializationFailed(
+                "revert produced conflicts — the rolled-back changes were modified by a later commit".into(),
+            ));
+        }
+
+        let tree_oid = index.write_tree_to(&self.repo)?;
+        let tree = self.repo.find_tree(tree_oid)?;
+        let sig = git2::Signature::now("phantom", "phantom@rollback")?;
+
+        let new_oid =
+            self.repo
+                .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&our_commit])?;
+
+        // Update working directory to match
+        self.repo.checkout_head(Some(
+            git2::build::CheckoutBuilder::new().force(),
+        ))?;
+
+        info!(reverted = %commit_oid, new_commit = %new_oid, "reverted commit");
         Ok(oid_to_git_oid(new_oid))
     }
 
