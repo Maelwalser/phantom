@@ -812,6 +812,9 @@ dependencies = [
  "fuser",
  "libc",
  "phantom-core",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
 ]
