@@ -27,7 +27,7 @@ const CONTEXT_FILE: &str = ".phantom-task.md";
 /// Blocks until the spawned process exits, then optionally auto-submits and
 /// auto-materializes the changeset.
 pub fn run_interactive_session(
-    ctx: &PhantomContext,
+    ctx: &mut PhantomContext,
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
     base_commit: &GitOid,
@@ -185,7 +185,7 @@ fn cleanup_context_file(upper_dir: &Path) {
 
 /// Handle post-session submit and materialize automation.
 fn post_session_flow(
-    ctx: &PhantomContext,
+    ctx: &mut PhantomContext,
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
     auto_submit: bool,

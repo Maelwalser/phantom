@@ -27,7 +27,7 @@ pub struct MaterializeArgs {
 }
 
 pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
-    let ctx = PhantomContext::load()?;
+    let mut ctx = PhantomContext::load()?;
 
     // Resolve the target changeset: either directly by ID or via agent lookup.
     let changeset_id = if let Some(cs) = &args.changeset {
@@ -50,7 +50,7 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
         cs.id.clone()
     };
 
-    let result = materialize_changeset(&ctx, &changeset_id)?;
+    let result = materialize_changeset(&mut ctx, &changeset_id)?;
 
     match result {
         MaterializeResult::Success { new_commit } => {
@@ -84,7 +84,7 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
 /// Runs the semantic merge, commits to git, and checks for ripple effects on
 /// other active agents. Returns the [`MaterializeResult`].
 pub fn materialize_changeset(
-    ctx: &PhantomContext,
+    ctx: &mut PhantomContext,
     changeset_id: &ChangesetId,
 ) -> anyhow::Result<MaterializeResult> {
     let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -109,6 +109,16 @@ pub fn materialize_changeset(
     let result = materializer
         .materialize(&changeset, &upper_dir, &ctx.events, &ctx.semantic)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Clear the agent's upper layer so reads fall through to the updated trunk.
+    if let MaterializeResult::Success { .. } = &result {
+        if let Err(e) = ctx.overlays.clear_overlay(&changeset.agent_id) {
+            eprintln!(
+                "warning: failed to clear upper layer for {}: {e}",
+                changeset.agent_id
+            );
+        }
+    }
 
     // Run ripple check on success
     if let MaterializeResult::Success { .. } = &result {

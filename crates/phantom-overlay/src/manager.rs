@@ -137,6 +137,15 @@ impl OverlayManager {
             .map(|h| &mut h.layer)
             .ok_or_else(|| OverlayError::NotFound(agent_id.clone()))
     }
+
+    /// Clear the upper layer for an agent after successful materialization.
+    ///
+    /// Removes all files from the agent's upper directory so reads fall through
+    /// to the now-updated trunk.
+    pub fn clear_overlay(&mut self, agent_id: &AgentId) -> Result<(), OverlayError> {
+        let layer = self.get_layer_mut(agent_id)?;
+        layer.clear_upper()
+    }
 }
 
 #[cfg(test)]

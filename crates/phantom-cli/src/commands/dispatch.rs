@@ -93,7 +93,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
         println!("  Base:      {base_short}");
         println!();
         super::interactive::run_interactive_session(
-            &ctx,
+            &mut ctx,
             &agent_id,
             &changeset_id,
             &head,

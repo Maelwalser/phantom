@@ -272,6 +272,29 @@ impl OverlayLayer {
     pub fn lower_dir(&self) -> &Path {
         &self.lower
     }
+
+    /// Clear all files from the upper layer and reset whiteouts.
+    ///
+    /// After a successful materialization, the agent's changes live in trunk.
+    /// Clearing the upper layer ensures subsequent reads fall through to the
+    /// now-updated trunk instead of returning stale overlay copies.
+    pub fn clear_upper(&mut self) -> Result<(), OverlayError> {
+        // Remove every entry in the upper directory except the directory itself.
+        for entry in fs::read_dir(&self.upper)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                fs::remove_dir_all(&path)?;
+            } else {
+                fs::remove_file(&path)?;
+            }
+        }
+
+        self.whiteouts.clear();
+
+        debug!(upper = %self.upper.display(), "upper layer cleared after materialization");
+        Ok(())
+    }
 }
 
 /// Load whiteouts from the persisted JSON file in the upper directory.
@@ -438,5 +461,33 @@ mod tests {
         let layer2 = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         assert!(!layer2.exists(Path::new("persist.txt")));
         assert!(layer2.read_file(Path::new("persist.txt")).is_err());
+    }
+
+    #[test]
+    fn clear_upper_removes_files_and_whiteouts() {
+        let (lower, upper) = setup();
+        fs::write(lower.path().join("trunk.txt"), b"from trunk").unwrap();
+
+        let mut layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        // Write some files and create a whiteout.
+        layer.write_file(Path::new("agent.txt"), b"agent work").unwrap();
+        layer.write_file(Path::new("sub/nested.txt"), b"deep").unwrap();
+        layer.delete_file(Path::new("trunk.txt")).unwrap();
+
+        assert!(layer.exists(Path::new("agent.txt")));
+        assert!(!layer.exists(Path::new("trunk.txt")));
+
+        // Clear the upper layer.
+        layer.clear_upper().unwrap();
+
+        // Agent files gone — upper is empty.
+        assert!(layer.modified_files().unwrap().is_empty());
+        // Trunk file visible again (whiteout cleared).
+        assert!(layer.exists(Path::new("trunk.txt")));
+        let data = layer.read_file(Path::new("trunk.txt")).unwrap();
+        assert_eq!(data, b"from trunk");
+        // Agent-only file is gone.
+        assert!(!layer.exists(Path::new("agent.txt")));
     }
 }
