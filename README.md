@@ -1,4 +1,9 @@
-# Phantom
+```
+.----. .-. .-.  .--.  .-. .-. .---.  .----. .-.   .-.
+| {}  }| {_} | / {} \ |  `| |{_   _}/  {}  \|  `.'  |
+| .--' | { } |/  /\  \| |\  |  | |  \      /| |\ /| |
+`-'    `-' `-'`-'  `-'`-' `-'  `-'   `----' `-' ` `-'
+```
 
 **Event-sourced semantic version control for parallel AI agents**
 
@@ -212,46 +217,82 @@ phantom destroy --agent agent-a
 
 ## How It Works
 
+Phantom sits between your AI agents and the Git repository. Each agent works in an isolated overlay — it sees the latest trunk but writes to its own private layer. When an agent finishes, Phantom analyzes the changes at the AST level and merges them into trunk automatically.
+
 ```
-                         +-----------+
-                         |  phantom  |  CLI
-                         |  up/dispatch/materialize/...
-                         +-----+-----+
-                               |
-                    +----------+-----------+
-                    |     Orchestrator     |
-                    |  scheduling, ripple, |
-                    |  materialization     |
-                    +----------+-----------+
-                               |
-                    +----------+-----------+
-                    |   Semantic Index     |
-                    |  tree-sitter AST map |
-                    |  of trunk symbols    |
-                    +--+------+------+--+--+
-                       |      |      |
-               +-------+  +--+--+  +-+------+
-               |Agent A|  |  B  |  |   C    |  Isolated overlays
-               |Overlay|  |     |  |        |  (copy-on-write)
-               +-------+  +-----+  +--------+
-                       |      |      |
-                    +--+------+------+--+
-                    |       Trunk       |  Single source of truth
-                    |   (git repository)|  
-                    +-------------------+
-                    |    Event Log      |  Append-only (SQLite WAL)
-                    +-------------------+
+  You run:                        phantom dispatch --agent claude-a
+                                  phantom dispatch --agent claude-b
+                                          │
+                                          ▼
+                              ┌───────────────────────┐
+                              │     Orchestrator      │
+                              │  dispatch · schedule  │
+                              │  materialize · ripple │
+                              └───────────┬───────────┘
+                                          │
+                    ┌─────────────────────┼─────────────────────┐
+                    │                     │                     │
+                    ▼                     ▼                     ▼
+           ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+           │   claude-a   │     │   claude-b   │     │   claude-c   │
+           │              │     │              │     │              │
+           │  upper: writes     │  upper: writes     │  upper: writes
+           │  lower: trunk│     │  lower: trunk│     │  lower: trunk│
+           └──────┬───────┘     └──────┬───────┘     └──────┬───────┘
+                  │  Copy-on-write     │  FUSE overlays     │
+                  │  isolation         │                     │
+                  ▼                    ▼                     ▼
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                                                                 │
+  │   Semantic Index               Trunk (git main)                 │
+  │   ┌─────────────────┐         ┌────────────────────────────┐    │
+  │   │ fn handle_login │ ◄────── │  src/handlers.rs           │    │
+  │   │ fn greet        │         │  src/lib.rs                │    │
+  │   │ fn main         │         │  main.rs                   │    │
+  │   │ ...             │         │  ...                       │    │
+  │   └─────────────────┘         └────────────────────────────┘    │
+  │   tree-sitter AST map         single source of truth            │
+  │   of every symbol                                               │
+  └─────────────────────────────────────────────────────────────────┘
+                  │
+                  ▼
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  Event Log (SQLite, append-only)                                │
+  │                                                                 │
+  │  [15:22:44] cs-0001 claude-a  OverlayCreated { base: d4aa76f }  │
+  │  [15:22:58] cs-0001 claude-a  ChangesetSubmitted { 1 op(s) }   │
+  │  [15:22:58] cs-0001 claude-a  Materialized { commit: aef74e7 }  │
+  │  [15:22:58] cs-0002 claude-b  ChangesetSubmitted { 1 op(s) }   │
+  │  [15:22:58] cs-0002 claude-b  Materialized { commit: 2e3015f }  │
+  └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Four architectural ideas
+### The merge problem Phantom solves
 
-1. **Changesets** replace branches. A changeset is the atomic unit of work — it contains semantic operations (not just a diff), is reorderable, and can be materialized to trunk independently.
+```
+  Git sees this:                    Phantom sees this:
 
-2. **FUSE overlays** provide per-agent filesystem isolation. Each agent sees trunk through a read-only lower layer and writes to a copy-on-write upper layer. When trunk advances, the lower layer pointer updates instantly — no rebase needed.
+  handlers.rs                       handlers.rs
+  <<<<<<< claude-a                  ┌──────────────────────────┐
+  + fn handle_register()            │ fn handle_login()  [unchanged]
+  =======                           │ fn handle_register() [claude-a added]
+  + fn handle_admin()               │ fn handle_admin()    [claude-b added]
+  >>>>>>> claude-b                  └──────────────────────────┘
+                                    → Different symbols. Auto-merge.
+  CONFLICT — manual fix needed
+```
 
-3. **Semantic merging** resolves conflicts at the symbol level. Phantom parses code with tree-sitter, extracts symbols (functions, structs, imports), and compares them by identity (name + kind + scope). Two agents adding different functions to the same file is not a conflict.
+### How it flows
 
-4. **Event sourcing** records every action as an immutable event. This enables surgical rollback (remove one changeset without reverting everything after it), replay ("what would the codebase look like without changeset X?"), and full audit trails.
+1. **Dispatch** — `phantom dispatch --agent claude-a --task "..."` creates a FUSE overlay. The agent sees the repo normally but writes go to a private upper layer.
+
+2. **Work** — The agent (Claude, Cursor, Codex, etc.) writes code. It reads trunk files through the overlay's lower layer and writes changes to the upper layer. Other agents can't see or interfere with its work.
+
+3. **Submit** — `phantom submit --agent claude-a` parses the modified files with tree-sitter, extracts what changed at the symbol level (functions added, structs modified, imports changed), and records a changeset in the event log.
+
+4. **Materialize** — `phantom materialize --changeset cs-0001` runs a three-way semantic merge against trunk. If the symbols an agent touched are disjoint from what changed on trunk, it auto-merges. If the same symbol was modified by two agents, it reports a conflict.
+
+5. **Ripple** — After materialization, Phantom checks which other running agents might be affected by the trunk change and notifies them. Their overlays automatically see the new trunk on the next read.
 
 ### Conflict resolution
 
