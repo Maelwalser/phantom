@@ -1,3 +1,9 @@
+[package]
+name = "phantom-integration-tests"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
 [workspace]
 resolver = "3"
 members = [
@@ -12,6 +18,16 @@ members = [
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
+
+[dev-dependencies]
+phantom-core = { path = "crates/phantom-core" }
+phantom-events = { path = "crates/phantom-events" }
+phantom-overlay = { path = "crates/phantom-overlay" }
+phantom-semantic = { path = "crates/phantom-semantic" }
+phantom-orchestrator = { path = "crates/phantom-orchestrator" }
+chrono = { workspace = true }
+tempfile = { workspace = true }
+git2 = { workspace = true }
 
 [workspace.dependencies]
 phantom-core = { path = "crates/phantom-core" }

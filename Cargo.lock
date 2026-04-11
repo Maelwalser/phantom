@@ -802,6 +802,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "phantom-integration-tests"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "git2",
+ "phantom-core",
+ "phantom-events",
+ "phantom-orchestrator",
+ "phantom-overlay",
+ "phantom-semantic",
+ "tempfile",
+]
+
+[[package]]
 name = "phantom-orchestrator"
 version = "0.1.0"
 dependencies = [
