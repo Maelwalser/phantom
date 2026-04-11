@@ -1,0 +1,22 @@
+[package]
+name = "phantom-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The `phantom` command-line interface"
+
+[[bin]]
+name = "phantom"
+path = "src/main.rs"
+
+[dependencies]
+phantom-core = { workspace = true }
+phantom-events = { workspace = true }
+phantom-overlay = { workspace = true }
+phantom-semantic = { workspace = true }
+phantom-orchestrator = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "phantom-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Core types, traits, and error handling for Phantom"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+blake3 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
