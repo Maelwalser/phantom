@@ -11,6 +11,7 @@ use phantom_events::SqliteEventStore;
 use phantom_orchestrator::git::GitOps;
 use phantom_overlay::OverlayManager;
 use phantom_semantic::SemanticMerger;
+use tracing::warn;
 
 /// Everything a command needs to interact with a Phantom-managed repository.
 #[allow(dead_code)]
@@ -83,8 +84,10 @@ fn restore_overlays(
         if upper_dir.is_dir() {
             let agent_id = phantom_core::AgentId(agent_name.to_string());
             // Only register if not already tracked
-            if overlays.upper_dir(&agent_id).is_err() {
-                let _ = overlays.create_overlay(agent_id, repo_root);
+            if overlays.upper_dir(&agent_id).is_err()
+                && let Err(e) = overlays.create_overlay(agent_id.clone(), repo_root)
+            {
+                warn!(%agent_id, error = %e, "failed to restore overlay");
             }
         }
     }

@@ -55,7 +55,10 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Generate a changeset ID based on the current event count.
+/// Generate a unique changeset ID.
+///
+/// Uses a monotonic counter from the event store combined with a timestamp
+/// suffix to avoid collisions from concurrent dispatch calls.
 fn generate_changeset_id(ctx: &PhantomContext) -> anyhow::Result<ChangesetId> {
     let events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -64,5 +67,13 @@ fn generate_changeset_id(ctx: &PhantomContext) -> anyhow::Result<ChangesetId> {
         .filter(|e| matches!(e.kind, EventKind::OverlayCreated { .. }))
         .count();
 
-    Ok(ChangesetId(format!("cs-{:04}", overlay_count + 1)))
+    // Append timestamp micros to avoid race condition when two dispatches
+    // read the same count concurrently.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros()
+        % 1_000_000;
+
+    Ok(ChangesetId(format!("cs-{:04}-{ts:06}", overlay_count + 1)))
 }

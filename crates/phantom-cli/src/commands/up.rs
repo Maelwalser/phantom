@@ -10,7 +10,8 @@ use phantom_events::SqliteEventStore;
 pub async fn run() -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("failed to determine current directory")?;
 
-    if !cwd.join(".git").exists() {
+    // Use git2::Repository::discover to handle worktrees (.git file) and bare repos.
+    if git2::Repository::discover(&cwd).is_err() {
         bail!("not a git repository: no .git/ found in {}", cwd.display());
     }
 

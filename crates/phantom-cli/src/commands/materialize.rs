@@ -1,6 +1,7 @@
 //! `phantom materialize` — commit a changeset to trunk.
 
 use anyhow::Context;
+use phantom_core::event::EventKind;
 use phantom_core::id::{AgentId, ChangesetId};
 use phantom_core::traits::EventStore;
 use phantom_events::Projection;
@@ -65,12 +66,20 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
                     .active_agents()
                     .into_iter()
                     .filter(|a| *a != changeset.agent_id)
-                    .map(|a| {
-                        let files = projection
-                            .changeset(&changeset_id)
-                            .map(|cs| cs.files_touched.clone())
-                            .unwrap_or_default();
-                        (a, files)
+                    .filter_map(|a| {
+                        // Look up this agent's own active changeset to get their touched files.
+                        let agent_cs = all_events
+                            .iter()
+                            .filter(|e| e.agent_id == a)
+                            .find_map(|e| match &e.kind {
+                                EventKind::OverlayCreated { .. } => Some(e.changeset_id.clone()),
+                                _ => None,
+                            });
+                        agent_cs.and_then(|cs_id| {
+                            projection
+                                .changeset(&cs_id)
+                                .map(|cs| (a.clone(), cs.files_touched.clone()))
+                        })
                     })
                     .collect();
 

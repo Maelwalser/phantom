@@ -35,7 +35,12 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
                 None
             }
         })
-        .unwrap_or_else(|| phantom_core::id::ChangesetId(format!("unknown-{}", args.agent)));
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no overlay found for agent '{}' — was it dispatched?",
+                args.agent
+            )
+        })?;
 
     ctx.overlays
         .destroy_overlay(&agent_id)
