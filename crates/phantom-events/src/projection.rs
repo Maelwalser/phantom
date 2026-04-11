@@ -43,6 +43,35 @@ impl Projection {
                 EventKind::ChangesetSubmitted { operations } => {
                     cs.status = ChangesetStatus::Submitted;
                     cs.operations = operations.clone();
+                    // Extract touched file paths from semantic operations so that
+                    // the materializer knows which files to merge.
+                    for op in operations {
+                        let path = match op {
+                            phantom_core::changeset::SemanticOperation::AddSymbol {
+                                file, ..
+                            }
+                            | phantom_core::changeset::SemanticOperation::ModifySymbol {
+                                file, ..
+                            }
+                            | phantom_core::changeset::SemanticOperation::DeleteSymbol {
+                                file, ..
+                            } => Some(file.clone()),
+                            phantom_core::changeset::SemanticOperation::AddFile { path } => {
+                                Some(path.clone())
+                            }
+                            phantom_core::changeset::SemanticOperation::DeleteFile { path } => {
+                                Some(path.clone())
+                            }
+                            phantom_core::changeset::SemanticOperation::RawDiff { path, .. } => {
+                                Some(path.clone())
+                            }
+                        };
+                        if let Some(p) = path {
+                            if !cs.files_touched.contains(&p) {
+                                cs.files_touched.push(p);
+                            }
+                        }
+                    }
                 }
                 EventKind::ChangesetMaterialized { .. } => {
                     cs.status = ChangesetStatus::Materialized;
