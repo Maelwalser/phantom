@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use phantom_core::changeset::Changeset;
 use phantom_core::conflict::ConflictDetail;
@@ -116,7 +116,6 @@ impl Materializer {
 
         self.append_materialized_event(changeset, &new_commit, event_store)?;
 
-        info!(changeset = %changeset.id, commit = %new_commit, "materialized (direct)");
         Ok(MaterializeResult::Success { new_commit })
     }
 
@@ -256,7 +255,6 @@ impl Materializer {
 
         self.append_materialized_event(changeset, &new_commit, ctx.event_store)?;
 
-        info!(changeset = %changeset.id, commit = %new_commit, "materialized (merged)");
         Ok(MaterializeResult::Success { new_commit })
     }
 

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use phantom_core::conflict::{ConflictDetail, ConflictKind};
 use phantom_core::id::{ChangesetId, GitOid};
+use phantom_core::is_binary_or_non_utf8;
 use phantom_core::traits::MergeResult;
 use tracing::{debug, info};
 
@@ -294,11 +295,28 @@ fn three_way_merge(
     ours: &[u8],
     theirs: &[u8],
 ) -> Result<MergeResult, OrchestratorError> {
-    let base_s = String::from_utf8_lossy(base);
-    let ours_s = String::from_utf8_lossy(ours);
-    let theirs_s = String::from_utf8_lossy(theirs);
+    // Reject binary or non-UTF-8 content to prevent silent data corruption.
+    if is_binary_or_non_utf8(base)
+        || is_binary_or_non_utf8(ours)
+        || is_binary_or_non_utf8(theirs)
+    {
+        let detail = ConflictDetail {
+            kind: ConflictKind::BinaryFile,
+            file: PathBuf::from("<text-merge>"),
+            symbol_id: None,
+            ours_changeset: ChangesetId("unknown".into()),
+            theirs_changeset: ChangesetId("unknown".into()),
+            description: "file is binary or not valid UTF-8; cannot text-merge".into(),
+        };
+        return Ok(MergeResult::Conflict(vec![detail]));
+    }
 
-    let result = diffy::merge(&base_s, &ours_s, &theirs_s);
+    // Safe: all three buffers validated as UTF-8 above.
+    let base_s = std::str::from_utf8(base).unwrap();
+    let ours_s = std::str::from_utf8(ours).unwrap();
+    let theirs_s = std::str::from_utf8(theirs).unwrap();
+
+    let result = diffy::merge(base_s, ours_s, theirs_s);
     match result {
         Ok(merged) => Ok(MergeResult::Clean(merged.into_bytes())),
         Err(conflict_text) => {
@@ -573,5 +591,37 @@ mod tests {
         let recovered = git_oid_to_oid(&phantom_oid).unwrap();
 
         assert_eq!(original, recovered);
+    }
+
+    #[test]
+    fn test_text_merge_rejects_binary() {
+        let (_dir, ops) = init_repo_with_commit(&[("a.bin", b"init")], "init");
+        let base = b"some text\n";
+        let ours = b"some\x00binary\n";
+        let theirs = b"other text\n";
+
+        let result = ops.text_merge(base, ours, theirs).unwrap();
+        match result {
+            MergeResult::Conflict(conflicts) => {
+                assert_eq!(conflicts[0].kind, ConflictKind::BinaryFile);
+            }
+            MergeResult::Clean(_) => panic!("expected BinaryFile conflict"),
+        }
+    }
+
+    #[test]
+    fn test_text_merge_rejects_non_utf8() {
+        let (_dir, ops) = init_repo_with_commit(&[("a.txt", b"init")], "init");
+        let base = b"hello\n";
+        let ours = b"hello\n";
+        let theirs = b"\xff\xfe\n";
+
+        let result = ops.text_merge(base, ours, theirs).unwrap();
+        match result {
+            MergeResult::Conflict(conflicts) => {
+                assert_eq!(conflicts[0].kind, ConflictKind::BinaryFile);
+            }
+            MergeResult::Clean(_) => panic!("expected BinaryFile conflict"),
+        }
     }
 }

@@ -21,6 +21,8 @@ pub enum ConflictKind {
     BothModifiedDependencyVersion,
     /// Fallback: the semantic layer could not classify the conflict.
     RawTextConflict,
+    /// The file is binary or not valid UTF-8; text merge would corrupt data.
+    BinaryFile,
 }
 
 /// Detailed description of a single conflict between two changesets.
@@ -62,6 +64,7 @@ mod tests {
             ConflictKind::ModifyDeleteSymbol,
             ConflictKind::BothModifiedDependencyVersion,
             ConflictKind::RawTextConflict,
+            ConflictKind::BinaryFile,
         ] {
             let json = serde_json::to_string(&kind).unwrap();
             let back: ConflictKind = serde_json::from_str(&json).unwrap();
