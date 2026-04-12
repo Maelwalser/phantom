@@ -13,6 +13,7 @@ pub mod conflict;
 pub mod error;
 pub mod event;
 pub mod id;
+pub mod notification;
 pub mod symbol;
 pub mod traits;
 
@@ -23,4 +24,5 @@ pub use error::CoreError;
 pub use event::{Event, EventKind, MergeCheckResult};
 pub use id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, SymbolId};
 pub use symbol::{SymbolEntry, SymbolKind};
+pub use notification::{TrunkFileStatus, TrunkNotification};
 pub use traits::{EventStore, MergeResult, SemanticAnalyzer, SymbolIndex};

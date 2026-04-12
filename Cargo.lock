@@ -915,6 +915,7 @@ dependencies = [
  "phantom-core",
  "phantom-events",
  "phantom-semantic",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

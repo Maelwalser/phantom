@@ -5,9 +5,10 @@
 //! Those agents can then be notified to re-read affected files.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use phantom_core::id::AgentId;
+use phantom_core::id::{AgentId, GitOid};
+use phantom_core::notification::{TrunkFileStatus, TrunkNotification};
 
 /// Checks which active agents are affected by trunk changes.
 #[derive(Debug)]
@@ -49,6 +50,68 @@ impl RippleChecker {
         }
 
         affected
+    }
+}
+
+/// Classify each changed file as [`TrunkVisible`] or [`Shadowed`] for an agent.
+///
+/// A file is `Shadowed` if it exists in the agent's upper directory (the agent
+/// still sees its old copy). Otherwise it is `TrunkVisible` (reads fall through
+/// to the updated trunk).
+#[must_use]
+pub fn classify_trunk_changes(
+    changed_files: &[PathBuf],
+    upper_dir: &Path,
+) -> Vec<(PathBuf, TrunkFileStatus)> {
+    changed_files
+        .iter()
+        .map(|f| {
+            let status = if upper_dir.join(f).exists() {
+                TrunkFileStatus::Shadowed
+            } else {
+                TrunkFileStatus::TrunkVisible
+            };
+            (f.clone(), status)
+        })
+        .collect()
+}
+
+/// Write a trunk notification file for an agent.
+///
+/// The file is written to `.phantom/overlays/<agent>/trunk-updated.json`.
+pub fn write_trunk_notification(
+    phantom_dir: &Path,
+    agent_id: &AgentId,
+    notification: &TrunkNotification,
+) -> std::io::Result<()> {
+    let path = phantom_dir
+        .join("overlays")
+        .join(&agent_id.0)
+        .join("trunk-updated.json");
+    let json = serde_json::to_string_pretty(notification)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(path, json)
+}
+
+/// Remove a stale trunk notification file if it exists.
+pub fn remove_trunk_notification(phantom_dir: &Path, agent_id: &AgentId) {
+    let path = phantom_dir
+        .join("overlays")
+        .join(&agent_id.0)
+        .join("trunk-updated.json");
+    let _ = std::fs::remove_file(path);
+}
+
+/// Build a [`TrunkNotification`] for an agent from classified file changes.
+#[must_use]
+pub fn build_notification(
+    new_commit: GitOid,
+    files: Vec<(PathBuf, TrunkFileStatus)>,
+) -> TrunkNotification {
+    TrunkNotification {
+        new_commit,
+        timestamp: chrono::Utc::now(),
+        files,
     }
 }
 
@@ -139,5 +202,37 @@ mod tests {
         let agents = vec![agent("agent-a", &["src/api.rs"])];
         let result = RippleChecker::check_ripple(&[], &agents);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn classify_shadowed_when_file_in_upper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let upper = tmp.path();
+        // Create a file in the upper directory to simulate agent modification.
+        std::fs::create_dir_all(upper.join("src")).unwrap();
+        std::fs::write(upper.join("src/db.rs"), "modified").unwrap();
+
+        let changed = vec![PathBuf::from("src/db.rs"), PathBuf::from("src/api.rs")];
+        let classified = classify_trunk_changes(&changed, upper);
+
+        assert_eq!(classified.len(), 2);
+        assert_eq!(
+            classified[0],
+            (PathBuf::from("src/db.rs"), TrunkFileStatus::Shadowed)
+        );
+        assert_eq!(
+            classified[1],
+            (PathBuf::from("src/api.rs"), TrunkFileStatus::TrunkVisible)
+        );
+    }
+
+    #[test]
+    fn classify_all_visible_when_upper_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let changed = vec![PathBuf::from("src/main.rs")];
+        let classified = classify_trunk_changes(&changed, tmp.path());
+
+        assert_eq!(classified.len(), 1);
+        assert_eq!(classified[0].1, TrunkFileStatus::TrunkVisible);
     }
 }

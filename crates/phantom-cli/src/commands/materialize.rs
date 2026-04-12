@@ -6,7 +6,9 @@ use phantom_core::id::{AgentId, ChangesetId};
 use phantom_core::traits::EventStore;
 use phantom_events::Projection;
 use phantom_orchestrator::materializer::{MaterializeResult, Materializer};
-use phantom_orchestrator::ripple::RippleChecker;
+use phantom_orchestrator::ripple::{
+    self, RippleChecker,
+};
 
 use crate::context::PhantomContext;
 
@@ -139,8 +141,30 @@ pub fn materialize_changeset(
         let affected = RippleChecker::check_ripple(&changed_files, &active);
         if !affected.is_empty() {
             println!("Ripple: the following agents may be affected:");
-            for (agent, files) in &affected {
-                println!("  {agent}: {} file(s)", files.len());
+            for (agent_id, files) in &affected {
+                let upper = ctx.overlays.upper_dir(agent_id).ok().map(|p| p.to_path_buf());
+                let classified = upper
+                    .as_deref()
+                    .map(|u| ripple::classify_trunk_changes(files, u))
+                    .unwrap_or_default();
+
+                let shadowed = classified
+                    .iter()
+                    .filter(|(_, s)| *s == phantom_core::TrunkFileStatus::Shadowed)
+                    .count();
+
+                if upper.is_some() {
+                    let notif = ripple::build_notification(head, classified);
+                    if let Err(e) = ripple::write_trunk_notification(&ctx.phantom_dir, agent_id, &notif) {
+                        eprintln!("warning: failed to write notification for {agent_id}: {e}");
+                    }
+                }
+
+                if shadowed > 0 {
+                    println!("  {agent_id}: {} file(s) ({shadowed} shadowed)", files.len());
+                } else {
+                    println!("  {agent_id}: {} file(s)", files.len());
+                }
             }
         }
     }

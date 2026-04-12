@@ -153,6 +153,10 @@ pub fn submit_agent(
         .append(event)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // Remove stale trunk notification — the agent is submitting, so any prior
+    // notification is no longer relevant.
+    phantom_orchestrator::ripple::remove_trunk_notification(&ctx.phantom_dir, agent_id);
+
     println!(
         "  {additions} additions, {modifications} modifications, {deletions} deletions across {} file(s)",
         modified.len()
