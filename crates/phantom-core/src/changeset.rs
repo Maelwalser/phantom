@@ -115,6 +115,18 @@ pub struct Changeset {
     pub created_at: DateTime<Utc>,
     /// Current lifecycle status.
     pub status: ChangesetStatus,
+    /// PID of the background agent process, if launched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_pid: Option<u32>,
+    /// When the background agent was launched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_launched_at: Option<DateTime<Utc>>,
+    /// When the background agent completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_completed_at: Option<DateTime<Utc>>,
+    /// Exit code of the background agent process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_exit_code: Option<i32>,
 }
 
 #[cfg(test)]
@@ -149,6 +161,10 @@ mod tests {
             }),
             created_at: Utc::now(),
             status: ChangesetStatus::Submitted,
+            agent_pid: None,
+            agent_launched_at: None,
+            agent_completed_at: None,
+            agent_exit_code: None,
         }
     }
 

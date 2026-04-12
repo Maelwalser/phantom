@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use phantom_core::changeset::Changeset;
 use phantom_core::conflict::ConflictDetail;
@@ -230,11 +230,6 @@ impl Materializer {
         }
 
         if !all_conflicts.is_empty() {
-            warn!(
-                changeset = %changeset.id,
-                conflict_count = all_conflicts.len(),
-                "materialization blocked by conflicts"
-            );
             self.append_conflicted_event(changeset, &all_conflicts, ctx.event_store)?;
             return Ok(MaterializeResult::Conflict {
                 details: all_conflicts,
@@ -560,6 +555,10 @@ mod tests {
             test_result: None,
             created_at: Utc::now(),
             status: ChangesetStatus::Submitted,
+            agent_pid: None,
+            agent_launched_at: None,
+            agent_completed_at: None,
+            agent_exit_code: None,
         }
     }
 

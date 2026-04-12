@@ -1,3 +1,4 @@
+pub mod agent_monitor;
 pub mod destroy;
 pub mod dispatch;
 pub mod fuse_mount;

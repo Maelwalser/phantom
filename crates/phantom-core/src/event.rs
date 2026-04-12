@@ -89,6 +89,20 @@ pub enum EventKind {
     },
     /// Test results were recorded.
     TestsRun(TestResult),
+    /// A background agent process was launched.
+    AgentLaunched {
+        /// PID of the background process.
+        pid: u32,
+        /// The task the agent is working on.
+        task: String,
+    },
+    /// A background agent process completed.
+    AgentCompleted {
+        /// Exit code of the process (None if killed by signal).
+        exit_code: Option<i32>,
+        /// Whether auto-materialize succeeded.
+        materialized: bool,
+    },
     /// A live rebase was performed on an agent's overlay after trunk advanced.
     LiveRebased {
         /// The agent's base commit before the rebase.
@@ -209,6 +223,14 @@ mod tests {
                 new_base: GitOid::from_bytes([2; 20]),
                 merged_files: vec![PathBuf::from("src/merged.rs")],
                 conflicted_files: vec![PathBuf::from("src/conflict.rs")],
+            },
+            EventKind::AgentLaunched {
+                pid: 12345,
+                task: "add rate limiting".into(),
+            },
+            EventKind::AgentCompleted {
+                exit_code: Some(0),
+                materialized: true,
             },
         ];
 

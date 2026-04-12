@@ -98,6 +98,14 @@ impl Projection {
                         cs.files_touched.push(path.clone());
                     }
                 }
+                EventKind::AgentLaunched { pid, .. } => {
+                    cs.agent_pid = Some(*pid);
+                    cs.agent_launched_at = Some(event.timestamp);
+                }
+                EventKind::AgentCompleted { exit_code, .. } => {
+                    cs.agent_exit_code = *exit_code;
+                    cs.agent_completed_at = Some(event.timestamp);
+                }
                 // Other event kinds don't affect changeset state.
                 _ => {}
             }
@@ -164,6 +172,10 @@ fn new_changeset(id: &ChangesetId, agent_id: &AgentId) -> Changeset {
         test_result: None,
         created_at: chrono::Utc::now(),
         status: ChangesetStatus::InProgress,
+        agent_pid: None,
+        agent_launched_at: None,
+        agent_completed_at: None,
+        agent_exit_code: None,
     }
 }
 

@@ -44,7 +44,7 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
             .latest_submitted_changeset(&agent_id)
             .with_context(|| format!("no submitted changeset found for agent '{agent_name}'"))?;
 
-        println!("Resolved agent '{agent_name}' → changeset '{}'", cs.id);
+        println!("{agent_name} → changeset {}", cs.id);
         cs.id.clone()
     };
 
@@ -71,23 +71,58 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
         }
         MaterializeResult::Conflict { details } => {
             eprintln!(
-                "Materialization of {} failed with {} conflict(s):",
+                "Materialization of {} failed with {} conflict(s):\n",
                 changeset_id,
                 details.len()
             );
             for detail in &details {
-                eprintln!(
-                    "  [{:?}] {} — {}",
-                    detail.kind,
-                    detail.file.display(),
-                    detail.description
-                );
+                let kind_label = match detail.kind {
+                    phantom_core::ConflictKind::BothModifiedSymbol => "both modified",
+                    phantom_core::ConflictKind::ModifyDeleteSymbol => "modify/delete",
+                    phantom_core::ConflictKind::BothModifiedDependencyVersion => "dependency version",
+                    phantom_core::ConflictKind::RawTextConflict => "text conflict",
+                    phantom_core::ConflictKind::BinaryFile => "binary file",
+                };
+                let location = format_conflict_location(detail);
+                eprintln!("  {} [{kind_label}]", detail.file.display());
+                eprintln!("    {}", detail.description);
+                if !location.is_empty() {
+                    eprintln!("    {location}");
+                }
+                eprintln!();
             }
             std::process::exit(1);
         }
     }
 
     Ok(())
+}
+
+/// Format line-number location info for a conflict detail.
+fn format_conflict_location(detail: &phantom_core::ConflictDetail) -> String {
+    let mut parts = Vec::new();
+    if let Some(span) = &detail.ours_span {
+        if span.start_line == span.end_line {
+            parts.push(format!("ours: line {}", span.start_line));
+        } else {
+            parts.push(format!("ours: lines {}–{}", span.start_line, span.end_line));
+        }
+    }
+    if let Some(span) = &detail.theirs_span {
+        if span.start_line == span.end_line {
+            parts.push(format!("theirs: line {}", span.start_line));
+        } else {
+            parts.push(format!("theirs: lines {}–{}", span.start_line, span.end_line));
+        }
+    }
+    if let Some(span) = &detail.base_span {
+        if span.start_line == span.end_line {
+            parts.push(format!("base: line {}", span.start_line));
+        } else {
+            parts.push(format!("base: lines {}–{}", span.start_line, span.end_line));
+        }
+    }
+    parts.join(", ")
 }
 
 /// Materialize a changeset to trunk.

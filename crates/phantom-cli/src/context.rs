@@ -85,8 +85,9 @@ fn restore_overlays(
 
         let upper_dir = entry.path().join("upper");
         if upper_dir.is_dir() {
-            // Clean up stale FUSE mounts before restoring the overlay.
+            // Clean up stale FUSE mounts and agent processes before restoring.
             cleanup_stale_fuse_mount(&entry.path(), agent_name);
+            cleanup_stale_agent_process(&entry.path(), agent_name);
 
             let agent_id = phantom_core::AgentId(agent_name.to_string());
             // Only register if not already tracked
@@ -135,6 +136,52 @@ fn cleanup_stale_fuse_mount(overlay_dir: &Path, agent_name: &str) {
             .status();
         let _ = std::fs::remove_file(&pid_file);
         warn!(agent = agent_name, pid, "cleaned up stale FUSE mount");
+    }
+}
+
+/// Check if a background agent's PID file exists and whether the process is still alive.
+/// If the process is dead and no `agent.status` was written, write a failed status marker.
+fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
+    let pid_file = overlay_dir.join("agent.pid");
+    if !pid_file.exists() {
+        return;
+    }
+
+    let pid_str = match std::fs::read_to_string(&pid_file) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let pid: i32 = match pid_str.trim().parse() {
+        Ok(p) => p,
+        Err(_) => {
+            let _ = std::fs::remove_file(&pid_file);
+            return;
+        }
+    };
+
+    // SAFETY: kill(pid, 0) checks if a process exists without sending a signal.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+
+    if !alive {
+        let status_file = overlay_dir.join("agent.status");
+        if !status_file.exists() {
+            // Process died without writing a status file — write a failed marker.
+            let status = crate::commands::agent_monitor::AgentStatus {
+                exit_code: None,
+                completed_at: chrono::Utc::now(),
+                materialized: false,
+                error: Some("agent process died unexpectedly (no status written)".into()),
+            };
+            if let Ok(json) = serde_json::to_string_pretty(&status) {
+                let _ = std::fs::write(&status_file, json);
+            }
+            warn!(agent = agent_name, pid, "detected dead agent process without status");
+        }
+        // Clean up PID files.
+        let _ = std::fs::remove_file(&pid_file);
+        let monitor_pid = overlay_dir.join("monitor.pid");
+        let _ = std::fs::remove_file(&monitor_pid);
     }
 }
 

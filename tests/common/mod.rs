@@ -123,6 +123,10 @@ impl TestContext {
             test_result: None,
             created_at: Utc::now(),
             status: ChangesetStatus::Submitted,
+            agent_pid: None,
+            agent_launched_at: None,
+            agent_completed_at: None,
+            agent_exit_code: None,
         }
     }
 

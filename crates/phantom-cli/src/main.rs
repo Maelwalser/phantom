@@ -48,7 +48,7 @@ enum Commands {
     Submit(commands::submit::SubmitArgs),
     /// Show status of overlays and changesets
     #[command(visible_alias = "st")]
-    Status,
+    Status(commands::status::StatusArgs),
     /// Materialize a changeset to trunk
     #[command(visible_alias = "mat")]
     Materialize(commands::materialize::MaterializeArgs),
@@ -65,6 +65,10 @@ enum Commands {
     /// Internal: run FUSE mount daemon (not for direct use)
     #[command(name = "_fuse-mount", hide = true)]
     FuseMount(commands::fuse_mount::FuseMountArgs),
+
+    /// Internal: monitor a background agent process (not for direct use)
+    #[command(name = "_agent-monitor", hide = true)]
+    AgentMonitor(commands::agent_monitor::AgentMonitorArgs),
 }
 
 #[tokio::main]
@@ -84,12 +88,13 @@ async fn main() {
         Some(Commands::Up) => commands::up::run().await,
         Some(Commands::Dispatch(args)) => commands::dispatch::run(args).await,
         Some(Commands::Submit(args)) => commands::submit::run(args).await,
-        Some(Commands::Status) => commands::status::run().await,
+        Some(Commands::Status(args)) => commands::status::run(args).await,
         Some(Commands::Materialize(args)) => commands::materialize::run(args).await,
         Some(Commands::Rollback(args)) => commands::rollback::run(args).await,
         Some(Commands::Log(args)) => commands::log::run(args).await,
         Some(Commands::Destroy(args)) => commands::destroy::run(args).await,
         Some(Commands::FuseMount(args)) => commands::fuse_mount::run(args),
+        Some(Commands::AgentMonitor(args)) => commands::agent_monitor::run(args).await,
     };
 
     if let Err(e) = result {

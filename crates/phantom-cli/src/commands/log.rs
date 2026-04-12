@@ -162,6 +162,18 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
                 conflicted_files.len()
             )
         }
+        EventKind::AgentLaunched { pid, task } => {
+            format!("AgentLaunched {{ pid: {pid}, task: {task:?} }}")
+        }
+        EventKind::AgentCompleted {
+            exit_code,
+            materialized,
+        } => {
+            let code = exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into());
+            format!("AgentCompleted {{ exit: {code}, materialized: {materialized} }}")
+        }
     }
 }
 

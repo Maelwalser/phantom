@@ -80,6 +80,19 @@ pub trait CliAdapter {
         env_vars: &[(&str, &str)],
     ) -> Command;
 
+    /// Build a headless (non-interactive) command for background execution.
+    ///
+    /// Returns `Some(Command)` if the CLI supports headless mode, `None` otherwise.
+    /// For Claude Code this uses `-p` (prompt mode) instead of interactive mode.
+    fn build_headless_command(
+        &self,
+        _work_dir: &Path,
+        _task: &str,
+        _env_vars: &[(&str, &str)],
+    ) -> Option<Command> {
+        None
+    }
+
     /// Scan the trailing output buffer for a session ID.
     ///
     /// Called with the last ~8 KB of terminal output after the process exits.
@@ -123,6 +136,30 @@ impl CliAdapter for ClaudeAdapter {
         }
 
         cmd
+    }
+
+    fn build_headless_command(
+        &self,
+        work_dir: &Path,
+        task: &str,
+        env_vars: &[(&str, &str)],
+    ) -> Option<Command> {
+        let mut cmd = Command::new("claude");
+        cmd.current_dir(work_dir);
+
+        for &(key, val) in env_vars {
+            cmd.env(key, val);
+        }
+
+        // Use -p for non-interactive prompt mode.
+        cmd.args(["-p", task]);
+        cmd.args(["--allowedTools", "Edit", "Write", "Read", "Bash"]);
+
+        if let Some(dir_str) = work_dir.to_str() {
+            cmd.args(["--add-dir", dir_str]);
+        }
+
+        Some(cmd)
     }
 
     fn extract_session_id(&self, output_tail: &str) -> Option<String> {
