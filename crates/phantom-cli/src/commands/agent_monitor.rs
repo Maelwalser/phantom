@@ -1,11 +1,11 @@
-//! `phantom _agent-monitor` — hidden subcommand that monitors a background
-//! agent process and runs post-completion automation (submit + materialize).
+//! `phantom _agent-monitor` — hidden subcommand that spawns and monitors a
+//! background agent process, then runs post-completion automation (submit +
+//! materialize).
 //!
-//! Spawned by `phantom dispatch --background` as a detached process. Waits for
-//! the claude process to exit, then submits the changeset and materializes it.
+//! Spawned by `phantom dispatch --background`. The monitor is the parent of the
+//! claude process so it can `waitpid` to get the real exit code.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Utc;
@@ -15,6 +15,7 @@ use phantom_core::traits::EventStore;
 use phantom_orchestrator::materializer::MaterializeResult;
 use serde::{Deserialize, Serialize};
 
+use crate::cli_adapter;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
@@ -25,9 +26,15 @@ pub struct AgentMonitorArgs {
     /// Changeset ID for this agent's work
     #[arg(long)]
     pub changeset_id: String,
-    /// PID of the claude background process to monitor
+    /// Task description to pass to the claude process
     #[arg(long)]
-    pub claude_pid: u32,
+    pub task: String,
+    /// Working directory for the claude process
+    #[arg(long)]
+    pub work_dir: String,
+    /// Repository root
+    #[arg(long)]
+    pub repo_root: String,
 }
 
 /// Completion status written to `.phantom/overlays/<agent>/agent.status`.
@@ -70,76 +77,114 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         libc::setsid();
     }
 
-    let pid = args.claude_pid as libc::pid_t;
-
-    // Wait for the claude process to exit by polling kill(pid, 0).
-    // We use polling because the claude process is a child of the dispatch
-    // process (not us), so we can't use waitpid directly.
-    let exit_code = wait_for_process(pid);
-
-    // Load context and run post-completion flow.
+    let ctx = PhantomContext::load()?;
     let agent_id = AgentId(args.agent.clone());
     let changeset_id = ChangesetId(args.changeset_id.clone());
+    let work_dir = PathBuf::from(&args.work_dir);
 
+    // Spawn the claude process as our child so we can waitpid for it.
+    let (claude_pid, exit_code) =
+        spawn_and_wait_claude(&ctx, &args.agent, &work_dir, &args.task, &args.repo_root)?;
+
+    // Emit AgentLaunched event now that we have the real PID.
+    let launch_event = Event {
+        id: EventId(0),
+        timestamp: Utc::now(),
+        changeset_id: changeset_id.clone(),
+        agent_id: agent_id.clone(),
+        kind: EventKind::AgentLaunched {
+            pid: claude_pid,
+            task: args.task.clone(),
+        },
+    };
+    ctx.events
+        .append(launch_event)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Run post-completion flow.
     let result = run_post_completion(&agent_id, &changeset_id, exit_code);
 
     // Write status file regardless of success/failure.
-    // Find .phantom dir by walking up from current directory.
-    if let Ok(ctx) = PhantomContext::load() {
-        let status = match &result {
-            Ok(materialized) => AgentStatus {
-                exit_code,
-                completed_at: Utc::now(),
-                materialized: *materialized,
-                error: None,
-            },
-            Err(e) => AgentStatus {
-                exit_code,
-                completed_at: Utc::now(),
-                materialized: false,
-                error: Some(format!("{e:#}")),
-            },
-        };
+    let status = match &result {
+        Ok(materialized) => AgentStatus {
+            exit_code,
+            completed_at: Utc::now(),
+            materialized: *materialized,
+            error: None,
+        },
+        Err(e) => AgentStatus {
+            exit_code,
+            completed_at: Utc::now(),
+            materialized: false,
+            error: Some(format!("{e:#}")),
+        },
+    };
 
-        let status_file = status_path(&ctx.phantom_dir, &args.agent);
-        if let Ok(json) = serde_json::to_string_pretty(&status) {
-            let _ = std::fs::write(&status_file, json);
-        }
-
-        // Clean up PID files.
-        let _ = std::fs::remove_file(pid_path(&ctx.phantom_dir, &args.agent));
-        let _ = std::fs::remove_file(monitor_pid_path(&ctx.phantom_dir, &args.agent));
+    let status_file = status_path(&ctx.phantom_dir, &args.agent);
+    if let Ok(json) = serde_json::to_string_pretty(&status) {
+        let _ = std::fs::write(&status_file, json);
     }
+
+    // Clean up PID files.
+    let _ = std::fs::remove_file(pid_path(&ctx.phantom_dir, &args.agent));
+    let _ = std::fs::remove_file(monitor_pid_path(&ctx.phantom_dir, &args.agent));
 
     result.map(|_| ())
 }
 
-/// Poll until the given PID no longer exists. Returns the exit code if
-/// we can retrieve it, or None if the process was killed by a signal.
-fn wait_for_process(pid: libc::pid_t) -> Option<i32> {
-    loop {
-        // First try waitpid — works if the process is our child (which it is,
-        // since dispatch spawns both claude and the monitor, and the monitor
-        // inherits claude as a child after dispatch exits... actually no,
-        // claude is a child of dispatch, not us). So we fall back to kill(0).
-        let alive = unsafe { libc::kill(pid, 0) };
-        if alive != 0 {
-            // Process no longer exists. We can't get the exit code via kill().
-            // Try waitpid in case it's a zombie we can reap.
-            let mut status: libc::c_int = 0;
-            let ret = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-            if ret > 0 {
-                if libc::WIFEXITED(status) {
-                    return Some(libc::WEXITSTATUS(status));
-                }
-                return None; // killed by signal
-            }
-            // Process is gone and not our child — check if exit code was 0
-            // by reading the agent.log for error indicators.
-            return None;
-        }
-        std::thread::sleep(Duration::from_secs(2));
-    }
+/// Spawn the claude process as our direct child, wait for it, return the exit code.
+fn spawn_and_wait_claude(
+    ctx: &PhantomContext,
+    agent: &str,
+    work_dir: &PathBuf,
+    task: &str,
+    repo_root: &str,
+) -> anyhow::Result<(u32, Option<i32>)> {
+    let overlay_root = ctx.phantom_dir.join("overlays").join(agent);
+    let log_file = overlay_root.join("agent.log");
+    let pid_file = overlay_root.join("agent.pid");
+
+    let log_handle = std::fs::File::create(&log_file)
+        .with_context(|| format!("failed to create agent log at {}", log_file.display()))?;
+    let log_stderr = log_handle
+        .try_clone()
+        .context("failed to clone log file handle")?;
+
+    let adapter = cli_adapter::adapter_for("claude");
+    let env_vars: Vec<(&str, &str)> = vec![
+        ("PHANTOM_AGENT_ID", agent),
+        ("PHANTOM_CHANGESET_ID", ""),
+        ("PHANTOM_OVERLAY_DIR", work_dir.to_str().unwrap_or_default()),
+        ("PHANTOM_REPO_ROOT", repo_root),
+        ("PHANTOM_INTERACTIVE", "0"),
+    ];
+
+    let mut cmd = adapter
+        .build_headless_command(work_dir, task, &env_vars)
+        .context("CLI adapter does not support headless mode")?;
+
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(log_handle)
+        .stderr(log_stderr);
+
+    let mut child = cmd.spawn().with_context(|| {
+        "failed to spawn background agent — is 'claude' installed and on PATH?"
+    })?;
+
+    let claude_pid = child.id();
+
+    // Write PID file so status can find it.
+    std::fs::write(&pid_file, claude_pid.to_string())
+        .context("failed to write agent PID file")?;
+
+    // Wait for the child — this is our direct child, so waitpid works.
+    let status = child
+        .wait()
+        .context("failed to wait for background agent")?;
+
+    let exit_code = status.code(); // None if killed by signal
+
+    Ok((claude_pid, exit_code))
 }
 
 /// Run the post-completion flow: submit + materialize.

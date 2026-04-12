@@ -131,53 +131,20 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
             Some(task),
         )?;
 
-        // Launch a headless claude process in the background.
-        let adapter = crate::cli_adapter::adapter_for("claude");
-        let headless_cmd = adapter
-            .build_headless_command(
-                &work_dir,
-                task,
-                &[
-                    ("PHANTOM_AGENT_ID", args.agent.as_str()),
-                    ("PHANTOM_CHANGESET_ID", changeset_id.0.as_str()),
-                    (
-                        "PHANTOM_OVERLAY_DIR",
-                        work_dir.to_str().unwrap_or_default(),
-                    ),
-                    (
-                        "PHANTOM_REPO_ROOT",
-                        ctx.repo_root.to_str().unwrap_or_default(),
-                    ),
-                    ("PHANTOM_INTERACTIVE", "0"),
-                ],
-            )
-            .context("CLI adapter does not support headless mode")?;
-
-        let (claude_pid, log_file) =
-            spawn_background_agent(&ctx, &args.agent, headless_cmd)?;
-
-        // Emit AgentLaunched event.
-        let launch_event = Event {
-            id: EventId(0),
-            timestamp: Utc::now(),
-            changeset_id: changeset_id.clone(),
-            agent_id: agent_id.clone(),
-            kind: EventKind::AgentLaunched {
-                pid: claude_pid,
-                task: task.to_string(),
-            },
-        };
-        ctx.events
-            .append(launch_event)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-        // Spawn the monitor process to handle post-completion automation.
-        spawn_agent_monitor(&ctx, &args.agent, &changeset_id, claude_pid)?;
+        // Spawn the monitor process, which in turn spawns claude as its child.
+        // This ensures the monitor can waitpid for the real exit code.
+        let log_file = ctx.phantom_dir.join("overlays").join(&args.agent).join("agent.log");
+        spawn_agent_monitor(
+            &ctx,
+            &args.agent,
+            &changeset_id,
+            task,
+            &work_dir,
+        )?;
 
         println!("Agent '{}' {verb} (background).", args.agent);
         println!("  Changeset: {changeset_id}");
         println!("  Task:      {task}");
-        println!("  PID:       {claude_pid}");
         println!("  Log:       {}", log_file.display());
         println!("  Overlay:   {}", work_dir.display());
         println!("  Base:      {base_short}");
@@ -185,8 +152,21 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
             println!("  FUSE:      mounted");
         }
         println!();
-        println!("Use `phantom status {}` to check progress.", args.agent);
+        println!("Run `phantom d {}` again to check progress.", args.agent);
     } else {
+        // If a background agent is already running or has completed for this
+        // overlay, show its status instead of opening an interactive session.
+        // This prevents accidentally launching a second CLI on top of a
+        // background agent's work.
+        if !is_new && has_background_agent(&ctx.phantom_dir, &args.agent) {
+            // Delegate to the detailed status view.
+            super::status::run(super::status::StatusArgs {
+                agent: Some(args.agent.clone()),
+            })
+            .await?;
+            return Ok(());
+        }
+
         println!("Agent '{}' {verb}.", args.agent);
         println!("  Changeset: {changeset_id}");
         println!("  Overlay:   {}", work_dir.display());
@@ -358,45 +338,15 @@ fn check_changeset_resumable(ctx: &PhantomContext, cs_id: &ChangesetId) -> anyho
     Ok(())
 }
 
-/// Spawn a headless claude process in the background.
-///
-/// Returns `(pid, log_file_path)` on success.
-fn spawn_background_agent(
-    ctx: &PhantomContext,
-    agent: &str,
-    mut cmd: std::process::Command,
-) -> anyhow::Result<(u32, std::path::PathBuf)> {
-    let overlay_root = ctx.phantom_dir.join("overlays").join(agent);
-    let log_file = overlay_root.join("agent.log");
-    let pid_file = overlay_root.join("agent.pid");
-
-    let log_handle = std::fs::File::create(&log_file)
-        .with_context(|| format!("failed to create agent log at {}", log_file.display()))?;
-    let log_stderr = log_handle
-        .try_clone()
-        .context("failed to clone log file handle")?;
-
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(log_handle)
-        .stderr(log_stderr);
-
-    let child = cmd.spawn().with_context(|| {
-        "failed to spawn background agent — is 'claude' installed and on PATH?"
-    })?;
-
-    let claude_pid = child.id();
-    std::fs::write(&pid_file, claude_pid.to_string())
-        .context("failed to write agent PID file")?;
-
-    Ok((claude_pid, log_file))
-}
-
-/// Spawn the `phantom _agent-monitor` process to watch the background agent.
+/// Spawn the `phantom _agent-monitor` process which will in turn spawn and
+/// monitor the claude process. This ensures the monitor is the parent of
+/// claude and can `waitpid` to get the real exit code.
 fn spawn_agent_monitor(
     ctx: &PhantomContext,
     agent: &str,
     changeset_id: &ChangesetId,
-    claude_pid: u32,
+    task: &str,
+    work_dir: &Path,
 ) -> anyhow::Result<()> {
     let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
     let overlay_root = ctx.phantom_dir.join("overlays").join(agent);
@@ -408,8 +358,12 @@ fn spawn_agent_monitor(
         .arg(agent)
         .arg("--changeset-id")
         .arg(&changeset_id.0)
-        .arg("--claude-pid")
-        .arg(claude_pid.to_string())
+        .arg("--task")
+        .arg(task)
+        .arg("--work-dir")
+        .arg(work_dir.as_os_str())
+        .arg("--repo-root")
+        .arg(ctx.repo_root.as_os_str())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -420,6 +374,24 @@ fn spawn_agent_monitor(
         .context("failed to write monitor PID file")?;
 
     Ok(())
+}
+
+/// Check if a background agent process exists for this agent — either still
+/// running (agent.pid with a live process) or finished (agent.status exists).
+fn has_background_agent(phantom_dir: &Path, agent: &str) -> bool {
+    let overlay_dir = phantom_dir.join("overlays").join(agent);
+
+    // A completion marker means a background agent ran.
+    if overlay_dir.join("agent.status").exists() {
+        return true;
+    }
+
+    // A PID file means a background agent was launched (may still be running).
+    if overlay_dir.join("agent.pid").exists() {
+        return true;
+    }
+
+    false
 }
 
 /// Check if a FUSE filesystem is already mounted at `mount_point` by comparing

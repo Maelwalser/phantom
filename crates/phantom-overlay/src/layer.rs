@@ -18,6 +18,10 @@ use crate::trunk_view::{read_dir_entries, walk_files};
 
 const WHITEOUT_FILE: &str = ".whiteouts.json";
 
+/// Internal files placed in the upper layer by Phantom that should never appear
+/// as agent modifications or be committed to git.
+const INTERNAL_FILES: &[&str] = &[".whiteouts.json", ".phantom-task.md"];
+
 /// Paths that are always hidden from the overlay view.
 ///
 /// `.phantom` is the internal metadata directory (contains the FUSE mount point
@@ -232,8 +236,9 @@ impl OverlayLayer {
             for entry in read_dir_entries(&upper_dir)? {
                 let entry_rel = rel_path.join(&entry.name);
                 if !self.whiteouts.contains(&entry_rel) && !is_hidden(&entry_rel) {
-                    // Skip the whiteout metadata file.
-                    if entry.name != WHITEOUT_FILE {
+                    // Skip Phantom internal files.
+                    let name_str = entry.name.to_string_lossy();
+                    if !INTERNAL_FILES.iter().any(|f| name_str == *f) {
                         seen.insert(entry.name.clone());
                         entries.push(entry);
                     }
@@ -317,13 +322,16 @@ impl OverlayLayer {
 
     /// Return all files that have been written to the upper layer.
     ///
-    /// Paths are relative to the overlay root. The `.whiteouts.json` metadata
-    /// file is excluded.
+    /// Paths are relative to the overlay root. Phantom internal files
+    /// (`.whiteouts.json`, `.phantom-task.md`) are excluded.
     pub fn modified_files(&self) -> Result<Vec<PathBuf>, OverlayError> {
         let all = walk_files(&self.upper, &self.upper)?;
         Ok(all
             .into_iter()
-            .filter(|p| p.to_string_lossy() != WHITEOUT_FILE)
+            .filter(|p| {
+                let name = p.to_string_lossy();
+                !INTERNAL_FILES.iter().any(|f| name == *f)
+            })
             .collect())
     }
 
