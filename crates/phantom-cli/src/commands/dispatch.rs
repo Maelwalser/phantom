@@ -4,15 +4,19 @@
 //! overlay's FUSE mount point, which provides a merged view of trunk + agent
 //! writes. Use `--background` to create the overlay without launching a
 //! session (for scripted / headless agents).
+//!
+//! If an overlay already exists for the agent, the command resumes the existing
+//! session (reuses changeset ID, skips event emission, re-mounts FUSE if needed).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
-use phantom_core::id::{AgentId, ChangesetId, EventId};
+use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid};
 use phantom_core::traits::EventStore;
+use phantom_overlay::OverlayError;
 
 use crate::context::PhantomContext;
 
@@ -46,37 +50,62 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
     let agent_id = AgentId(args.agent.clone());
     let head = ctx.git.head_oid().context("failed to read HEAD")?;
 
-    let changeset_id = generate_changeset_id(&ctx)?;
+    // Try to create a new overlay. If one already exists, switch to resume mode.
+    let (changeset_id, base_commit, is_new, mount_point, upper_dir) =
+        match ctx.overlays.create_overlay(agent_id.clone(), &ctx.repo_root) {
+            Ok(handle) => {
+                let mount_point = handle.mount_point.clone();
+                let upper_dir = handle.upper_dir.clone();
 
-    let handle = ctx
-        .overlays
-        .create_overlay(agent_id.clone(), &ctx.repo_root)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let cs_id = generate_changeset_id(&ctx)?;
 
-    let mount_point = handle.mount_point.clone();
-    let upper_dir = handle.upper_dir.clone();
+                let event = Event {
+                    id: EventId(0),
+                    timestamp: Utc::now(),
+                    changeset_id: cs_id.clone(),
+                    agent_id: agent_id.clone(),
+                    kind: EventKind::OverlayCreated {
+                        base_commit: head,
+                        task: args.task.clone().unwrap_or_default(),
+                    },
+                };
+                ctx.events
+                    .append(event)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let event = Event {
-        id: EventId(0),
-        timestamp: Utc::now(),
-        changeset_id: changeset_id.clone(),
-        agent_id: agent_id.clone(),
-        kind: EventKind::OverlayCreated {
-            base_commit: head,
-            task: args.task.clone().unwrap_or_default(),
-        },
-    };
-    ctx.events
-        .append(event)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                phantom_orchestrator::live_rebase::write_current_base(
+                    &ctx.phantom_dir,
+                    &agent_id,
+                    &head,
+                )
+                .map_err(|e| anyhow::anyhow!("failed to write initial current_base: {e}"))?;
 
-    // Persist the initial base commit so live rebase knows where this agent started.
-    phantom_orchestrator::live_rebase::write_current_base(&ctx.phantom_dir, &agent_id, &head)
-        .map_err(|e| anyhow::anyhow!("failed to write initial current_base: {e}"))?;
+                (cs_id, head, true, mount_point, upper_dir)
+            }
+            Err(OverlayError::AlreadyExists(_)) => {
+                let (cs_id, base) = recover_changeset_from_events(&ctx, &agent_id)?;
+                check_changeset_resumable(&ctx, &cs_id)?;
 
-    // Spawn FUSE daemon unless --no-fuse
-    let fuse_mounted = if args.no_fuse {
-        false
+                let upper_dir = ctx
+                    .overlays
+                    .upper_dir(&agent_id)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .to_path_buf();
+                let mount_point = ctx
+                    .phantom_dir
+                    .join("overlays")
+                    .join(&agent_id.0)
+                    .join("mount");
+
+                (cs_id, base, false, mount_point, upper_dir)
+            }
+            Err(e) => return Err(anyhow::anyhow!("{e}")),
+        };
+
+    // Spawn FUSE daemon unless --no-fuse or already mounted.
+    let already_mounted = is_fuse_mounted(&mount_point);
+    let fuse_mounted = if args.no_fuse || already_mounted {
+        already_mounted
     } else {
         spawn_fuse_daemon(&ctx, &args.agent, &mount_point, &upper_dir)?
     };
@@ -88,7 +117,8 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
         upper_dir.clone()
     };
 
-    let base_short = head.to_hex().chars().take(12).collect::<String>();
+    let base_short = base_commit.to_hex().chars().take(12).collect::<String>();
+    let verb = if is_new { "dispatched" } else { "resumed" };
 
     if args.background {
         let task = args.task.as_deref().unwrap_or("");
@@ -97,11 +127,11 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
             &work_dir,
             &agent_id,
             &changeset_id,
-            &head,
+            &base_commit,
             Some(task),
         )?;
 
-        println!("Agent '{}' dispatched (background).", args.agent);
+        println!("Agent '{}' {verb} (background).", args.agent);
         println!("  Changeset: {changeset_id}");
         println!("  Task:      {task}");
         println!("  Overlay:   {}", work_dir.display());
@@ -110,7 +140,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
             println!("  FUSE:      mounted");
         }
     } else {
-        println!("Agent '{}' dispatched.", args.agent);
+        println!("Agent '{}' {verb}.", args.agent);
         println!("  Changeset: {changeset_id}");
         println!("  Overlay:   {}", work_dir.display());
         println!("  Base:      {base_short}");
@@ -122,7 +152,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
             &mut ctx,
             &agent_id,
             &changeset_id,
-            &head,
+            &base_commit,
             &work_dir,
             &args,
         )?;
@@ -224,4 +254,75 @@ fn generate_changeset_id(ctx: &PhantomContext) -> anyhow::Result<ChangesetId> {
         % 1_000_000;
 
     Ok(ChangesetId(format!("cs-{:04}-{ts:06}", overlay_count + 1)))
+}
+
+/// Recover the changeset ID and base commit for an existing agent overlay from
+/// the event log. Finds the most recent `OverlayCreated` event for this agent.
+fn recover_changeset_from_events(
+    ctx: &PhantomContext,
+    agent_id: &AgentId,
+) -> anyhow::Result<(ChangesetId, GitOid)> {
+    let events = ctx
+        .events
+        .query_by_agent(agent_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Walk backwards to find the most recent OverlayCreated event.
+    for event in events.iter().rev() {
+        if let EventKind::OverlayCreated { base_commit, .. } = &event.kind {
+            return Ok((event.changeset_id.clone(), *base_commit));
+        }
+    }
+
+    anyhow::bail!(
+        "overlay exists for agent '{}' but no OverlayCreated event found in the event log",
+        agent_id
+    )
+}
+
+/// Check that a changeset is still in-progress and can be resumed.
+///
+/// Blocks resume if the changeset has already been submitted or materialized,
+/// since the upper layer may have been cleared.
+fn check_changeset_resumable(ctx: &PhantomContext, cs_id: &ChangesetId) -> anyhow::Result<()> {
+    let events = ctx
+        .events
+        .query_by_changeset(cs_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    for event in &events {
+        match &event.kind {
+            EventKind::ChangesetMaterialized { .. } => {
+                anyhow::bail!(
+                    "changeset {cs_id} has already been materialized — \
+                     use `phantom dispatch <new-agent>` to start fresh"
+                );
+            }
+            EventKind::ChangesetSubmitted { .. } => {
+                anyhow::bail!(
+                    "changeset {cs_id} has already been submitted — \
+                     use `phantom dispatch <new-agent>` to start fresh"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if a FUSE filesystem is already mounted at `mount_point` by comparing
+/// its device ID to its parent directory.
+fn is_fuse_mounted(mount_point: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let parent = match mount_point.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    match (std::fs::metadata(mount_point), std::fs::metadata(parent)) {
+        (Ok(m), Ok(p)) => m.dev() != p.dev(),
+        _ => false,
+    }
 }

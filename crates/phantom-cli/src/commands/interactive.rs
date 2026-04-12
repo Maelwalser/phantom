@@ -78,14 +78,16 @@ pub fn run_interactive_session(
 
     let exit_code = exit_status.code();
 
-    // Remove the generated context file so it doesn't pollute the changeset.
-    // Clean from both work_dir and upper_dir to handle FUSE vs non-FUSE cases.
-    cleanup_context_file(work_dir);
-    let upper_dir = ctx
-        .overlays
-        .upper_dir(agent_id)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    cleanup_context_file(upper_dir);
+    // Only remove the context file if auto-submit is active (the changeset will
+    // be finalized). When the user just Ctrl+C's out, keep the file so a
+    // subsequent `phantom dispatch <agent>` resume has context.
+    let auto_submit = args.auto_submit || args.auto_materialize;
+    if auto_submit {
+        cleanup_context_file(work_dir);
+        if let Ok(upper_dir) = ctx.overlays.upper_dir(agent_id) {
+            cleanup_context_file(upper_dir);
+        }
+    }
 
     println!();
     if let Some(code) = exit_code {
@@ -99,7 +101,6 @@ pub fn run_interactive_session(
     }
 
     // Post-session automation
-    let auto_submit = args.auto_submit || args.auto_materialize;
     post_session_flow(
         ctx,
         agent_id,
