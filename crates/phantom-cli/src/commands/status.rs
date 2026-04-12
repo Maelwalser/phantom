@@ -267,13 +267,7 @@ pub fn format_run_state_short(state: &AgentRunState) -> String {
         AgentRunState::Running { pid, elapsed } => {
             format!("running {}  pid {pid}", format_duration(elapsed))
         }
-        AgentRunState::Finished { status } => {
-            if status.materialized {
-                "finished  materialized".into()
-            } else {
-                "finished  submitted".into()
-            }
-        }
+        AgentRunState::Finished { status: _ } => "finished".into(),
         AgentRunState::Failed { status } => {
             if let Some(s) = status {
                 let code = s
@@ -298,14 +292,7 @@ fn format_run_state_long(state: &AgentRunState) -> String {
                 format_duration(elapsed)
             )
         }
-        AgentRunState::Finished { status } => {
-            let mat = if status.materialized {
-                "materialized"
-            } else {
-                "submitted only"
-            };
-            format!("Finished ({mat})")
-        }
+        AgentRunState::Finished { status: _ } => "Finished".into(),
         AgentRunState::Failed { status } => {
             if let Some(s) = status {
                 let code = s

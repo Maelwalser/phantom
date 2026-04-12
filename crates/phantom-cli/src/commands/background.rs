@@ -29,38 +29,58 @@ pub async fn run(args: BackgroundArgs) -> anyhow::Result<()> {
 
     let mut stdout = io::stdout();
 
-    // Enter alternate screen buffer.
-    write!(stdout, "\x1b[?1049h")?;
-    // Hide cursor.
+    // Hide cursor while rendering.
     write!(stdout, "\x1b[?25l")?;
     stdout.flush()?;
 
-    // Restore terminal on exit (Ctrl+C or error).
     let result = run_loop(&mut stdout, interval).await;
 
-    // Show cursor, leave alternate screen.
+    // Show cursor on exit.
     write!(stdout, "\x1b[?25h")?;
-    write!(stdout, "\x1b[?1049l")?;
     stdout.flush()?;
 
     result
 }
 
 async fn run_loop(stdout: &mut io::Stdout, interval: Duration) -> anyhow::Result<()> {
-    loop {
-        // Move cursor to top-left and clear screen.
-        write!(stdout, "\x1b[H\x1b[2J")?;
+    let mut prev_lines = 0usize;
 
-        if let Err(e) = render_frame(stdout) {
-            writeln!(stdout, "\x1b[31mError: {e:#}\x1b[0m")?;
+    loop {
+        // Move cursor up to overwrite the previous frame.
+        if prev_lines > 0 {
+            write!(stdout, "\x1b[{prev_lines}A\r")?;
         }
 
+        let mut buf = Vec::new();
+        if let Err(e) = render_frame(&mut buf) {
+            writeln!(buf, "\x1b[31mError: {e:#}\x1b[0m")?;
+        }
+
+        let output = String::from_utf8_lossy(&buf);
+        let line_count = output.lines().count();
+
+        // Clear each line as we write to handle shrinking output.
+        for line in output.lines() {
+            write!(stdout, "\x1b[2K{line}\n")?;
+        }
+
+        // If previous frame had more lines, clear the leftover lines.
+        if prev_lines > line_count {
+            for _ in 0..(prev_lines - line_count) {
+                write!(stdout, "\x1b[2K\n")?;
+            }
+            // Move cursor back up to end of current frame.
+            let extra = prev_lines - line_count;
+            write!(stdout, "\x1b[{extra}A")?;
+        }
+
+        prev_lines = line_count;
         stdout.flush()?;
 
-        // Sleep, but allow Ctrl+C to interrupt.
         tokio::select! {
             () = tokio::time::sleep(interval) => {}
             _ = tokio::signal::ctrl_c() => {
+                writeln!(stdout)?;
                 return Ok(());
             }
         }
@@ -178,22 +198,8 @@ fn format_state_columns(state: &AgentRunState) -> (&'static str, String, String)
             "running".into(),
             status::format_duration(elapsed),
         ),
-        AgentRunState::Finished { status: s } => {
-            let label = if s.materialized {
-                "materialized"
-            } else {
-                "submitted"
-            };
-            let elapsed = s
-                .completed_at
-                .signed_duration_since(chrono::Utc::now())
-                .abs()
-                .to_std()
-                .ok()
-                .as_ref()
-                .map(status::format_duration)
-                .unwrap_or_default();
-            ("\x1b[32m✓ ", label.into(), elapsed)
+        AgentRunState::Finished { status: _ } => {
+            ("\x1b[32m✓ ", "finished".into(), String::new())
         }
         AgentRunState::Failed { status: s } => {
             let label = if let Some(s) = s {

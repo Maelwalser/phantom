@@ -12,7 +12,6 @@ use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{AgentId, ChangesetId, EventId};
 use phantom_core::traits::EventStore;
-use phantom_orchestrator::materializer::MaterializeResult;
 use serde::{Deserialize, Serialize};
 
 use crate::cli_adapter;
@@ -187,16 +186,16 @@ fn spawn_and_wait_claude(
     Ok((claude_pid, exit_code))
 }
 
-/// Run the post-completion flow: submit + materialize.
-/// Returns Ok(true) if materialized, Ok(false) if submitted but not materialized.
+/// Run the post-completion flow: clean up and record completion.
+/// Returns Ok(true) if the agent exited successfully, Ok(false) otherwise.
 fn run_post_completion(
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
     exit_code: Option<i32>,
 ) -> anyhow::Result<bool> {
-    let mut ctx = PhantomContext::load()?;
+    let ctx = PhantomContext::load()?;
 
-    // Clean up the context file before submitting.
+    // Clean up the context file.
     let upper_dir = ctx
         .overlays
         .upper_dir(agent_id)
@@ -204,22 +203,25 @@ fn run_post_completion(
     let context_file = upper_dir.join(".phantom-task.md");
     let _ = std::fs::remove_file(&context_file);
 
-    // If the process exited with non-zero, record failure and stop.
-    if exit_code != Some(0) {
-        let event = Event {
-            id: EventId(0),
-            timestamp: Utc::now(),
-            changeset_id: changeset_id.clone(),
-            agent_id: agent_id.clone(),
-            kind: EventKind::AgentCompleted {
-                exit_code,
-                materialized: false,
-            },
-        };
-        ctx.events
-            .append(event)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let success = exit_code == Some(0);
 
+    // Record completion — the user must explicitly `phantom submit` and
+    // `phantom materialize` when they are ready.
+    let event = Event {
+        id: EventId(0),
+        timestamp: Utc::now(),
+        changeset_id: changeset_id.clone(),
+        agent_id: agent_id.clone(),
+        kind: EventKind::AgentCompleted {
+            exit_code,
+            materialized: false,
+        },
+    };
+    ctx.events
+        .append(event)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if !success {
         anyhow::bail!(
             "background agent exited with code {}",
             exit_code
@@ -228,61 +230,5 @@ fn run_post_completion(
         );
     }
 
-    // Auto-submit.
-    let submitted_cs_id = super::submit::submit_agent(&ctx, agent_id)
-        .context("auto-submit failed")?;
-
-    let materialized = if let Some(cs_id) = submitted_cs_id {
-        // Auto-materialize.
-        match super::materialize::materialize_changeset(&mut ctx, &cs_id, &agent_id.0)
-            .context("auto-materialize failed")?
-        {
-            MaterializeResult::Success { .. } => true,
-            MaterializeResult::Conflict { details } => {
-                // Record the completed event with materialized=false.
-                let event = Event {
-                    id: EventId(0),
-                    timestamp: Utc::now(),
-                    changeset_id: changeset_id.clone(),
-                    agent_id: agent_id.clone(),
-                    kind: EventKind::AgentCompleted {
-                        exit_code,
-                        materialized: false,
-                    },
-                };
-                ctx.events
-                    .append(event)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-                anyhow::bail!(
-                    "materialization failed with {} conflict(s): {}",
-                    details.len(),
-                    details
-                        .iter()
-                        .map(|d| format!("{}", d.file.display()))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-            }
-        }
-    } else {
-        false // no changes to submit
-    };
-
-    // Record successful completion.
-    let event = Event {
-        id: EventId(0),
-        timestamp: Utc::now(),
-        changeset_id: changeset_id.clone(),
-        agent_id: agent_id.clone(),
-        kind: EventKind::AgentCompleted {
-            exit_code,
-            materialized,
-        },
-    };
-    ctx.events
-        .append(event)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    Ok(materialized)
+    Ok(success)
 }
