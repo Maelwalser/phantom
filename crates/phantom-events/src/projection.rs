@@ -98,12 +98,6 @@ impl Projection {
                         cs.files_touched.push(path.clone());
                     }
                 }
-                EventKind::InteractiveSessionStarted { .. } => {
-                    cs.interactive_session_active = true;
-                }
-                EventKind::InteractiveSessionEnded { .. } => {
-                    cs.interactive_session_active = false;
-                }
                 // Other event kinds don't affect changeset state.
                 _ => {}
             }
@@ -170,7 +164,6 @@ fn new_changeset(id: &ChangesetId, agent_id: &AgentId) -> Changeset {
         test_result: None,
         created_at: chrono::Utc::now(),
         status: ChangesetStatus::InProgress,
-        interactive_session_active: false,
     }
 }
 

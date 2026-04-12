@@ -81,7 +81,6 @@ mod tests {
             test_result: None,
             created_at: chrono::Utc::now(),
             status: ChangesetStatus::Submitted,
-            interactive_session_active: false,
         }
     }
 

@@ -560,7 +560,6 @@ mod tests {
             test_result: None,
             created_at: Utc::now(),
             status: ChangesetStatus::Submitted,
-            interactive_session_active: false,
         }
     }
 

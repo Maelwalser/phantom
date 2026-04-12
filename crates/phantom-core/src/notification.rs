@@ -20,6 +20,12 @@ pub enum TrunkFileStatus {
     /// File exists in the agent's upper layer — the agent still sees its old
     /// copy and the new trunk version is hidden.
     Shadowed,
+    /// Shadowed file was cleanly merged into the agent's upper layer via live
+    /// rebase. The agent now sees the merged version.
+    RebaseMerged,
+    /// Shadowed file had merge conflicts during live rebase. The agent's upper
+    /// copy was left unchanged.
+    RebaseConflict,
 }
 
 /// Notification that trunk changed files relevant to an agent.

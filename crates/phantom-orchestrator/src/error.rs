@@ -30,4 +30,8 @@ pub enum OrchestratorError {
     /// A requested resource (commit, file, changeset) was not found.
     #[error("not found: {0}")]
     NotFound(String),
+
+    /// A live rebase operation failed.
+    #[error("live rebase error: {0}")]
+    LiveRebase(String),
 }

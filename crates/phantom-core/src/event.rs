@@ -89,19 +89,16 @@ pub enum EventKind {
     },
     /// Test results were recorded.
     TestsRun(TestResult),
-    /// An interactive CLI session was started inside the overlay.
-    InteractiveSessionStarted {
-        /// The command that was launched (e.g. "claude").
-        command: String,
-        /// PID of the spawned process (for stale session detection).
-        pid: u32,
-    },
-    /// An interactive CLI session ended.
-    InteractiveSessionEnded {
-        /// Process exit code (`None` if killed by signal).
-        exit_code: Option<i32>,
-        /// Duration of the session in seconds.
-        duration_secs: u64,
+    /// A live rebase was performed on an agent's overlay after trunk advanced.
+    LiveRebased {
+        /// The agent's base commit before the rebase.
+        old_base: GitOid,
+        /// The new trunk commit the agent is now based on.
+        new_base: GitOid,
+        /// Files that were cleanly merged into the agent's upper layer.
+        merged_files: Vec<PathBuf>,
+        /// Files that had conflicts and were left unchanged in the upper layer.
+        conflicted_files: Vec<PathBuf>,
     },
 }
 
@@ -204,13 +201,11 @@ mod tests {
                 failed: 0,
                 skipped: 1,
             }),
-            EventKind::InteractiveSessionStarted {
-                command: "claude".into(),
-                pid: 12345,
-            },
-            EventKind::InteractiveSessionEnded {
-                exit_code: Some(0),
-                duration_secs: 300,
+            EventKind::LiveRebased {
+                old_base: GitOid::zero(),
+                new_base: GitOid::from_bytes([2; 20]),
+                merged_files: vec![PathBuf::from("src/merged.rs")],
+                conflicted_files: vec![PathBuf::from("src/conflict.rs")],
             },
         ];
 

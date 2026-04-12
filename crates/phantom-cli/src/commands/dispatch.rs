@@ -70,6 +70,10 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
         .append(event)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // Persist the initial base commit so live rebase knows where this agent started.
+    phantom_orchestrator::live_rebase::write_current_base(&ctx.phantom_dir, &agent_id, &head)
+        .map_err(|e| anyhow::anyhow!("failed to write initial current_base: {e}"))?;
+
     // Spawn FUSE daemon unless --no-fuse
     let fuse_mounted = if args.no_fuse {
         false

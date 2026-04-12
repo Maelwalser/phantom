@@ -115,9 +115,6 @@ pub struct Changeset {
     pub created_at: DateTime<Utc>,
     /// Current lifecycle status.
     pub status: ChangesetStatus,
-    /// Whether an interactive CLI session is currently active in this overlay.
-    #[serde(default)]
-    pub interactive_session_active: bool,
 }
 
 #[cfg(test)]
@@ -152,7 +149,6 @@ mod tests {
             }),
             created_at: Utc::now(),
             status: ChangesetStatus::Submitted,
-            interactive_session_active: false,
         }
     }
 

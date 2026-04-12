@@ -149,17 +149,18 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
                 result.passed, result.failed, result.skipped
             )
         }
-        EventKind::InteractiveSessionStarted { command, pid } => {
-            format!("InteractiveSessionStarted {{ {command}, pid: {pid} }}")
-        }
-        EventKind::InteractiveSessionEnded {
-            exit_code,
-            duration_secs,
+        EventKind::LiveRebased {
+            new_base,
+            merged_files,
+            conflicted_files,
+            ..
         } => {
-            let code = exit_code
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signal".into());
-            format!("InteractiveSessionEnded {{ exit: {code}, {duration_secs}s }}")
+            format!(
+                "LiveRebased {{ to: {}, {} merged, {} conflicted }}",
+                short_hex(&new_base.to_hex()),
+                merged_files.len(),
+                conflicted_files.len()
+            )
         }
     }
 }

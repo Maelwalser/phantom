@@ -14,7 +14,7 @@ pub struct ChangesetId(pub String);
 
 impl fmt::Display for ChangesetId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.pad(&self.0)
     }
 }
 
@@ -24,7 +24,7 @@ pub struct AgentId(pub String);
 
 impl fmt::Display for AgentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.pad(&self.0)
     }
 }
 

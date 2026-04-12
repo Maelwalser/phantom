@@ -1,10 +1,13 @@
 //! `phantom materialize` — commit a changeset to trunk.
 
 use anyhow::Context;
-use phantom_core::event::EventKind;
-use phantom_core::id::{AgentId, ChangesetId};
+use chrono::Utc;
+use phantom_core::event::{Event, EventKind};
+use phantom_core::id::{AgentId, ChangesetId, EventId};
+use phantom_core::notification::TrunkFileStatus;
 use phantom_core::traits::EventStore;
 use phantom_events::Projection;
+use phantom_orchestrator::live_rebase;
 use phantom_orchestrator::materializer::{MaterializeResult, Materializer};
 use phantom_orchestrator::ripple::{
     self, RippleChecker,
@@ -111,7 +114,7 @@ pub fn materialize_changeset(
         );
     }
 
-    // Run ripple check on success
+    // Run ripple check and live rebase on success.
     if let MaterializeResult::Success { .. } = &result
         && let Ok(head) = materializer.git().head_oid()
         && let Ok(changed_files) = materializer
@@ -143,27 +146,114 @@ pub fn materialize_changeset(
             println!("Ripple: the following agents may be affected:");
             for (agent_id, files) in &affected {
                 let upper = ctx.overlays.upper_dir(agent_id).ok().map(|p| p.to_path_buf());
-                let classified = upper
-                    .as_deref()
-                    .map(|u| ripple::classify_trunk_changes(files, u))
-                    .unwrap_or_default();
+                let Some(upper_path) = upper.as_deref() else {
+                    continue;
+                };
 
-                let shadowed = classified
+                let classified = ripple::classify_trunk_changes(files, upper_path);
+                let shadowed_files: Vec<std::path::PathBuf> = classified
                     .iter()
-                    .filter(|(_, s)| *s == phantom_core::TrunkFileStatus::Shadowed)
-                    .count();
+                    .filter(|(_, s)| *s == TrunkFileStatus::Shadowed)
+                    .map(|(p, _)| p.clone())
+                    .collect();
 
-                if upper.is_some() {
+                if shadowed_files.is_empty() {
+                    // No shadowed files — just write notification and update base.
                     let notif = ripple::build_notification(head, classified);
                     if let Err(e) = ripple::write_trunk_notification(&ctx.phantom_dir, agent_id, &notif) {
                         eprintln!("warning: failed to write notification for {agent_id}: {e}");
                     }
+                    if let Err(e) = live_rebase::write_current_base(&ctx.phantom_dir, agent_id, &head) {
+                        eprintln!("warning: failed to update current_base for {agent_id}: {e}");
+                    }
+                    println!("  {agent_id}: {} file(s)", files.len());
+                    continue;
                 }
 
-                if shadowed > 0 {
-                    println!("  {agent_id}: {} file(s) ({shadowed} shadowed)", files.len());
-                } else {
-                    println!("  {agent_id}: {} file(s)", files.len());
+                // Determine the agent's current base commit.
+                let old_base = live_rebase::read_current_base(&ctx.phantom_dir, agent_id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(changeset.base_commit);
+
+                // Attempt live rebase on shadowed files.
+                match live_rebase::rebase_agent(
+                    materializer.git(),
+                    &ctx.semantic,
+                    agent_id,
+                    &old_base,
+                    &head,
+                    upper_path,
+                    &shadowed_files,
+                ) {
+                    Ok(rebase_result) => {
+                        // Update current_base to new trunk head.
+                        if let Err(e) = live_rebase::write_current_base(&ctx.phantom_dir, agent_id, &head) {
+                            eprintln!("warning: failed to update current_base for {agent_id}: {e}");
+                        }
+
+                        // Build enriched notification.
+                        let enriched: Vec<(std::path::PathBuf, TrunkFileStatus)> = classified
+                            .into_iter()
+                            .map(|(path, status)| {
+                                if status == TrunkFileStatus::Shadowed {
+                                    if rebase_result.merged.contains(&path) {
+                                        (path, TrunkFileStatus::RebaseMerged)
+                                    } else {
+                                        (path, TrunkFileStatus::RebaseConflict)
+                                    }
+                                } else {
+                                    (path, status)
+                                }
+                            })
+                            .collect();
+
+                        let notif = ripple::build_notification(head, enriched);
+                        if let Err(e) = ripple::write_trunk_notification(&ctx.phantom_dir, agent_id, &notif) {
+                            eprintln!("warning: failed to write notification for {agent_id}: {e}");
+                        }
+
+                        // Emit audit event.
+                        let event = Event {
+                            id: EventId(0),
+                            timestamp: Utc::now(),
+                            changeset_id: changeset_id.clone(),
+                            agent_id: agent_id.clone(),
+                            kind: EventKind::LiveRebased {
+                                old_base,
+                                new_base: head,
+                                merged_files: rebase_result.merged.clone(),
+                                conflicted_files: rebase_result
+                                    .conflicted
+                                    .iter()
+                                    .map(|(p, _)| p.clone())
+                                    .collect(),
+                            },
+                        };
+                        if let Err(e) = ctx.events.append(event) {
+                            eprintln!("warning: failed to record live rebase event for {agent_id}: {e}");
+                        }
+
+                        let merged = rebase_result.merged.len();
+                        let conflicted = rebase_result.conflicted.len();
+                        println!(
+                            "  {agent_id}: {} file(s) ({merged} merged, {conflicted} conflicted)",
+                            files.len()
+                        );
+                    }
+                    Err(e) => {
+                        // Rebase failed — fall back to notification-only (old behavior).
+                        eprintln!("warning: live rebase failed for {agent_id}: {e}");
+                        let notif = ripple::build_notification(head, classified);
+                        if let Err(e) = ripple::write_trunk_notification(&ctx.phantom_dir, agent_id, &notif) {
+                            eprintln!("warning: failed to write notification for {agent_id}: {e}");
+                        }
+                        println!(
+                            "  {agent_id}: {} file(s) ({} shadowed, rebase failed)",
+                            files.len(),
+                            shadowed_files.len()
+                        );
+                    }
                 }
             }
         }

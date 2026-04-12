@@ -65,8 +65,6 @@ impl OverlayManager {
 
         let layer = OverlayLayer::new(trunk_path.to_path_buf(), upper_dir.clone())?;
 
-        info!(agent = %agent_id, upper = %upper_dir.display(), "overlay created");
-
         let handle = MountHandle {
             agent_id: agent_id.clone(),
             mount_point,

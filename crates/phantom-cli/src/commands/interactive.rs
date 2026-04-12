@@ -6,13 +6,9 @@
 
 use std::path::Path;
 use std::process::Stdio;
-use std::time::Instant;
 
 use anyhow::Context;
-use chrono::Utc;
-use phantom_core::event::{Event, EventKind};
-use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid};
-use phantom_core::traits::EventStore;
+use phantom_core::id::{AgentId, ChangesetId, GitOid};
 use phantom_orchestrator::materializer::MaterializeResult;
 use tracing::warn;
 
@@ -44,10 +40,13 @@ pub fn run_interactive_session(
     // to the upper layer automatically.
     write_context_file(work_dir, agent_id, changeset_id, base_commit, args.task.as_deref())?;
 
-    // Spawn the interactive process
-    let start = Instant::now();
-    let mut child = std::process::Command::new(command)
-        .current_dir(work_dir)
+    // Spawn the interactive process.
+    //
+    // When using the default `claude` command, pre-approve file tools and grant
+    // access to the overlay directory so the agent is not prompted for every
+    // file write inside the FUSE mount.
+    let mut cmd = std::process::Command::new(command);
+    cmd.current_dir(work_dir)
         .env("PHANTOM_AGENT_ID", &agent_id.0)
         .env("PHANTOM_CHANGESET_ID", &changeset_id.0)
         .env(
@@ -61,49 +60,23 @@ pub fn run_interactive_session(
         .env("PHANTOM_INTERACTIVE", "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    if is_claude_command(command) {
+        cmd.args(["--allowedTools", "Edit", "Write", "Read", "Bash"])
+            .args(["--add-dir", work_dir.to_str().unwrap_or_default()]);
+    }
+
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to launch '{command}' — is it installed and on PATH?"))?;
-
-    let pid = child.id();
-
-    // Record InteractiveSessionStarted
-    let start_event = Event {
-        id: EventId(0),
-        timestamp: Utc::now(),
-        changeset_id: changeset_id.clone(),
-        agent_id: agent_id.clone(),
-        kind: EventKind::InteractiveSessionStarted {
-            command: command.to_string(),
-            pid,
-        },
-    };
-    ctx.events
-        .append(start_event)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Block until the process exits
     let exit_status = child
         .wait()
         .context("failed to wait for interactive session")?;
 
-    let duration_secs = start.elapsed().as_secs();
     let exit_code = exit_status.code();
-
-    // Record InteractiveSessionEnded
-    let end_event = Event {
-        id: EventId(0),
-        timestamp: Utc::now(),
-        changeset_id: changeset_id.clone(),
-        agent_id: agent_id.clone(),
-        kind: EventKind::InteractiveSessionEnded {
-            exit_code,
-            duration_secs,
-        },
-    };
-    ctx.events
-        .append(end_event)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Remove the generated context file so it doesn't pollute the changeset.
     // Clean from both work_dir and upper_dir to handle FUSE vs non-FUSE cases.
@@ -255,4 +228,13 @@ fn post_session_flow(
     }
 
     Ok(())
+}
+
+/// Check whether the command is the Claude Code CLI (default or explicit).
+fn is_claude_command(command: &str) -> bool {
+    let basename = Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(command);
+    basename == "claude"
 }

@@ -62,7 +62,7 @@ impl SqliteEventStore {
             "SELECT id, timestamp, changeset_id, agent_id, kind
              FROM events
              WHERE {where_clause}
-             ORDER BY id ASC{limit_clause}"
+             ORDER BY id DESC{limit_clause}"
         );
 
         let conn = self.conn.lock().expect("lock poisoned");
