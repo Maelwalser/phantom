@@ -11,12 +11,13 @@
 //! 3. **Conflict** — one or more files have symbol-level conflicts; the
 //!    changeset is rejected and a conflict event is recorded.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use tracing::debug;
 
-use phantom_core::changeset::Changeset;
+use phantom_core::changeset::{Changeset, SemanticOperation};
 use phantom_core::conflict::ConflictDetail;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{EventId, GitOid};
@@ -134,6 +135,12 @@ impl Materializer {
         let mut all_conflicts = Vec::new();
         let mut merged_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
 
+        // Group the agent's submitted operations by file for symbol-level
+        // pre-check. When the agent's changes and trunk's changes affect
+        // disjoint symbols, we skip the expensive semantic three-way merge
+        // and use the faster text-based merge instead.
+        let agent_ops_by_file = group_ops_by_file(&changeset.operations);
+
         for file in &changeset.files_touched {
             self.validate_path(file, ctx.trunk_path)?;
 
@@ -209,6 +216,50 @@ impl Materializer {
                     if ours == base_content {
                         merged_files.push((file.clone(), theirs));
                         continue;
+                    }
+
+                    // Use submitted operations for symbol-level pre-check.
+                    // When the agent's operations for this file don't overlap
+                    // with trunk's symbol changes, we can skip the expensive
+                    // semantic three-way merge and use a faster text merge.
+                    let symbols_disjoint = if let Some(agent_syms) = agent_ops_by_file.get(file) {
+                        if agent_syms.is_empty() {
+                            false
+                        } else {
+                            let base_syms = ctx
+                                .analyzer
+                                .extract_symbols(file, &base_content)
+                                .unwrap_or_default();
+                            let trunk_syms = ctx
+                                .analyzer
+                                .extract_symbols(file, &ours)
+                                .unwrap_or_default();
+                            let trunk_ops = ctx.analyzer.diff_symbols(&base_syms, &trunk_syms);
+                            let trunk_names: HashSet<String> = trunk_ops
+                                .iter()
+                                .filter_map(|op| op.symbol_name().map(String::from))
+                                .collect();
+                            !agent_syms.iter().any(|s| trunk_names.contains(s.as_str()))
+                        }
+                    } else {
+                        false
+                    };
+
+                    if symbols_disjoint {
+                        debug!(file = %file.display(), "symbol-disjoint — using text merge");
+                        if let MergeResult::Clean(content) =
+                            self.git.text_merge(&base_content, &ours, &theirs)?
+                        {
+                            merged_files.push((file.clone(), content));
+                            continue;
+                        }
+                        // Text merge failed despite disjoint symbols (e.g.
+                        // additions at the exact same line). Fall through to
+                        // semantic merge which may resolve it.
+                        debug!(
+                            file = %file.display(),
+                            "text merge conflict despite disjoint symbols, falling back to semantic merge"
+                        );
                     }
 
                     // Three-way semantic merge
@@ -362,6 +413,22 @@ impl Materializer {
             .map_err(|e| OrchestratorError::EventStore(e.to_string()))?;
         Ok(())
     }
+}
+
+/// Group semantic operations by file path, collecting the symbol names
+/// modified in each file. Used by the materializer to compare the agent's
+/// submitted operations against trunk changes for a fast symbol-level
+/// overlap check.
+fn group_ops_by_file(operations: &[SemanticOperation]) -> HashMap<PathBuf, HashSet<String>> {
+    let mut map: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    for op in operations {
+        if let Some(name) = op.symbol_name() {
+            map.entry(op.file_path().to_path_buf())
+                .or_default()
+                .insert(name.to_string());
+        }
+    }
+    map
 }
 
 /// Bundled context for a merge-apply operation, avoiding excessive parameter counts.

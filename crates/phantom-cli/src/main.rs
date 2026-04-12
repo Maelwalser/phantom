@@ -61,6 +61,11 @@ enum Commands {
     /// Destroy an agent's overlay
     #[command(visible_alias = "rm")]
     Destroy(commands::destroy::DestroyArgs),
+    /// Watch background agents in real-time
+    #[command(visible_alias = "b")]
+    Background(commands::background::BackgroundArgs),
+    /// Tear down Phantom: unmount all FUSE overlays and remove .phantom/
+    Down(commands::down::DownArgs),
 
     /// Internal: run FUSE mount daemon (not for direct use)
     #[command(name = "_fuse-mount", hide = true)]
@@ -93,6 +98,8 @@ async fn main() {
         Some(Commands::Rollback(args)) => commands::rollback::run(args).await,
         Some(Commands::Log(args)) => commands::log::run(args).await,
         Some(Commands::Destroy(args)) => commands::destroy::run(args).await,
+        Some(Commands::Background(args)) => commands::background::run(args).await,
+        Some(Commands::Down(args)) => commands::down::run(args).await,
         Some(Commands::FuseMount(args)) => commands::fuse_mount::run(args),
         Some(Commands::AgentMonitor(args)) => commands::agent_monitor::run(args).await,
     };

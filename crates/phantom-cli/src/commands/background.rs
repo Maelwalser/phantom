@@ -1,0 +1,228 @@
+//! `phantom background` — real-time watch view of all background agents.
+//!
+//! Refreshes on a configurable interval (default 1s), showing each agent's
+//! run state, elapsed time, and task description. Uses the alternate screen
+//! buffer so previous terminal content is restored on exit.
+
+use std::io::{self, Write};
+use std::path::Path;
+use std::time::Duration;
+
+use phantom_core::event::EventKind;
+use phantom_core::id::AgentId;
+use phantom_core::traits::EventStore;
+use phantom_events::Projection;
+
+use crate::context::PhantomContext;
+
+use super::status::{self, AgentRunState};
+
+#[derive(clap::Args)]
+pub struct BackgroundArgs {
+    /// Refresh interval in seconds
+    #[arg(short = 'n', long = "interval", default_value = "1")]
+    pub interval: f64,
+}
+
+pub async fn run(args: BackgroundArgs) -> anyhow::Result<()> {
+    let interval = Duration::from_secs_f64(args.interval.max(0.1));
+
+    let mut stdout = io::stdout();
+
+    // Enter alternate screen buffer.
+    write!(stdout, "\x1b[?1049h")?;
+    // Hide cursor.
+    write!(stdout, "\x1b[?25l")?;
+    stdout.flush()?;
+
+    // Restore terminal on exit (Ctrl+C or error).
+    let result = run_loop(&mut stdout, interval).await;
+
+    // Show cursor, leave alternate screen.
+    write!(stdout, "\x1b[?25h")?;
+    write!(stdout, "\x1b[?1049l")?;
+    stdout.flush()?;
+
+    result
+}
+
+async fn run_loop(stdout: &mut io::Stdout, interval: Duration) -> anyhow::Result<()> {
+    loop {
+        // Move cursor to top-left and clear screen.
+        write!(stdout, "\x1b[H\x1b[2J")?;
+
+        if let Err(e) = render_frame(stdout) {
+            writeln!(stdout, "\x1b[31mError: {e:#}\x1b[0m")?;
+        }
+
+        stdout.flush()?;
+
+        // Sleep, but allow Ctrl+C to interrupt.
+        tokio::select! {
+            () = tokio::time::sleep(interval) => {}
+            _ = tokio::signal::ctrl_c() => {
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
+    let ctx = PhantomContext::load()?;
+    let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let projection = Projection::from_events(&all_events);
+
+    let head = ctx.git.head_oid().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let head_short = head.to_hex();
+    let head_short = &head_short[..12.min(head_short.len())];
+
+    let now = chrono::Local::now().format("%H:%M:%S");
+
+    // Header
+    writeln!(out, "\x1b[1mphantom background\x1b[0m — watching agents  \x1b[2m{now}  (Ctrl+C to exit)\x1b[0m")?;
+    writeln!(out)?;
+    writeln!(out, "Trunk HEAD: \x1b[36m{head_short}\x1b[0m")?;
+    writeln!(out)?;
+
+    // Gather all agents (active changesets).
+    let active_agents = projection.active_agents();
+
+    // Also find agents that have completed (materialized/failed) — they still
+    // have overlay dirs with status files.
+    let mut all_agents: Vec<AgentId> = active_agents.clone();
+    collect_completed_agents(&ctx.phantom_dir, &mut all_agents);
+    all_agents.sort_by(|a, b| a.0.cmp(&b.0));
+    all_agents.dedup();
+
+    if all_agents.is_empty() {
+        writeln!(out, "\x1b[2m  No agents found. Use `phantom dispatch --background` to start one.\x1b[0m")?;
+        return Ok(());
+    }
+
+    // Table header
+    let task_header = "TASK";
+    writeln!(
+        out,
+        "  {:<16} {:<14} {:<10} {task_header}",
+        "AGENT", "STATUS", "ELAPSED"
+    )?;
+    writeln!(out, "  {}", "─".repeat(70))?;
+
+    let mut running = 0usize;
+    let mut finished = 0usize;
+    let mut failed = 0usize;
+    let mut idle = 0usize;
+
+    for agent in &all_agents {
+        let run_state = status::read_agent_run_state(&ctx.phantom_dir, &agent.0);
+
+        match &run_state {
+            AgentRunState::Running { .. } => running += 1,
+            AgentRunState::Finished { .. } => finished += 1,
+            AgentRunState::Failed { .. } => failed += 1,
+            AgentRunState::Idle => idle += 1,
+        }
+
+        let (indicator, state_label, elapsed_str) = format_state_columns(&run_state);
+
+        // Find task description.
+        let task = all_events
+            .iter()
+            .rev()
+            .find(|e| e.agent_id == *agent && matches!(e.kind, EventKind::OverlayCreated { .. }))
+            .and_then(|e| match &e.kind {
+                EventKind::OverlayCreated { task, .. } if !task.is_empty() => {
+                    Some(task.as_str())
+                }
+                _ => None,
+            })
+            .unwrap_or("");
+
+        let truncated_task = if task.len() > 45 {
+            format!("{}...", &task[..42])
+        } else {
+            task.to_string()
+        };
+
+        writeln!(
+            out,
+            "  {:<16} {}{:<14}\x1b[0m {:<10} {}",
+            agent.0, indicator, state_label, elapsed_str, truncated_task
+        )?;
+    }
+
+    writeln!(out)?;
+    write!(out, "  ")?;
+    if running > 0 {
+        write!(out, "\x1b[33m● {running} running\x1b[0m  ")?;
+    }
+    if finished > 0 {
+        write!(out, "\x1b[32m✓ {finished} finished\x1b[0m  ")?;
+    }
+    if failed > 0 {
+        write!(out, "\x1b[31m✗ {failed} failed\x1b[0m  ")?;
+    }
+    if idle > 0 {
+        write!(out, "\x1b[2m○ {idle} idle\x1b[0m  ")?;
+    }
+    writeln!(out)?;
+
+    Ok(())
+}
+
+/// Format run state into (color+indicator, label, elapsed) columns.
+fn format_state_columns(state: &AgentRunState) -> (&'static str, String, String) {
+    match state {
+        AgentRunState::Running { pid: _, elapsed } => (
+            "\x1b[33m● ",
+            "running".into(),
+            status::format_duration(elapsed),
+        ),
+        AgentRunState::Finished { status: s } => {
+            let label = if s.materialized {
+                "materialized"
+            } else {
+                "submitted"
+            };
+            let elapsed = s
+                .completed_at
+                .signed_duration_since(chrono::Utc::now())
+                .abs()
+                .to_std()
+                .ok()
+                .as_ref()
+                .map(status::format_duration)
+                .unwrap_or_default();
+            ("\x1b[32m✓ ", label.into(), elapsed)
+        }
+        AgentRunState::Failed { status: s } => {
+            let label = if let Some(s) = s {
+                s.exit_code
+                    .map(|c| format!("exit {c}"))
+                    .unwrap_or_else(|| "signal".into())
+            } else {
+                "crashed".into()
+            };
+            ("\x1b[31m✗ ", label, String::new())
+        }
+        AgentRunState::Idle => ("\x1b[2m○ ", "idle".into(), String::new()),
+    }
+}
+
+/// Scan `.phantom/overlays/` for agent directories that have a status file
+/// (completed agents whose changesets may no longer be InProgress).
+fn collect_completed_agents(phantom_dir: &Path, agents: &mut Vec<AgentId>) {
+    let overlays_dir = phantom_dir.join("overlays");
+    if let Ok(entries) = std::fs::read_dir(&overlays_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                && let Some(name) = entry.file_name().to_str()
+            {
+                let id = AgentId(name.to_string());
+                if !agents.contains(&id) {
+                    agents.push(id);
+                }
+            }
+        }
+    }
+}

@@ -26,7 +26,8 @@ pub struct StatusArgs {
 
 /// Run state of a background agent process.
 #[derive(Debug)]
-enum AgentRunState {
+pub enum AgentRunState {
+    /// Agent process is currently running.
     /// Agent process is currently running.
     Running {
         pid: u32,
@@ -221,7 +222,7 @@ fn run_detailed(ctx: &PhantomContext, agent_name: &str) -> anyhow::Result<()> {
 }
 
 /// Read the run state of a background agent from disk.
-fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
+pub fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
     // Check for completion marker first.
     let status_file = agent_monitor::status_path(phantom_dir, agent);
     if let Ok(content) = std::fs::read_to_string(&status_file) {
@@ -261,7 +262,7 @@ fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
 }
 
 /// Format run state for the summary table.
-fn format_run_state_short(state: &AgentRunState) -> String {
+pub fn format_run_state_short(state: &AgentRunState) -> String {
     match state {
         AgentRunState::Running { pid, elapsed } => {
             format!("running {}  pid {pid}", format_duration(elapsed))
@@ -326,7 +327,7 @@ fn format_run_state_long(state: &AgentRunState) -> String {
 }
 
 /// Format a duration as "Xh Ym Zs" or "Xm Zs" or "Zs".
-fn format_duration(d: &Duration) -> String {
+pub fn format_duration(d: &Duration) -> String {
     let secs = d.as_secs();
     if secs >= 3600 {
         format!("{}h{}m", secs / 3600, (secs % 3600) / 60)

@@ -1,6 +1,8 @@
 pub mod agent_monitor;
+pub mod background;
 pub mod destroy;
 pub mod dispatch;
+pub mod down;
 pub mod fuse_mount;
 pub mod interactive;
 pub mod log;

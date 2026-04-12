@@ -80,6 +80,34 @@ pub enum SemanticOperation {
     },
 }
 
+impl SemanticOperation {
+    /// Return the file path this operation applies to.
+    pub fn file_path(&self) -> &std::path::Path {
+        match self {
+            Self::AddSymbol { file, .. }
+            | Self::ModifySymbol { file, .. }
+            | Self::DeleteSymbol { file, .. } => file,
+            Self::AddFile { path }
+            | Self::DeleteFile { path }
+            | Self::RawDiff { path, .. } => path,
+        }
+    }
+
+    /// Return the symbol name this operation affects, if it's a symbol-level
+    /// operation.
+    ///
+    /// Returns `None` for `AddFile`, `DeleteFile`, and `RawDiff` which don't
+    /// operate on a specific symbol.
+    pub fn symbol_name(&self) -> Option<&str> {
+        match self {
+            Self::AddSymbol { symbol, .. } => Some(&symbol.name),
+            Self::ModifySymbol { new_entry, .. } => Some(&new_entry.name),
+            Self::DeleteSymbol { id, .. } => Some(&id.0),
+            Self::AddFile { .. } | Self::DeleteFile { .. } | Self::RawDiff { .. } => None,
+        }
+    }
+}
+
 /// Aggregated test results for a changeset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestResult {
