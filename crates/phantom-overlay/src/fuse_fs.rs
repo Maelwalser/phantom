@@ -26,10 +26,18 @@ mod inner {
     const TTL: Duration = Duration::from_secs(1);
 
     /// Bidirectional map between inode numbers and filesystem paths.
+    ///
+    /// Tracks kernel lookup counts so that inodes can be evicted via the
+    /// FUSE `forget` callback, preventing unbounded growth when large
+    /// directory trees are traversed.
     struct InodeTable {
         next_ino: AtomicU64,
         ino_to_path: Mutex<HashMap<u64, PathBuf>>,
         path_to_ino: Mutex<HashMap<PathBuf, u64>>,
+        /// Kernel-side lookup reference count per inode.  Incremented on
+        /// every `lookup`, `create`, `mkdir`, and `readdir` reply that
+        /// hands an inode to the kernel; decremented by `forget`.
+        lookup_count: Mutex<HashMap<u64, u64>>,
     }
 
     impl InodeTable {
@@ -39,6 +47,7 @@ mod inner {
                 next_ino: AtomicU64::new(2),
                 ino_to_path: Mutex::new(HashMap::new()),
                 path_to_ino: Mutex::new(HashMap::new()),
+                lookup_count: Mutex::new(HashMap::new()),
             };
             // Root directory is inode 1.
             table
@@ -58,14 +67,22 @@ mod inner {
             self.ino_to_path.lock().unwrap().get(&ino).cloned()
         }
 
+        /// Return the inode for `path`, creating a new one if necessary.
+        ///
+        /// Each call increments the kernel lookup count for the returned
+        /// inode.  The caller is responsible for only calling this when an
+        /// inode is actually being handed to the kernel (lookup reply,
+        /// create reply, readdir entry, etc.).
         fn get_or_create_inode(&self, path: &PathBuf) -> u64 {
             let mut p2i = self.path_to_ino.lock().unwrap();
             if let Some(&ino) = p2i.get(path) {
+                *self.lookup_count.lock().unwrap().entry(ino).or_insert(0) += 1;
                 return ino;
             }
             let ino = self.next_ino.fetch_add(1, Ordering::Relaxed);
             p2i.insert(path.clone(), ino);
             self.ino_to_path.lock().unwrap().insert(ino, path.clone());
+            *self.lookup_count.lock().unwrap().entry(ino).or_insert(0) += 1;
             ino
         }
 
@@ -73,6 +90,29 @@ mod inner {
             let mut p2i = self.path_to_ino.lock().unwrap();
             if let Some(ino) = p2i.remove(path) {
                 self.ino_to_path.lock().unwrap().remove(&ino);
+                self.lookup_count.lock().unwrap().remove(&ino);
+            }
+        }
+
+        /// Decrement the kernel lookup count for `ino` by `nlookup`.
+        /// When the count reaches zero the inode is evicted from both
+        /// maps, freeing the memory.  The root inode (1) is never evicted.
+        fn forget(&self, ino: u64, nlookup: u64) {
+            if ino == 1 {
+                // Root inode is permanent.
+                return;
+            }
+
+            let mut counts = self.lookup_count.lock().unwrap();
+            if let Some(count) = counts.get_mut(&ino) {
+                *count = count.saturating_sub(nlookup);
+                if *count == 0 {
+                    counts.remove(&ino);
+                    let mut i2p = self.ino_to_path.lock().unwrap();
+                    if let Some(path) = i2p.remove(&ino) {
+                        self.path_to_ino.lock().unwrap().remove(&path);
+                    }
+                }
             }
         }
     }
@@ -157,6 +197,11 @@ mod inner {
     }
 
     impl Filesystem for PhantomFs {
+        fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
+            debug!(ino = ino.0, nlookup, "forget");
+            self.inodes.forget(ino.0, nlookup);
+        }
+
         fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
             let Some(parent_path) = self.inodes.get_path(parent.0) else {
                 reply.error(Errno::ENOENT);
