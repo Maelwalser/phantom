@@ -1,8 +1,12 @@
 //! `phantom dispatch` — create an agent overlay and launch a Claude Code session.
 //!
 //! By default, dispatching opens an interactive Claude Code CLI inside the
-//! overlay. Use `--background` to create the overlay without launching a
+//! overlay's FUSE mount point, which provides a merged view of trunk + agent
+//! writes. Use `--background` to create the overlay without launching a
 //! session (for scripted / headless agents).
+
+use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Utc;
@@ -31,6 +35,9 @@ pub struct DispatchArgs {
     /// Custom command to run instead of `claude` (e.g. for testing)
     #[arg(long, conflicts_with = "background")]
     pub command: Option<String>,
+    /// Skip FUSE mounting (agent works via OverlayLayer API only, no filesystem isolation)
+    #[arg(long)]
+    pub no_fuse: bool,
 }
 
 pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
@@ -47,6 +54,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let mount_point = handle.mount_point.clone();
+    let upper_dir = handle.upper_dir.clone();
 
     let event = Event {
         id: EventId(0),
@@ -62,18 +70,27 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
         .append(event)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // Spawn FUSE daemon unless --no-fuse
+    let fuse_mounted = if args.no_fuse {
+        false
+    } else {
+        spawn_fuse_daemon(&ctx, &args.agent, &mount_point, &upper_dir)?
+    };
+
+    // The agent's working directory: FUSE mount (merged view) or upper dir (writes only).
+    let work_dir = if fuse_mounted {
+        mount_point.clone()
+    } else {
+        upper_dir.clone()
+    };
+
     let base_short = head.to_hex().chars().take(12).collect::<String>();
 
     if args.background {
         let task = args.task.as_deref().unwrap_or("");
 
-        // Write context file so the background agent knows its task
-        let upper_dir = ctx
-            .overlays
-            .upper_dir(&agent_id)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
         super::interactive::write_context_file(
-            upper_dir,
+            &work_dir,
             &agent_id,
             &changeset_id,
             &head,
@@ -83,24 +100,103 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
         println!("Agent '{}' dispatched (background).", args.agent);
         println!("  Changeset: {changeset_id}");
         println!("  Task:      {task}");
-        println!("  Overlay:   {}", mount_point.display());
+        println!("  Overlay:   {}", work_dir.display());
         println!("  Base:      {base_short}");
+        if fuse_mounted {
+            println!("  FUSE:      mounted");
+        }
     } else {
         println!("Agent '{}' dispatched.", args.agent);
         println!("  Changeset: {changeset_id}");
-        println!("  Overlay:   {}", mount_point.display());
+        println!("  Overlay:   {}", work_dir.display());
         println!("  Base:      {base_short}");
+        if fuse_mounted {
+            println!("  FUSE:      mounted");
+        }
         println!();
         super::interactive::run_interactive_session(
             &mut ctx,
             &agent_id,
             &changeset_id,
             &head,
+            &work_dir,
             &args,
         )?;
     }
 
     Ok(())
+}
+
+/// Spawn a FUSE daemon process that mounts `PhantomFs` at the overlay's mount point.
+///
+/// Returns `true` if the mount was successful, `false` if FUSE is unavailable.
+fn spawn_fuse_daemon(
+    ctx: &PhantomContext,
+    agent: &str,
+    mount_point: &Path,
+    upper_dir: &Path,
+) -> anyhow::Result<bool> {
+    let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
+    let overlay_root = ctx.phantom_dir.join("overlays").join(agent);
+    let pid_file = overlay_root.join("fuse.pid");
+    let log_file = overlay_root.join("fuse.log");
+
+    let log_handle = std::fs::File::create(&log_file)
+        .with_context(|| format!("failed to create FUSE log at {}", log_file.display()))?;
+
+    let child = std::process::Command::new(&phantom_bin)
+        .arg("_fuse-mount")
+        .arg("--agent")
+        .arg(agent)
+        .arg("--mount-point")
+        .arg(mount_point)
+        .arg("--upper-dir")
+        .arg(upper_dir)
+        .arg("--lower-dir")
+        .arg(&ctx.repo_root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(log_handle)
+        .spawn()
+        .context("failed to spawn FUSE daemon")?;
+
+    std::fs::write(&pid_file, child.id().to_string())
+        .context("failed to write FUSE PID file")?;
+
+    wait_for_mount(mount_point, Duration::from_secs(5)).with_context(|| {
+        format!(
+            "FUSE mount did not become ready. Check {}",
+            log_file.display()
+        )
+    })?;
+
+    Ok(true)
+}
+
+/// Poll until a FUSE mount appears at `mount_point`.
+///
+/// Detects the mount by comparing the device ID of the mount point to its
+/// parent directory — a mounted filesystem has a different device.
+fn wait_for_mount(mount_point: &Path, timeout: Duration) -> anyhow::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let parent = mount_point
+        .parent()
+        .context("mount point has no parent directory")?;
+    let start = std::time::Instant::now();
+
+    loop {
+        if let (Ok(m), Ok(p)) = (std::fs::metadata(mount_point), std::fs::metadata(parent)) {
+            if m.dev() != p.dev() {
+                return Ok(());
+            }
+        }
+
+        if start.elapsed() > timeout {
+            anyhow::bail!("timed out after {}s", timeout.as_secs());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Generate a unique changeset ID.

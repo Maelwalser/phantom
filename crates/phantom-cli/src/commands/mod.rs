@@ -1,5 +1,6 @@
 pub mod destroy;
 pub mod dispatch;
+pub mod fuse_mount;
 pub mod interactive;
 pub mod log;
 pub mod materialize;

@@ -30,10 +30,16 @@ pub async fn run() -> anyhow::Result<()> {
         println!("Active overlays:");
         println!("  {:<20} {:<20} PATH", "AGENT", "MODE");
         for agent in &active_agents {
+            let overlays_prefix = ctx.phantom_dir.join("overlays");
             let mount = ctx
                 .overlays
                 .upper_dir(agent)
-                .map(|p| p.display().to_string())
+                .map(|p| {
+                    p.strip_prefix(&overlays_prefix)
+                        .unwrap_or(p)
+                        .display()
+                        .to_string()
+                })
                 .unwrap_or_else(|_| "(not mounted)".into());
 
             // Determine session mode from projection

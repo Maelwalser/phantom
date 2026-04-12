@@ -26,39 +26,33 @@ const CONTEXT_FILE: &str = ".phantom-task.md";
 ///
 /// Blocks until the spawned process exits, then optionally auto-submits and
 /// auto-materializes the changeset.
+///
+/// `work_dir` is the directory the agent process runs in — typically the FUSE
+/// mount point (merged trunk + agent writes) or the upper dir when `--no-fuse`.
 pub fn run_interactive_session(
     ctx: &mut PhantomContext,
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
     base_commit: &GitOid,
+    work_dir: &Path,
     args: &DispatchArgs,
 ) -> anyhow::Result<()> {
-    let upper_dir = ctx
-        .overlays
-        .upper_dir(agent_id)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .to_path_buf();
-
     let command = args.command.as_deref().unwrap_or("claude");
 
-    // Write context file into the overlay so the CLI session has agent metadata
-    write_context_file(
-        &upper_dir,
-        agent_id,
-        changeset_id,
-        base_commit,
-        args.task.as_deref(),
-    )?;
+    // Write context file into the working directory so the CLI session has
+    // agent metadata. When FUSE is mounted, writes to mount_point go through
+    // to the upper layer automatically.
+    write_context_file(work_dir, agent_id, changeset_id, base_commit, args.task.as_deref())?;
 
     // Spawn the interactive process
     let start = Instant::now();
     let mut child = std::process::Command::new(command)
-        .current_dir(&upper_dir)
+        .current_dir(work_dir)
         .env("PHANTOM_AGENT_ID", &agent_id.0)
         .env("PHANTOM_CHANGESET_ID", &changeset_id.0)
         .env(
             "PHANTOM_OVERLAY_DIR",
-            upper_dir.to_str().unwrap_or_default(),
+            work_dir.to_str().unwrap_or_default(),
         )
         .env(
             "PHANTOM_REPO_ROOT",
@@ -111,8 +105,14 @@ pub fn run_interactive_session(
         .append(end_event)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    // Remove the generated context file so it doesn't pollute the changeset
-    cleanup_context_file(&upper_dir);
+    // Remove the generated context file so it doesn't pollute the changeset.
+    // Clean from both work_dir and upper_dir to handle FUSE vs non-FUSE cases.
+    cleanup_context_file(work_dir);
+    let upper_dir = ctx
+        .overlays
+        .upper_dir(agent_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    cleanup_context_file(upper_dir);
 
     println!();
     if let Some(code) = exit_code {

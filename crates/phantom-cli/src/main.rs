@@ -40,6 +40,10 @@ enum Commands {
     /// Destroy an agent's overlay
     #[command(visible_alias = "rm")]
     Destroy(commands::destroy::DestroyArgs),
+
+    /// Internal: run FUSE mount daemon (not for direct use)
+    #[command(name = "_fuse-mount", hide = true)]
+    FuseMount(commands::fuse_mount::FuseMountArgs),
 }
 
 #[tokio::main]
@@ -57,6 +61,7 @@ async fn main() {
         Commands::Rollback(args) => commands::rollback::run(args).await,
         Commands::Log(args) => commands::log::run(args).await,
         Commands::Destroy(args) => commands::destroy::run(args).await,
+        Commands::FuseMount(args) => commands::fuse_mount::run(args),
     };
 
     if let Err(e) = result {

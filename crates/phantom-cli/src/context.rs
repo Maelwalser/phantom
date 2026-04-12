@@ -59,6 +59,9 @@ impl PhantomContext {
 
 /// Scan `.phantom/overlays/` for existing agent directories and re-register them
 /// with the overlay manager so they survive across CLI invocations.
+///
+/// Also cleans up stale FUSE mounts where the daemon died but the PID file
+/// remains.
 fn restore_overlays(
     overlays: &mut OverlayManager,
     phantom_dir: &Path,
@@ -82,6 +85,9 @@ fn restore_overlays(
 
         let upper_dir = entry.path().join("upper");
         if upper_dir.is_dir() {
+            // Clean up stale FUSE mounts before restoring the overlay.
+            cleanup_stale_fuse_mount(&entry.path(), agent_name);
+
             let agent_id = phantom_core::AgentId(agent_name.to_string());
             // Only register if not already tracked
             if overlays.upper_dir(&agent_id).is_err()
@@ -93,6 +99,43 @@ fn restore_overlays(
     }
 
     Ok(())
+}
+
+/// Check if a FUSE daemon's PID file exists and whether the process is still alive.
+/// If the daemon is dead, attempt to unmount the stale FUSE mount and clean up.
+fn cleanup_stale_fuse_mount(overlay_dir: &Path, agent_name: &str) {
+    let pid_file = overlay_dir.join("fuse.pid");
+    if !pid_file.exists() {
+        return;
+    }
+
+    let pid_str = match std::fs::read_to_string(&pid_file) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let pid: i32 = match pid_str.trim().parse() {
+        Ok(p) => p,
+        Err(_) => {
+            let _ = std::fs::remove_file(&pid_file);
+            return;
+        }
+    };
+
+    // SAFETY: kill(pid, 0) checks if a process exists without sending a signal.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+
+    if !alive {
+        let mount_point = overlay_dir.join("mount");
+        let _ = std::process::Command::new("fusermount3")
+            .arg("-u")
+            .arg(&mount_point)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        let _ = std::fs::remove_file(&pid_file);
+        warn!(agent = agent_name, pid, "cleaned up stale FUSE mount");
+    }
 }
 
 /// Walk up from `start` looking for a `.phantom/` directory.
