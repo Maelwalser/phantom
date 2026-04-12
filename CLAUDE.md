@@ -58,7 +58,7 @@ phantom/
 ├── Cargo.toml                  # Workspace root
 ├── CLAUDE.md                   # This file
 ├── README.md
-├── LICENSE                     # MIT OR Apache-2.0
+├── LICENSE                     # MIT
 │
 ├── crates/
 │   ├── phantom-cli/            # Binary crate — the `phantom` command

@@ -392,4 +392,4 @@ See the [architecture documentation](docs/architecture.md) for design details.
 
 ## License
 
-MIT OR Apache-2.0
+MIT

@@ -22,16 +22,35 @@ const WHITEOUT_FILE: &str = ".whiteouts.json";
 ///
 /// `.phantom` is the internal metadata directory (contains the FUSE mount point
 /// itself — exposing it through FUSE causes a self-referential access deadlock).
-/// `.git` is hidden because agents should interact with git only through Phantom.
-const HIDDEN_DIRS: &[&str] = &[".phantom", ".git"];
+const HIDDEN_DIRS: &[&str] = &[".phantom"];
+
+/// Paths that bypass the COW upper layer entirely.
+///
+/// `.git` is passthrough so that git operations from within the overlay mount
+/// (e.g. `git status`, `git commit`) read and write the real repository state.
+/// All reads, writes, and metadata queries for these paths go directly to the
+/// lower (trunk) layer.
+const PASSTHROUGH_DIRS: &[&str] = &[".git"];
 
 /// Returns `true` if a relative path starts with a hidden directory.
 fn is_hidden(rel_path: &Path) -> bool {
+    first_component(rel_path).is_some_and(|name| HIDDEN_DIRS.contains(&name))
+}
+
+/// Returns `true` if a relative path starts with a passthrough directory.
+///
+/// Passthrough paths are routed directly to the lower layer for all operations,
+/// bypassing the upper layer and whiteout tracking.
+fn is_passthrough(rel_path: &Path) -> bool {
+    first_component(rel_path).is_some_and(|name| PASSTHROUGH_DIRS.contains(&name))
+}
+
+/// Extract the first path component as a `&str`, if possible.
+fn first_component(rel_path: &Path) -> Option<&str> {
     rel_path
         .components()
         .next()
         .and_then(|c| c.as_os_str().to_str())
-        .is_some_and(|name| HIDDEN_DIRS.contains(&name))
 }
 
 /// File type for directory entries.
@@ -98,9 +117,23 @@ impl OverlayLayer {
 
     /// Read a file's contents. Checks upper layer first, then lower.
     ///
+    /// Passthrough paths (`.git/**`) are read directly from the lower layer.
     /// Returns an error if the path has been whiteout'd (deleted) or is hidden.
     pub fn read_file(&self, rel_path: &Path) -> Result<Vec<u8>, OverlayError> {
-        if is_hidden(rel_path) || self.whiteouts.contains(rel_path) {
+        if is_hidden(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        if is_passthrough(rel_path) {
+            let lower_path = self.lower.join(rel_path);
+            if lower_path.exists() {
+                trace!(path = %rel_path.display(), layer = "lower-passthrough", "reading file");
+                return Ok(fs::read(&lower_path)?);
+            }
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        if self.whiteouts.contains(rel_path) {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
 
@@ -119,11 +152,21 @@ impl OverlayLayer {
         Err(OverlayError::PathNotFound(rel_path.to_path_buf()))
     }
 
-    /// Write a file to the upper layer.
+    /// Write a file to the upper layer (or directly to lower for passthrough paths).
     ///
     /// Creates parent directories as needed. Automatically removes the path
     /// from the whiteout set if it was previously deleted.
     pub fn write_file(&mut self, rel_path: &Path, data: &[u8]) -> Result<(), OverlayError> {
+        if is_passthrough(rel_path) {
+            let lower_path = self.lower.join(rel_path);
+            if let Some(parent) = lower_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&lower_path, data)?;
+            trace!(path = %rel_path.display(), layer = "lower-passthrough", "writing file");
+            return Ok(());
+        }
+
         let upper_path = self.upper.join(rel_path);
         if let Some(parent) = upper_path.parent() {
             fs::create_dir_all(parent)?;
@@ -139,10 +182,19 @@ impl OverlayLayer {
 
     /// Delete a file from the overlay.
     ///
-    /// If the file exists in the upper layer, it is removed. The path is added
-    /// to the whiteout set so that the lower layer's version is also hidden.
-    /// Whiteouts are persisted to disk.
+    /// Passthrough paths are deleted directly from the lower layer (no whiteout).
+    /// For normal paths, if the file exists in the upper layer it is removed, and
+    /// the path is added to the whiteout set so the lower layer's version is hidden.
     pub fn delete_file(&mut self, rel_path: &Path) -> Result<(), OverlayError> {
+        if is_passthrough(rel_path) {
+            let lower_path = self.lower.join(rel_path);
+            if lower_path.exists() {
+                fs::remove_file(&lower_path)?;
+            }
+            debug!(path = %rel_path.display(), "passthrough file deleted");
+            return Ok(());
+        }
+
         let upper_path = self.upper.join(rel_path);
         if upper_path.exists() {
             fs::remove_file(&upper_path)?;
@@ -157,9 +209,20 @@ impl OverlayLayer {
 
     /// Read a directory, merging entries from upper and lower layers.
     ///
-    /// Entries present in the whiteout set are excluded. When the same name
-    /// exists in both layers, the upper entry takes precedence.
+    /// Passthrough directories read only from the lower layer. For normal
+    /// directories, entries from both layers are merged (upper takes precedence),
+    /// excluding whiteout'd and hidden entries. Passthrough entries (e.g. `.git`)
+    /// are included when listing the root directory.
     pub fn read_dir(&self, rel_path: &Path) -> Result<Vec<DirEntry>, OverlayError> {
+        // Passthrough directories read exclusively from lower.
+        if is_passthrough(rel_path) {
+            let lower_dir = self.lower.join(rel_path);
+            if lower_dir.is_dir() {
+                return read_dir_entries(&lower_dir);
+            }
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
 
@@ -200,19 +263,42 @@ impl OverlayLayer {
         Ok(entries)
     }
 
-    /// Check whether a path exists in the overlay (not whiteout'd, not hidden,
-    /// present in upper or lower).
+    /// Check whether a path exists in the overlay.
+    ///
+    /// Passthrough paths check only the lower layer. Normal paths check upper
+    /// then lower, excluding whiteout'd and hidden entries.
     #[must_use]
     pub fn exists(&self, rel_path: &Path) -> bool {
-        if is_hidden(rel_path) || self.whiteouts.contains(rel_path) {
+        if is_hidden(rel_path) {
+            return false;
+        }
+        if is_passthrough(rel_path) {
+            return self.lower.join(rel_path).exists();
+        }
+        if self.whiteouts.contains(rel_path) {
             return false;
         }
         self.upper.join(rel_path).exists() || self.lower.join(rel_path).exists()
     }
 
-    /// Get filesystem metadata for a path. Upper layer takes precedence.
+    /// Get filesystem metadata for a path.
+    ///
+    /// Passthrough paths read metadata directly from the lower layer.
+    /// Normal paths check upper first, then lower.
     pub fn getattr(&self, rel_path: &Path) -> Result<fs::Metadata, OverlayError> {
-        if is_hidden(rel_path) || self.whiteouts.contains(rel_path) {
+        if is_hidden(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        if is_passthrough(rel_path) {
+            let lower_path = self.lower.join(rel_path);
+            if lower_path.exists() {
+                return Ok(fs::metadata(&lower_path)?);
+            }
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        if self.whiteouts.contains(rel_path) {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
 
@@ -290,6 +376,15 @@ impl OverlayLayer {
     #[must_use]
     pub fn lower_dir(&self) -> &Path {
         &self.lower
+    }
+
+    /// Returns `true` if the given relative path is a passthrough path.
+    ///
+    /// Passthrough paths bypass the COW upper layer and route directly to the
+    /// lower (trunk) layer for all operations.
+    #[must_use]
+    pub fn is_passthrough(&self, rel_path: &Path) -> bool {
+        is_passthrough(rel_path)
     }
 
     /// Clear all files from the upper layer and reset whiteouts.
@@ -540,11 +635,8 @@ mod tests {
     fn hidden_dirs_are_invisible() {
         let (lower, upper) = setup();
 
-        // Create .phantom and .git directories in the lower layer (as a real
-        // repo root would have).
+        // Create .phantom directory in the lower layer.
         fs::create_dir_all(lower.path().join(".phantom/overlays/agent/mount")).unwrap();
-        fs::create_dir_all(lower.path().join(".git/objects")).unwrap();
-        fs::write(lower.path().join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
         fs::write(lower.path().join("visible.txt"), b"hello").unwrap();
 
         let layer =
@@ -552,12 +644,8 @@ mod tests {
 
         // Hidden paths must be invisible.
         assert!(!layer.exists(Path::new(".phantom")));
-        assert!(!layer.exists(Path::new(".git")));
-        assert!(!layer.exists(Path::new(".git/HEAD")));
         assert!(!layer.exists(Path::new(".phantom/overlays/agent/mount")));
         assert!(layer.getattr(Path::new(".phantom")).is_err());
-        assert!(layer.getattr(Path::new(".git")).is_err());
-        assert!(layer.read_file(Path::new(".git/HEAD")).is_err());
 
         // Visible files still work.
         assert!(layer.exists(Path::new("visible.txt")));
@@ -569,7 +657,95 @@ mod tests {
             .map(|e| e.name.to_string_lossy().into_owned())
             .collect();
         assert!(!names.contains(&".phantom".to_string()));
-        assert!(!names.contains(&".git".to_string()));
         assert!(names.contains(&"visible.txt".to_string()));
+    }
+
+    #[test]
+    fn git_dir_is_passthrough_to_lower() {
+        let (lower, upper) = setup();
+
+        // Create .git in the lower layer (simulates a real repo).
+        fs::create_dir_all(lower.path().join(".git/objects")).unwrap();
+        fs::create_dir_all(lower.path().join(".git/refs/heads")).unwrap();
+        fs::write(lower.path().join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
+        fs::write(lower.path().join("visible.txt"), b"hello").unwrap();
+
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        // .git should be visible and accessible.
+        assert!(layer.exists(Path::new(".git")));
+        assert!(layer.exists(Path::new(".git/HEAD")));
+        assert!(layer.getattr(Path::new(".git")).is_ok());
+        assert!(layer.getattr(Path::new(".git/HEAD")).is_ok());
+
+        // Reads go to lower layer.
+        let head = layer.read_file(Path::new(".git/HEAD")).unwrap();
+        assert_eq!(head, b"ref: refs/heads/main");
+
+        // Writes go directly to lower layer.
+        layer
+            .write_file(Path::new(".git/HEAD"), b"ref: refs/heads/feature")
+            .unwrap();
+        let updated = fs::read(lower.path().join(".git/HEAD")).unwrap();
+        assert_eq!(updated, b"ref: refs/heads/feature");
+
+        // Verify write did NOT go to upper layer.
+        assert!(!upper.path().join(".git/HEAD").exists());
+
+        // read_dir on .git returns lower layer contents.
+        let entries = layer.read_dir(Path::new(".git")).unwrap();
+        let names: HashSet<_> = entries
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains("HEAD"));
+        assert!(names.contains("objects"));
+        assert!(names.contains("refs"));
+
+        // Root read_dir includes .git.
+        let root_entries = layer.read_dir(Path::new("")).unwrap();
+        let root_names: Vec<_> = root_entries
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        assert!(root_names.contains(&".git".to_string()));
+        assert!(root_names.contains(&"visible.txt".to_string()));
+    }
+
+    #[test]
+    fn git_passthrough_delete_hits_lower() {
+        let (lower, upper) = setup();
+
+        fs::create_dir_all(lower.path().join(".git")).unwrap();
+        fs::write(lower.path().join(".git/MERGE_HEAD"), b"abc123").unwrap();
+
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        // Delete a .git file — should remove from lower directly.
+        layer.delete_file(Path::new(".git/MERGE_HEAD")).unwrap();
+        assert!(!lower.path().join(".git/MERGE_HEAD").exists());
+        // No whiteout should be created for passthrough paths.
+        assert!(layer.deleted_files().is_empty());
+    }
+
+    #[test]
+    fn git_passthrough_not_affected_by_upper_or_whiteouts() {
+        let (lower, upper) = setup();
+
+        fs::create_dir_all(lower.path().join(".git")).unwrap();
+        fs::write(lower.path().join(".git/config"), b"[core]\nbare = false").unwrap();
+
+        // Place a decoy in the upper layer — passthrough should ignore it.
+        fs::create_dir_all(upper.path().join(".git")).unwrap();
+        fs::write(upper.path().join(".git/config"), b"DECOY").unwrap();
+
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        // Reads must come from lower, not upper.
+        let config = layer.read_file(Path::new(".git/config")).unwrap();
+        assert_eq!(config, b"[core]\nbare = false");
     }
 }

@@ -478,12 +478,20 @@ mod inner {
 
             let child_path = parent_path.join(name);
             let mut layer = self.layer.lock().unwrap();
-            let upper_path = layer.upper_dir().join(&child_path);
 
-            match std::fs::create_dir_all(&upper_path) {
+            // Passthrough paths create directories directly in the lower layer.
+            let target_path = if layer.is_passthrough(&child_path) {
+                layer.lower_dir().join(&child_path)
+            } else {
+                layer.upper_dir().join(&child_path)
+            };
+
+            match std::fs::create_dir_all(&target_path) {
                 Ok(()) => {
-                    // Clear whiteout if this dir was previously deleted.
-                    layer.remove_whiteout(&child_path);
+                    if !layer.is_passthrough(&child_path) {
+                        // Clear whiteout if this dir was previously deleted.
+                        layer.remove_whiteout(&child_path);
+                    }
                     let ino = self.inodes.get_or_create_inode(&child_path);
                     reply.entry(&TTL, &default_dir_attr(ino), Generation(0));
                     debug!(path = %child_path.display(), "mkdir");
@@ -503,14 +511,22 @@ mod inner {
 
             let child_path = parent_path.join(name);
             let mut layer = self.layer.lock().unwrap();
-            let upper_path = layer.upper_dir().join(&child_path);
+            let is_passthrough = layer.is_passthrough(&child_path);
 
-            if upper_path.is_dir() {
+            let target_path = if is_passthrough {
+                layer.lower_dir().join(&child_path)
+            } else {
+                layer.upper_dir().join(&child_path)
+            };
+
+            if target_path.is_dir() {
                 // Use remove_dir (not remove_dir_all) — POSIX rmdir fails on non-empty.
-                match std::fs::remove_dir(&upper_path) {
+                match std::fs::remove_dir(&target_path) {
                     Ok(()) => {
-                        // Add whiteout so the dir is hidden even if it exists in lower layer.
-                        let _ = layer.delete_file(&child_path);
+                        if !is_passthrough {
+                            // Add whiteout so the dir is hidden even if it exists in lower layer.
+                            let _ = layer.delete_file(&child_path);
+                        }
                         drop(layer);
                         self.inodes.remove(&child_path);
                         reply.ok();

@@ -19,7 +19,7 @@ members = [
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [dev-dependencies]
 phantom-core = { path = "crates/phantom-core" }
