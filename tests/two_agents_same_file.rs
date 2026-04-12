@@ -52,7 +52,7 @@ fn test_two_agents_same_file_different_symbols_auto_merges() {
     // Materialize agent-a.
     let mat = ctx.materializer();
     let result_a = mat
-        .materialize(&cs_a, upper_a.path(), &ctx.events, &ctx.merger)
+        .materialize(&cs_a, upper_a.path(), &ctx.events, &ctx.merger, "test commit")
         .expect("materialize agent-a failed");
     assert!(
         matches!(result_a, MaterializeResult::Success { .. }),
@@ -62,7 +62,7 @@ fn test_two_agents_same_file_different_symbols_auto_merges() {
     // Materialize agent-b — same file, different symbols.
     let mat2 = ctx.materializer();
     let result_b = mat2
-        .materialize(&cs_b, upper_b.path(), &ctx.events, &ctx.merger)
+        .materialize(&cs_b, upper_b.path(), &ctx.events, &ctx.merger, "test commit")
         .expect("materialize agent-b failed");
     assert!(
         matches!(result_b, MaterializeResult::Success { .. }),

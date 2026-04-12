@@ -30,7 +30,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     );
     let mat = ctx.materializer();
     let r1 = mat
-        .materialize(&cs_001, upper_1.path(), &ctx.events, &ctx.merger)
+        .materialize(&cs_001, upper_1.path(), &ctx.events, &ctx.merger, "test commit")
         .unwrap();
     let commit_after_001 = match r1 {
         MaterializeResult::Success { new_commit } => new_commit,
@@ -51,7 +51,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     );
     let mat2 = ctx.materializer();
     let r2 = mat2
-        .materialize(&cs_002, upper_2.path(), &ctx.events, &ctx.merger)
+        .materialize(&cs_002, upper_2.path(), &ctx.events, &ctx.merger, "test commit")
         .unwrap();
     let commit_after_002 = match r2 {
         MaterializeResult::Success { new_commit } => new_commit,
@@ -75,7 +75,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     );
     let mat3 = ctx.materializer();
     let r3 = mat3
-        .materialize(&cs_003, upper_3.path(), &ctx.events, &ctx.merger)
+        .materialize(&cs_003, upper_3.path(), &ctx.events, &ctx.merger, "test commit")
         .unwrap();
     assert!(
         matches!(r3, MaterializeResult::Success { .. }),
@@ -137,7 +137,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     );
     let mat_replay = ctx.materializer();
     let r3_replay = mat_replay
-        .materialize(&cs_003_replayed, upper_3b.path(), &ctx.events, &ctx.merger)
+        .materialize(&cs_003_replayed, upper_3b.path(), &ctx.events, &ctx.merger, "test commit")
         .unwrap();
     assert!(
         matches!(r3_replay, MaterializeResult::Success { .. }),

@@ -37,7 +37,7 @@ fn test_ripple_notification_after_materialize() {
     // Materialize agent-a.
     let mat = ctx.materializer();
     let result = mat
-        .materialize(&cs_a, upper_a.path(), &ctx.events, &ctx.merger)
+        .materialize(&cs_a, upper_a.path(), &ctx.events, &ctx.merger, "test commit")
         .expect("materialize failed");
 
     let new_head = match result {

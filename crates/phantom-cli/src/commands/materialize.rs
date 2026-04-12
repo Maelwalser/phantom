@@ -19,6 +19,10 @@ use crate::context::PhantomContext;
 pub struct MaterializeArgs {
     /// Changeset ID (e.g. "cs-0042") or agent name (e.g. "agent-a")
     pub target: String,
+
+    /// Commit message. Defaults to the agent name if omitted.
+    #[arg(short, long)]
+    pub message: Option<String>,
 }
 
 pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
@@ -44,7 +48,20 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
         cs.id.clone()
     };
 
-    let result = materialize_changeset(&mut ctx, &changeset_id)?;
+    // Resolve commit message: use --message if provided, otherwise default to
+    // the agent name from the changeset.
+    let commit_message = if let Some(msg) = args.message {
+        msg
+    } else {
+        let all = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let proj = Projection::from_events(&all);
+        let cs = proj
+            .changeset(&changeset_id)
+            .with_context(|| format!("changeset '{changeset_id}' not found"))?;
+        cs.agent_id.0.clone()
+    };
+
+    let result = materialize_changeset(&mut ctx, &changeset_id, &commit_message)?;
 
     match result {
         MaterializeResult::Success { new_commit } => {
@@ -80,6 +97,7 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
 pub fn materialize_changeset(
     ctx: &mut PhantomContext,
     changeset_id: &ChangesetId,
+    message: &str,
 ) -> anyhow::Result<MaterializeResult> {
     let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
     let projection = Projection::from_events(&all_events);
@@ -101,7 +119,7 @@ pub fn materialize_changeset(
     );
 
     let result = materializer
-        .materialize(&changeset, &upper_dir, &ctx.events, &ctx.semantic)
+        .materialize(&changeset, &upper_dir, &ctx.events, &ctx.semantic, message)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Clear the agent's upper layer so reads fall through to the updated trunk.

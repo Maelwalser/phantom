@@ -1,8 +1,29 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use tracing::error;
 
+mod cli_adapter;
 mod commands;
 mod context;
+
+
+
+
+
+
+fn print_banner() {
+    println!(
+        r#"
+                     ▄██████▄
+                  ▄██████████▄
+                 ████  ██  ████
+               ▄████████████████
+              ██████ ▄▄▄▄▄ █████
+               ██████ ▀▀▀ ████▀
+             ▀███████████████▀
+               ▀▀█████████▀▀
+"#
+    );
+}
 
 #[derive(Parser)]
 #[command(
@@ -12,7 +33,7 @@ mod context;
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(clap::Subcommand)]
@@ -53,15 +74,22 @@ async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Up => commands::up::run().await,
-        Commands::Dispatch(args) => commands::dispatch::run(args).await,
-        Commands::Submit(args) => commands::submit::run(args).await,
-        Commands::Status => commands::status::run().await,
-        Commands::Materialize(args) => commands::materialize::run(args).await,
-        Commands::Rollback(args) => commands::rollback::run(args).await,
-        Commands::Log(args) => commands::log::run(args).await,
-        Commands::Destroy(args) => commands::destroy::run(args).await,
-        Commands::FuseMount(args) => commands::fuse_mount::run(args),
+        None => {
+            print_banner();
+            let mut cmd = Cli::command();
+            cmd.print_help().ok();
+            println!();
+            Ok(())
+        }
+        Some(Commands::Up) => commands::up::run().await,
+        Some(Commands::Dispatch(args)) => commands::dispatch::run(args).await,
+        Some(Commands::Submit(args)) => commands::submit::run(args).await,
+        Some(Commands::Status) => commands::status::run().await,
+        Some(Commands::Materialize(args)) => commands::materialize::run(args).await,
+        Some(Commands::Rollback(args)) => commands::rollback::run(args).await,
+        Some(Commands::Log(args)) => commands::log::run(args).await,
+        Some(Commands::Destroy(args)) => commands::destroy::run(args).await,
+        Some(Commands::FuseMount(args)) => commands::fuse_mount::run(args),
     };
 
     if let Err(e) = result {

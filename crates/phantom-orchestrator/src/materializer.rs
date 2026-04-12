@@ -68,6 +68,7 @@ impl Materializer {
         upper_dir: &Path,
         event_store: &dyn EventStore,
         analyzer: &dyn SemanticAnalyzer,
+        message: &str,
     ) -> Result<MaterializeResult, OrchestratorError> {
         let head = self.git.head_oid()?;
         let trunk_path = self
@@ -79,17 +80,15 @@ impl Materializer {
             })?
             .to_path_buf();
 
-        let message = format!("phantom: materialize {} ({})", changeset.id, changeset.task);
-
         if head == changeset.base_commit {
-            return self.direct_apply(changeset, upper_dir, &trunk_path, &message, event_store);
+            return self.direct_apply(changeset, upper_dir, &trunk_path, message, event_store);
         }
 
         let ctx = MergeContext {
             upper_dir,
             trunk_path: &trunk_path,
             head: &head,
-            message: &message,
+            message,
             event_store,
             analyzer,
         };
@@ -577,7 +576,7 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer)
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
             .unwrap();
 
         match result {
@@ -612,7 +611,7 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer)
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
             .unwrap();
 
         match result {
@@ -656,7 +655,7 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer)
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
             .unwrap();
 
         match result {
@@ -692,7 +691,7 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer)
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
             .unwrap();
 
         match result {
@@ -765,7 +764,7 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer)
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
             .unwrap();
 
         match result {
@@ -797,7 +796,7 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer)
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
             .unwrap();
 
         match result {
@@ -826,7 +825,7 @@ mod tests {
         let changeset = make_changeset("cs-bad", base, vec![PathBuf::from("../../../etc/passwd")]);
 
         let materializer = Materializer::new(git);
-        let result = materializer.materialize(&changeset, upper.path(), &event_store, &analyzer);
+        let result = materializer.materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit");
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -847,7 +846,7 @@ mod tests {
         let changeset = make_changeset("cs-abs", base, vec![PathBuf::from("/etc/passwd")]);
 
         let materializer = Materializer::new(git);
-        let result = materializer.materialize(&changeset, upper.path(), &event_store, &analyzer);
+        let result = materializer.materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit");
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

@@ -24,6 +24,10 @@ chrono = { workspace = true }
 git2 = { workspace = true }
 libc = { workspace = true }
 fuser = { workspace = true }
+nix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2"

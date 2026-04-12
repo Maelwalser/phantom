@@ -8,7 +8,7 @@
 //! If an overlay already exists for the agent, the command resumes the existing
 //! session (reuses changeset ID, skips event emission, re-mounts FUSE if needed).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
