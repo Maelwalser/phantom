@@ -18,6 +18,22 @@ use crate::trunk_view::{read_dir_entries, walk_files};
 
 const WHITEOUT_FILE: &str = ".whiteouts.json";
 
+/// Paths that are always hidden from the overlay view.
+///
+/// `.phantom` is the internal metadata directory (contains the FUSE mount point
+/// itself — exposing it through FUSE causes a self-referential access deadlock).
+/// `.git` is hidden because agents should interact with git only through Phantom.
+const HIDDEN_DIRS: &[&str] = &[".phantom", ".git"];
+
+/// Returns `true` if a relative path starts with a hidden directory.
+fn is_hidden(rel_path: &Path) -> bool {
+    rel_path
+        .components()
+        .next()
+        .and_then(|c| c.as_os_str().to_str())
+        .is_some_and(|name| HIDDEN_DIRS.contains(&name))
+}
+
 /// File type for directory entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
@@ -82,9 +98,9 @@ impl OverlayLayer {
 
     /// Read a file's contents. Checks upper layer first, then lower.
     ///
-    /// Returns an error if the path has been whiteout'd (deleted).
+    /// Returns an error if the path has been whiteout'd (deleted) or is hidden.
     pub fn read_file(&self, rel_path: &Path) -> Result<Vec<u8>, OverlayError> {
-        if self.whiteouts.contains(rel_path) {
+        if is_hidden(rel_path) || self.whiteouts.contains(rel_path) {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
 
@@ -152,7 +168,7 @@ impl OverlayLayer {
         if upper_dir.is_dir() {
             for entry in read_dir_entries(&upper_dir)? {
                 let entry_rel = rel_path.join(&entry.name);
-                if !self.whiteouts.contains(&entry_rel) {
+                if !self.whiteouts.contains(&entry_rel) && !is_hidden(&entry_rel) {
                     // Skip the whiteout metadata file.
                     if entry.name != WHITEOUT_FILE {
                         seen.insert(entry.name.clone());
@@ -162,12 +178,15 @@ impl OverlayLayer {
             }
         }
 
-        // Lower layer (only entries not already seen and not whiteout'd).
+        // Lower layer (only entries not already seen, not whiteout'd, not hidden).
         let lower_dir = self.lower.join(rel_path);
         if lower_dir.is_dir() {
             for entry in read_dir_entries(&lower_dir)? {
                 let entry_rel = rel_path.join(&entry.name);
-                if !seen.contains(&entry.name) && !self.whiteouts.contains(&entry_rel) {
+                if !seen.contains(&entry.name)
+                    && !self.whiteouts.contains(&entry_rel)
+                    && !is_hidden(&entry_rel)
+                {
                     seen.insert(entry.name.clone());
                     entries.push(entry);
                 }
@@ -181,11 +200,11 @@ impl OverlayLayer {
         Ok(entries)
     }
 
-    /// Check whether a path exists in the overlay (not whiteout'd, present in
-    /// upper or lower).
+    /// Check whether a path exists in the overlay (not whiteout'd, not hidden,
+    /// present in upper or lower).
     #[must_use]
     pub fn exists(&self, rel_path: &Path) -> bool {
-        if self.whiteouts.contains(rel_path) {
+        if is_hidden(rel_path) || self.whiteouts.contains(rel_path) {
             return false;
         }
         self.upper.join(rel_path).exists() || self.lower.join(rel_path).exists()
@@ -193,7 +212,7 @@ impl OverlayLayer {
 
     /// Get filesystem metadata for a path. Upper layer takes precedence.
     pub fn getattr(&self, rel_path: &Path) -> Result<fs::Metadata, OverlayError> {
-        if self.whiteouts.contains(rel_path) {
+        if is_hidden(rel_path) || self.whiteouts.contains(rel_path) {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
 
@@ -515,5 +534,42 @@ mod tests {
         assert_eq!(data, b"from trunk");
         // Agent-only file is gone.
         assert!(!layer.exists(Path::new("agent.txt")));
+    }
+
+    #[test]
+    fn hidden_dirs_are_invisible() {
+        let (lower, upper) = setup();
+
+        // Create .phantom and .git directories in the lower layer (as a real
+        // repo root would have).
+        fs::create_dir_all(lower.path().join(".phantom/overlays/agent/mount")).unwrap();
+        fs::create_dir_all(lower.path().join(".git/objects")).unwrap();
+        fs::write(lower.path().join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
+        fs::write(lower.path().join("visible.txt"), b"hello").unwrap();
+
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        // Hidden paths must be invisible.
+        assert!(!layer.exists(Path::new(".phantom")));
+        assert!(!layer.exists(Path::new(".git")));
+        assert!(!layer.exists(Path::new(".git/HEAD")));
+        assert!(!layer.exists(Path::new(".phantom/overlays/agent/mount")));
+        assert!(layer.getattr(Path::new(".phantom")).is_err());
+        assert!(layer.getattr(Path::new(".git")).is_err());
+        assert!(layer.read_file(Path::new(".git/HEAD")).is_err());
+
+        // Visible files still work.
+        assert!(layer.exists(Path::new("visible.txt")));
+
+        // read_dir must not include hidden entries.
+        let entries = layer.read_dir(Path::new("")).unwrap();
+        let names: Vec<_> = entries
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        assert!(!names.contains(&".phantom".to_string()));
+        assert!(!names.contains(&".git".to_string()));
+        assert!(names.contains(&"visible.txt".to_string()));
     }
 }
