@@ -95,6 +95,9 @@ pub fn rebase_agent(
                             "file {} was deleted on trunk but modified by agent",
                             file.display()
                         ),
+                        ours_span: None,
+                        theirs_span: None,
+                        base_span: None,
                     }],
                 ));
                 continue;
@@ -407,6 +410,9 @@ mod tests {
                         ours_changeset: phantom_core::id::ChangesetId("trunk".into()),
                         theirs_changeset: phantom_core::id::ChangesetId("agent".into()),
                         description: "text merge conflict".into(),
+                        ours_span: None,
+                        theirs_span: None,
+                        base_span: None,
                     },
                 ])),
             }

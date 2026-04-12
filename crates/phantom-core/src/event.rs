@@ -156,6 +156,9 @@ mod tests {
             ours_changeset: ChangesetId("cs-1".into()),
             theirs_changeset: ChangesetId("cs-2".into()),
             description: "test conflict".into(),
+            ours_span: None,
+            theirs_span: None,
+            base_span: None,
         }]);
         let json = serde_json::to_string(&conflicted).unwrap();
         let back: MergeCheckResult = serde_json::from_str(&json).unwrap();

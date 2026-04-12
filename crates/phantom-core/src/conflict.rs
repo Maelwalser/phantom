@@ -4,11 +4,27 @@
 //! conflict and attaches enough context for the orchestrator to decide
 //! whether to re-dispatch an agent or escalate to a human.
 
+use std::ops::Range;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::id::{ChangesetId, SymbolId};
+
+/// Byte-level location of one side of a conflict within a file.
+///
+/// Captures enough positional context so downstream consumers (CLI,
+/// orchestrator, agent wrappers) can render a conflict visualization
+/// without re-parsing the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConflictSpan {
+    /// Byte range of the conflicting region within the file.
+    pub byte_range: Range<usize>,
+    /// One-indexed start line (computed from source bytes for display).
+    pub start_line: usize,
+    /// One-indexed end line (inclusive).
+    pub end_line: usize,
+}
 
 /// Classification of a semantic conflict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -40,6 +56,37 @@ pub struct ConflictDetail {
     pub theirs_changeset: ChangesetId,
     /// Human-readable explanation of the conflict.
     pub description: String,
+    /// Location of the conflict in the "ours" version of the file, if known.
+    pub ours_span: Option<ConflictSpan>,
+    /// Location of the conflict in the "theirs" version of the file, if known.
+    pub theirs_span: Option<ConflictSpan>,
+    /// Location of the symbol in the base version, if known.
+    pub base_span: Option<ConflictSpan>,
+}
+
+impl ConflictSpan {
+    /// Build a [`ConflictSpan`] from source bytes and a byte range.
+    ///
+    /// Computes one-indexed line numbers by counting newlines in `src`
+    /// up to the range boundaries.
+    pub fn from_byte_range(src: &[u8], byte_range: Range<usize>) -> Self {
+        let start_line = src[..byte_range.start]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+            + 1;
+        let end_byte = byte_range.end.min(src.len());
+        let end_line = src[..end_byte]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+            + 1;
+        Self {
+            byte_range,
+            start_line,
+            end_line,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -54,6 +101,21 @@ mod tests {
             ours_changeset: ChangesetId("cs-0040".into()),
             theirs_changeset: ChangesetId("cs-0042".into()),
             description: "Both agents modified handlers::login".into(),
+            ours_span: Some(ConflictSpan {
+                byte_range: 100..200,
+                start_line: 5,
+                end_line: 10,
+            }),
+            theirs_span: Some(ConflictSpan {
+                byte_range: 100..250,
+                start_line: 5,
+                end_line: 12,
+            }),
+            base_span: Some(ConflictSpan {
+                byte_range: 100..180,
+                start_line: 5,
+                end_line: 9,
+            }),
         }
     }
 
@@ -81,6 +143,26 @@ mod tests {
     }
 
     #[test]
+    fn span_from_byte_range_computes_lines() {
+        let src = b"line1\nline2\nline3\nline4\n";
+        //          0----5 6----11 12---17 18---23
+
+        // Byte 6 is start of line 2, byte 17 is end of line 3
+        let span = ConflictSpan::from_byte_range(src, 6..17);
+        assert_eq!(span.start_line, 2);
+        assert_eq!(span.end_line, 3);
+        assert_eq!(span.byte_range, 6..17);
+    }
+
+    #[test]
+    fn span_from_byte_range_first_line() {
+        let src = b"fn main() {}";
+        let span = ConflictSpan::from_byte_range(src, 0..12);
+        assert_eq!(span.start_line, 1);
+        assert_eq!(span.end_line, 1);
+    }
+
+    #[test]
     fn conflict_detail_without_symbol() {
         let detail = ConflictDetail {
             kind: ConflictKind::RawTextConflict,
@@ -89,6 +171,9 @@ mod tests {
             ours_changeset: ChangesetId("cs-1".into()),
             theirs_changeset: ChangesetId("cs-2".into()),
             description: "raw text conflict in Cargo.toml".into(),
+            ours_span: None,
+            theirs_span: None,
+            base_span: None,
         };
         let json = serde_json::to_string(&detail).unwrap();
         let back: ConflictDetail = serde_json::from_str(&json).unwrap();

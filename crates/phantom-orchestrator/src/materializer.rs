@@ -196,6 +196,9 @@ impl Materializer {
                                     "file {} was deleted on trunk but modified by agent",
                                     file.display()
                                 ),
+                                ours_span: None,
+                                theirs_span: None,
+                                base_span: None,
                             });
                             continue;
                         }
@@ -648,6 +651,9 @@ mod tests {
                 ours_changeset: ChangesetId("trunk".into()),
                 theirs_changeset: ChangesetId("cs-3".into()),
                 description: "both modified same symbol".into(),
+                ours_span: None,
+                theirs_span: None,
+                base_span: None,
             }]),
         );
 
@@ -745,6 +751,9 @@ mod tests {
                 ours_changeset: ChangesetId("trunk".into()),
                 theirs_changeset: ChangesetId("cs-5".into()),
                 description: "conflict in file_b".into(),
+                ours_span: None,
+                theirs_span: None,
+                base_span: None,
             }]),
         );
         analyzer.set_merge_result(

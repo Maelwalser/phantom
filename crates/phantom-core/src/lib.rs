@@ -30,7 +30,7 @@ pub fn is_binary_or_non_utf8(buf: &[u8]) -> bool {
 
 // Re-export the most commonly used types at the crate root for ergonomics.
 pub use changeset::{Changeset, ChangesetStatus, SemanticOperation, TestResult};
-pub use conflict::{ConflictDetail, ConflictKind};
+pub use conflict::{ConflictDetail, ConflictKind, ConflictSpan};
 pub use error::CoreError;
 pub use event::{Event, EventKind, MergeCheckResult};
 pub use id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, SymbolId};

@@ -307,6 +307,9 @@ fn three_way_merge(
             ours_changeset: ChangesetId("unknown".into()),
             theirs_changeset: ChangesetId("unknown".into()),
             description: "file is binary or not valid UTF-8; cannot text-merge".into(),
+            ours_span: None,
+            theirs_span: None,
+            base_span: None,
         };
         return Ok(MergeResult::Conflict(vec![detail]));
     }
@@ -329,6 +332,9 @@ fn three_way_merge(
                 ours_changeset: ChangesetId("unknown".into()),
                 theirs_changeset: ChangesetId("unknown".into()),
                 description: "line-based three-way merge produced conflicts".into(),
+                ours_span: None,
+                theirs_span: None,
+                base_span: None,
             };
             let _ = conflict_text; // conflict markers available if needed
             Ok(MergeResult::Conflict(vec![detail]))

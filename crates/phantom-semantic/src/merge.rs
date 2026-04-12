@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use phantom_core::changeset::SemanticOperation;
-use phantom_core::conflict::{ConflictDetail, ConflictKind};
+use phantom_core::conflict::{ConflictDetail, ConflictKind, ConflictSpan};
 use phantom_core::error::CoreError;
 use phantom_core::id::ChangesetId;
 use phantom_core::is_binary_or_non_utf8;
@@ -134,6 +134,18 @@ impl SemanticMerger {
                                     "both sides modified {}::{}",
                                     ours_entry.scope, ours_entry.name
                                 ),
+                                ours_span: Some(ConflictSpan::from_byte_range(
+                                    ours,
+                                    ours_entry.byte_range.clone(),
+                                )),
+                                theirs_span: Some(ConflictSpan::from_byte_range(
+                                    theirs,
+                                    theirs_entry.byte_range.clone(),
+                                )),
+                                base_span: Some(ConflictSpan::from_byte_range(
+                                    base,
+                                    base_entry.byte_range.clone(),
+                                )),
                             });
                         }
                         // If both changed to same content, no conflict (deduplicate)
@@ -151,6 +163,15 @@ impl SemanticMerger {
                                 "both sides added {}::{} with different content",
                                 ours_entry.scope, ours_entry.name
                             ),
+                            ours_span: Some(ConflictSpan::from_byte_range(
+                                ours,
+                                ours_entry.byte_range.clone(),
+                            )),
+                            theirs_span: Some(ConflictSpan::from_byte_range(
+                                theirs,
+                                theirs_entry.byte_range.clone(),
+                            )),
+                            base_span: None,
                         });
                     }
                     // Same content → deduplicate, no conflict
@@ -176,6 +197,15 @@ impl SemanticMerger {
                             "ours modified {}::{} but theirs deleted it",
                             base_entry.scope, base_entry.name
                         ),
+                        ours_span: Some(ConflictSpan::from_byte_range(
+                            ours,
+                            ours_entry.byte_range.clone(),
+                        )),
+                        theirs_span: None,
+                        base_span: Some(ConflictSpan::from_byte_range(
+                            base,
+                            base_entry.byte_range.clone(),
+                        )),
                     });
                 }
             } else if !in_ours && in_theirs {
@@ -191,6 +221,15 @@ impl SemanticMerger {
                             "theirs modified {}::{} but ours deleted it",
                             base_entry.scope, base_entry.name
                         ),
+                        ours_span: None,
+                        theirs_span: Some(ConflictSpan::from_byte_range(
+                            theirs,
+                            theirs_entry.byte_range.clone(),
+                        )),
+                        base_span: Some(ConflictSpan::from_byte_range(
+                            base,
+                            base_entry.byte_range.clone(),
+                        )),
                     });
                 }
             }
@@ -349,6 +388,9 @@ fn text_merge(
             ours_changeset: ChangesetId("unknown".into()),
             theirs_changeset: ChangesetId("unknown".into()),
             description: "file is binary or not valid UTF-8; cannot text-merge".into(),
+            ours_span: None,
+            theirs_span: None,
+            base_span: None,
         }]));
     }
 
@@ -366,6 +408,9 @@ fn text_merge(
             ours_changeset: ChangesetId("unknown".into()),
             theirs_changeset: ChangesetId("unknown".into()),
             description: "line-level text conflict".into(),
+            ours_span: None,
+            theirs_span: None,
+            base_span: None,
         }])),
     }
 }
