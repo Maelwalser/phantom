@@ -16,6 +16,7 @@ use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid};
 use phantom_core::traits::EventStore;
+use phantom_events::SqliteEventStore;
 use phantom_overlay::OverlayError;
 
 use crate::context::PhantomContext;
@@ -45,19 +46,22 @@ pub struct DispatchArgs {
 }
 
 pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
-    let mut ctx = PhantomContext::load().await?;
+    let ctx = PhantomContext::locate()?;
+    let git = ctx.open_git()?;
+    let events = ctx.open_events().await?;
+    let mut overlays = ctx.open_overlays_restored()?;
 
     let agent_id = AgentId(args.agent.clone());
-    let head = ctx.git.head_oid().context("failed to read HEAD")?;
+    let head = git.head_oid().context("failed to read HEAD")?;
 
     // Try to create a new overlay. If one already exists, switch to resume mode.
     let (changeset_id, base_commit, is_new, mount_point, upper_dir) =
-        match ctx.overlays.create_overlay(agent_id.clone(), &ctx.repo_root) {
+        match overlays.create_overlay(agent_id.clone(), &ctx.repo_root) {
             Ok(handle) => {
                 let mount_point = handle.mount_point.clone();
                 let upper_dir = handle.upper_dir.clone();
 
-                let cs_id = generate_changeset_id(&ctx).await?;
+                let cs_id = generate_changeset_id(&events).await?;
 
                 let event = Event {
                     id: EventId(0),
@@ -69,28 +73,27 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
                         task: args.task.clone().unwrap_or_default(),
                     },
                 };
-                ctx.events
+                events
                     .append(event)
                     .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    ?;
 
                 phantom_orchestrator::live_rebase::write_current_base(
                     &ctx.phantom_dir,
                     &agent_id,
                     &head,
                 )
-                .map_err(|e| anyhow::anyhow!("failed to write initial current_base: {e}"))?;
+                .context("failed to write initial current_base")?;
 
                 (cs_id, head, true, mount_point, upper_dir)
             }
             Err(OverlayError::AlreadyExists(_)) => {
-                let (cs_id, base) = recover_changeset_from_events(&ctx, &agent_id).await?;
-                check_changeset_resumable(&ctx, &cs_id).await?;
+                let (cs_id, base) = recover_changeset_from_events(&events, &agent_id).await?;
+                check_changeset_resumable(&events, &cs_id).await?;
 
-                let upper_dir = ctx
-                    .overlays
+                let upper_dir = overlays
                     .upper_dir(&agent_id)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    ?
                     .to_path_buf();
                 let mount_point = ctx
                     .phantom_dir
@@ -100,7 +103,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
 
                 (cs_id, base, false, mount_point, upper_dir)
             }
-            Err(e) => return Err(anyhow::anyhow!("{e}")),
+            Err(e) => return Err(e.into()),
         };
 
     // Spawn FUSE daemon unless --no-fuse or already mounted.
@@ -108,7 +111,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
     let fuse_mounted = if args.no_fuse || already_mounted {
         already_mounted
     } else {
-        spawn_fuse_daemon(&ctx, &args.agent, &mount_point, &upper_dir)?
+        spawn_fuse_daemon(&ctx.phantom_dir, &ctx.repo_root, &args.agent, &mount_point, &upper_dir)?
     };
 
     // The agent's working directory: FUSE mount (merged view) or upper dir (writes only).
@@ -136,7 +139,8 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
         // This ensures the monitor can waitpid for the real exit code.
         let log_file = ctx.phantom_dir.join("overlays").join(&args.agent).join("agent.log");
         spawn_agent_monitor(
-            &ctx,
+            &ctx.phantom_dir,
+            &ctx.repo_root,
             &args.agent,
             &changeset_id,
             task,
@@ -177,7 +181,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
         }
         println!();
         super::interactive::run_interactive_session(
-            &mut ctx,
+            &ctx,
             &agent_id,
             &changeset_id,
             &base_commit,
@@ -194,13 +198,14 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
 ///
 /// Returns `true` if the mount was successful, `false` if FUSE is unavailable.
 fn spawn_fuse_daemon(
-    ctx: &PhantomContext,
+    phantom_dir: &Path,
+    repo_root: &Path,
     agent: &str,
     mount_point: &Path,
     upper_dir: &Path,
 ) -> anyhow::Result<bool> {
     let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
-    let overlay_root = ctx.phantom_dir.join("overlays").join(agent);
+    let overlay_root = phantom_dir.join("overlays").join(agent);
     let pid_file = overlay_root.join("fuse.pid");
     let log_file = overlay_root.join("fuse.log");
 
@@ -216,7 +221,7 @@ fn spawn_fuse_daemon(
         .arg("--upper-dir")
         .arg(upper_dir)
         .arg("--lower-dir")
-        .arg(&ctx.repo_root)
+        .arg(repo_root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log_handle)
@@ -249,11 +254,10 @@ fn wait_for_mount(mount_point: &Path, timeout: Duration) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
 
     loop {
-        if let (Ok(m), Ok(p)) = (std::fs::metadata(mount_point), std::fs::metadata(parent)) {
-            if m.dev() != p.dev() {
+        if let (Ok(m), Ok(p)) = (std::fs::metadata(mount_point), std::fs::metadata(parent))
+            && m.dev() != p.dev() {
                 return Ok(());
             }
-        }
 
         if start.elapsed() > timeout {
             anyhow::bail!("timed out after {}s", timeout.as_secs());
@@ -266,8 +270,8 @@ fn wait_for_mount(mount_point: &Path, timeout: Duration) -> anyhow::Result<()> {
 ///
 /// Uses a monotonic counter from the event store combined with a timestamp
 /// suffix to avoid collisions from concurrent dispatch calls.
-async fn generate_changeset_id(ctx: &PhantomContext) -> anyhow::Result<ChangesetId> {
-    let events = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+async fn generate_changeset_id(events: &SqliteEventStore) -> anyhow::Result<ChangesetId> {
+    let events = events.query_all().await?;
 
     let overlay_count = events
         .iter()
@@ -288,14 +292,13 @@ async fn generate_changeset_id(ctx: &PhantomContext) -> anyhow::Result<Changeset
 /// Recover the changeset ID and base commit for an existing agent overlay from
 /// the event log. Finds the most recent `OverlayCreated` event for this agent.
 async fn recover_changeset_from_events(
-    ctx: &PhantomContext,
+    events: &SqliteEventStore,
     agent_id: &AgentId,
 ) -> anyhow::Result<(ChangesetId, GitOid)> {
-    let events = ctx
-        .events
+    let events = events
         .query_by_agent(agent_id)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        ?;
 
     // Walk backwards to find the most recent OverlayCreated event.
     for event in events.iter().rev() {
@@ -314,12 +317,11 @@ async fn recover_changeset_from_events(
 ///
 /// Blocks resume if the changeset has already been submitted or materialized,
 /// since the upper layer may have been cleared.
-async fn check_changeset_resumable(ctx: &PhantomContext, cs_id: &ChangesetId) -> anyhow::Result<()> {
-    let events = ctx
-        .events
+async fn check_changeset_resumable(events: &SqliteEventStore, cs_id: &ChangesetId) -> anyhow::Result<()> {
+    let events = events
         .query_by_changeset(cs_id)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        ?;
 
     for event in &events {
         match &event.kind {
@@ -346,14 +348,15 @@ async fn check_changeset_resumable(ctx: &PhantomContext, cs_id: &ChangesetId) ->
 /// monitor the claude process. This ensures the monitor is the parent of
 /// claude and can `waitpid` to get the real exit code.
 fn spawn_agent_monitor(
-    ctx: &PhantomContext,
+    phantom_dir: &Path,
+    repo_root: &Path,
     agent: &str,
     changeset_id: &ChangesetId,
     task: &str,
     work_dir: &Path,
 ) -> anyhow::Result<()> {
     let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
-    let overlay_root = ctx.phantom_dir.join("overlays").join(agent);
+    let overlay_root = phantom_dir.join("overlays").join(agent);
     let monitor_pid_file = overlay_root.join("monitor.pid");
 
     let child = std::process::Command::new(&phantom_bin)
@@ -367,7 +370,7 @@ fn spawn_agent_monitor(
         .arg("--work-dir")
         .arg(work_dir.as_os_str())
         .arg("--repo-root")
-        .arg(ctx.repo_root.as_os_str())
+        .arg(repo_root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

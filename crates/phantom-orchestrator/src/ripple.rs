@@ -89,7 +89,7 @@ pub fn write_trunk_notification(
         .join(&agent_id.0)
         .join("trunk-updated.json");
     let json = serde_json::to_string_pretty(notification)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     std::fs::write(path, json)
 }
 

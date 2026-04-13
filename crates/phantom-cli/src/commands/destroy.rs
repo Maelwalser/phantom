@@ -20,16 +20,17 @@ pub struct DestroyArgs {
 }
 
 pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
-    let mut ctx = PhantomContext::load().await?;
+    let ctx = PhantomContext::locate()?;
+    let events_store = ctx.open_events().await?;
+    let mut overlays = ctx.open_overlays_restored()?;
 
     let agent_id = AgentId(args.agent.clone());
 
     // Find the changeset ID for this agent
-    let events = ctx
-        .events
+    let events = events_store
         .query_by_agent(&agent_id)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        ?;
 
     let changeset_id = events
         .iter()
@@ -51,9 +52,9 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
     // Unmount FUSE before removing directories
     unmount_fuse(&ctx.phantom_dir, &args.agent);
 
-    ctx.overlays
+    overlays
         .destroy_overlay(&agent_id)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        ?;
 
     let event = Event {
         id: EventId(0),
@@ -62,10 +63,10 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
         agent_id,
         kind: EventKind::OverlayDestroyed,
     };
-    ctx.events
+    events_store
         .append(event)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        ?;
 
     println!("Agent '{}' overlay destroyed.", args.agent);
     Ok(())
@@ -94,8 +95,8 @@ fn unmount_fuse(phantom_dir: &std::path::Path, agent: &str) {
         info!(agent, "FUSE unmounted cleanly");
     } else {
         // Fallback: kill the daemon process
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = pid_str.trim().parse::<i32>() {
                 // SAFETY: Sending SIGTERM to a process has no memory-safety
                 // implications. The PID comes from a file we wrote.
                 unsafe {
@@ -104,7 +105,6 @@ fn unmount_fuse(phantom_dir: &std::path::Path, agent: &str) {
                 std::thread::sleep(Duration::from_millis(200));
                 info!(agent, pid, "killed FUSE daemon");
             }
-        }
     }
 
     let _ = std::fs::remove_file(&pid_file);

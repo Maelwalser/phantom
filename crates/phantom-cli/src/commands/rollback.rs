@@ -16,16 +16,16 @@ pub struct RollbackArgs {
 }
 
 pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
-    let ctx = PhantomContext::load().await?;
+    let ctx = PhantomContext::locate()?;
+    let events = ctx.open_events().await?;
 
     let changeset_id = ChangesetId(args.changeset.clone());
 
     // Find the commit OID from this changeset's materialization
-    let cs_events = ctx
-        .events
+    let cs_events = events
         .query_by_changeset(&changeset_id)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        ?;
 
     let materialized_commit: Option<GitOid> = cs_events.iter().find_map(|e| {
         if let EventKind::ChangesetMaterialized { new_commit } = &e.kind {
@@ -36,11 +36,10 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     });
 
     // Mark events as dropped
-    let dropped = ctx
-        .events
+    let dropped = events
         .mark_dropped(&changeset_id)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        ?;
 
     println!(
         "Dropped {dropped} event(s) for changeset {}.",
@@ -73,11 +72,11 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     }
 
     // Find downstream changesets that were materialized after this one
-    let replay = ReplayEngine::new(&ctx.events);
+    let replay = ReplayEngine::new(&events);
     let downstream = replay
         .changesets_after(&changeset_id)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        ?;
 
     if downstream.is_empty() {
         println!("No downstream changesets affected.");

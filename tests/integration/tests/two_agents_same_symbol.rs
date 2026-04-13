@@ -1,17 +1,14 @@
 //! Integration test: two agents modify the same symbol → conflict detected.
 
-mod common;
-
 use std::path::{Path, PathBuf};
 
 use phantom_core::conflict::ConflictKind;
 use phantom_orchestrator::materializer::MaterializeResult;
+use phantom_testkit::TestContext;
 
-use crate::common::TestContext;
-
-#[test]
-fn test_two_agents_same_symbol_conflicts() {
-    let ctx = TestContext::new();
+#[tokio::test]
+async fn test_two_agents_same_symbol_conflicts() {
+    let ctx = TestContext::new_async().await;
 
     // Seed trunk with a lib file containing compute().
     let base = ctx.commit_files(&[("src/lib.rs", "fn compute() -> i32 { 42 }\n")]);
@@ -47,6 +44,7 @@ fn test_two_agents_same_symbol_conflicts() {
     let mat = ctx.materializer();
     let result_a = mat
         .materialize(&cs_a, upper_a.path(), &ctx.events, &ctx.merger, "test commit")
+        .await
         .expect("materialize agent-a failed");
     assert!(
         matches!(result_a, MaterializeResult::Success { .. }),
@@ -57,6 +55,7 @@ fn test_two_agents_same_symbol_conflicts() {
     let mat2 = ctx.materializer();
     let result_b = mat2
         .materialize(&cs_b, upper_b.path(), &ctx.events, &ctx.merger, "test commit")
+        .await
         .expect("materialize agent-b failed");
 
     match result_b {

@@ -1,4 +1,4 @@
-//! Shared test helpers for integration tests.
+//! Test repository harness.
 //!
 //! Provides [`TestContext`] — a self-contained test harness that creates a
 //! temporary git repository, event store, and semantic merger for exercising
@@ -25,9 +25,19 @@ pub struct TestContext {
     pub merger: SemanticMerger,
 }
 
+impl Default for TestContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestContext {
     /// Create a test git repo with an initial empty commit, plus an in-memory
     /// event store and semantic merger.
+    ///
+    /// This synchronous constructor creates its own tokio runtime internally.
+    /// Use [`new_async`](Self::new_async) when calling from within an async
+    /// context (e.g. `#[tokio::test]`).
     pub fn new() -> Self {
         let dir = TempDir::new().expect("failed to create temp dir");
         let repo = git2::Repository::init(dir.path()).expect("failed to init repo");
@@ -41,7 +51,38 @@ impl TestContext {
             .unwrap();
 
         let git = GitOps::open(dir.path()).expect("failed to open repo");
-        let events = SqliteEventStore::in_memory().expect("failed to create event store");
+        let rt = tokio::runtime::Runtime::new().expect("failed to create runtime");
+        let events = rt
+            .block_on(SqliteEventStore::in_memory())
+            .expect("failed to create event store");
+        let merger = SemanticMerger::new();
+
+        Self {
+            dir,
+            git,
+            events,
+            merger,
+        }
+    }
+
+    /// Async version of [`new`](Self::new) for use inside `#[tokio::test]` or
+    /// other async contexts where creating a nested runtime would panic.
+    pub async fn new_async() -> Self {
+        let dir = TempDir::new().expect("failed to create temp dir");
+        let repo = git2::Repository::init(dir.path()).expect("failed to init repo");
+
+        // Create initial commit so HEAD exists.
+        let mut index = repo.index().unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let sig = git2::Signature::now("test", "test@phantom").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial commit", &tree, &[])
+            .unwrap();
+
+        let git = GitOps::open(dir.path()).expect("failed to open repo");
+        let events = SqliteEventStore::in_memory()
+            .await
+            .expect("failed to create event store");
         let merger = SemanticMerger::new();
 
         Self {

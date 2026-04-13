@@ -1,7 +1,6 @@
 use clap::{CommandFactory, Parser};
 use tracing::error;
 
-mod cli_adapter;
 mod commands;
 mod context;
 

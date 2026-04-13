@@ -1,8 +1,8 @@
 //! Shared context loaded by each command.
 //!
-//! [`PhantomContext`] locates the `.phantom/` directory, opens the event store,
-//! overlay manager, git handle, and semantic merger so individual commands can
-//! focus on their logic.
+//! [`PhantomContext`] locates the `.phantom/` directory and repository root.
+//! Individual subsystems (git, events, overlays, semantic) are opened lazily
+//! via dedicated `open_*` methods so that commands only pay for what they use.
 
 use std::path::{Path, PathBuf};
 
@@ -13,20 +13,20 @@ use phantom_overlay::OverlayManager;
 use phantom_semantic::SemanticMerger;
 use tracing::warn;
 
-/// Everything a command needs to interact with a Phantom-managed repository.
-#[allow(dead_code)]
+/// Lightweight handle to a Phantom-managed repository.
+///
+/// Holds only the paths needed to locate subsystems. Call `open_*` methods
+/// to initialize individual subsystems on demand.
 pub struct PhantomContext {
     pub phantom_dir: PathBuf,
     pub repo_root: PathBuf,
-    pub git: GitOps,
-    pub events: SqliteEventStore,
-    pub overlays: OverlayManager,
-    pub semantic: SemanticMerger,
 }
 
 impl PhantomContext {
-    /// Find `.phantom/` by walking up from the current directory. Open all subsystems.
-    pub async fn load() -> anyhow::Result<Self> {
+    /// Find `.phantom/` by walking up from the current directory.
+    ///
+    /// This is a cheap, synchronous operation — no subsystems are opened.
+    pub fn locate() -> anyhow::Result<Self> {
         let cwd = std::env::current_dir().context("failed to determine current directory")?;
         let phantom_dir = find_phantom_dir(&cwd)?;
         let repo_root = phantom_dir
@@ -34,28 +34,44 @@ impl PhantomContext {
             .expect(".phantom/ must have a parent")
             .to_path_buf();
 
-        let git = GitOps::open(&repo_root).context("failed to open git repository")?;
-
-        let events_path = phantom_dir.join("events.db");
-        let events = SqliteEventStore::open(&events_path)
-            .await
-            .context("failed to open event store")?;
-
-        let mut overlays = OverlayManager::new(phantom_dir.clone());
-        let semantic = SemanticMerger::new();
-
-        // Restore overlay state from disk — scan .phantom/overlays/ for existing
-        // agent directories that have an "upper" subdirectory.
-        restore_overlays(&mut overlays, &phantom_dir, &repo_root)?;
-
         Ok(Self {
             phantom_dir,
             repo_root,
-            git,
-            events,
-            overlays,
-            semantic,
         })
+    }
+
+    /// Open the git repository handle.
+    pub fn open_git(&self) -> anyhow::Result<GitOps> {
+        GitOps::open(&self.repo_root).context("failed to open git repository")
+    }
+
+    /// Open the SQLite event store.
+    pub async fn open_events(&self) -> anyhow::Result<SqliteEventStore> {
+        let events_path = self.phantom_dir.join("events.db");
+        SqliteEventStore::open(&events_path)
+            .await
+            .context("failed to open event store")
+    }
+
+    /// Create an overlay manager (without restoring existing overlays).
+    pub fn open_overlays(&self) -> OverlayManager {
+        OverlayManager::new(self.phantom_dir.clone())
+    }
+
+    /// Create an overlay manager and restore existing overlays from disk.
+    ///
+    /// This scans `.phantom/overlays/` for agent directories and re-registers
+    /// them, cleaning up stale FUSE mounts and dead agent processes. Only call
+    /// from commands that interact with overlays.
+    pub fn open_overlays_restored(&self) -> anyhow::Result<OverlayManager> {
+        let mut mgr = self.open_overlays();
+        restore_overlays(&mut mgr, &self.phantom_dir, &self.repo_root)?;
+        Ok(mgr)
+    }
+
+    /// Create a new semantic merger.
+    pub fn semantic(&self) -> SemanticMerger {
+        SemanticMerger::new()
     }
 }
 

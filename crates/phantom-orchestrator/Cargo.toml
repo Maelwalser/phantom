@@ -8,6 +8,7 @@ description = "Coordination layer: scheduling, materialization, and ripple notif
 [dependencies]
 phantom-core = { workspace = true }
 phantom-events = { workspace = true }
+phantom-overlay = { workspace = true }
 phantom-semantic = { workspace = true }
 git2 = { workspace = true }
 tracing = { workspace = true }

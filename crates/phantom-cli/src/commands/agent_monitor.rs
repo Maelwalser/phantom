@@ -1,20 +1,21 @@
-//! `phantom _agent-monitor` — hidden subcommand that spawns and monitors a
+//! `phantom _agent-monitor` -- hidden subcommand that spawns and monitors a
 //! background agent process, then runs post-completion automation (submit +
 //! materialize).
 //!
 //! Spawned by `phantom dispatch --background`. The monitor is the parent of the
 //! claude process so it can `waitpid` to get the real exit code.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{AgentId, ChangesetId, EventId};
 use phantom_core::traits::EventStore;
+use phantom_session::adapter;
+use phantom_session::context_file;
 use serde::{Deserialize, Serialize};
 
-use crate::cli_adapter;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
@@ -76,14 +77,15 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         libc::setsid();
     }
 
-    let ctx = PhantomContext::load().await?;
+    let ctx = PhantomContext::locate()?;
+    let events = ctx.open_events().await?;
     let agent_id = AgentId(args.agent.clone());
     let changeset_id = ChangesetId(args.changeset_id.clone());
     let work_dir = PathBuf::from(&args.work_dir);
 
     // Spawn the claude process as our child so we can waitpid for it.
     let (claude_pid, exit_code) =
-        spawn_and_wait_claude(&ctx, &args.agent, &work_dir, &args.task, &args.repo_root)?;
+        spawn_and_wait_claude(&ctx.phantom_dir, &args.agent, &work_dir, &args.task, &args.repo_root)?;
 
     // Emit AgentLaunched event now that we have the real PID.
     let launch_event = Event {
@@ -96,10 +98,10 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
             task: args.task.clone(),
         },
     };
-    ctx.events
+    events
         .append(launch_event)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        ?;
 
     // Run post-completion flow.
     let result = run_post_completion(&agent_id, &changeset_id, exit_code).await;
@@ -134,13 +136,13 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
 
 /// Spawn the claude process as our direct child, wait for it, return the exit code.
 fn spawn_and_wait_claude(
-    ctx: &PhantomContext,
+    phantom_dir: &std::path::Path,
     agent: &str,
-    work_dir: &PathBuf,
+    work_dir: &Path,
     task: &str,
     repo_root: &str,
 ) -> anyhow::Result<(u32, Option<i32>)> {
-    let overlay_root = ctx.phantom_dir.join("overlays").join(agent);
+    let overlay_root = phantom_dir.join("overlays").join(agent);
     let log_file = overlay_root.join("agent.log");
     let pid_file = overlay_root.join("agent.pid");
 
@@ -150,7 +152,7 @@ fn spawn_and_wait_claude(
         .try_clone()
         .context("failed to clone log file handle")?;
 
-    let adapter = cli_adapter::adapter_for("claude");
+    let cli_adapter = adapter::adapter_for("claude");
     let env_vars: Vec<(&str, &str)> = vec![
         ("PHANTOM_AGENT_ID", agent),
         ("PHANTOM_CHANGESET_ID", ""),
@@ -159,7 +161,7 @@ fn spawn_and_wait_claude(
         ("PHANTOM_INTERACTIVE", "0"),
     ];
 
-    let mut cmd = adapter
+    let mut cmd = cli_adapter
         .build_headless_command(work_dir, task, &env_vars)
         .context("CLI adapter does not support headless mode")?;
 
@@ -168,7 +170,7 @@ fn spawn_and_wait_claude(
         .stderr(log_stderr);
 
     let mut child = cmd.spawn().with_context(|| {
-        "failed to spawn background agent — is 'claude' installed and on PATH?"
+        "failed to spawn background agent -- is 'claude' installed and on PATH?"
     })?;
 
     let claude_pid = child.id();
@@ -177,7 +179,7 @@ fn spawn_and_wait_claude(
     std::fs::write(&pid_file, claude_pid.to_string())
         .context("failed to write agent PID file")?;
 
-    // Wait for the child — this is our direct child, so waitpid works.
+    // Wait for the child -- this is our direct child, so waitpid works.
     let status = child
         .wait()
         .context("failed to wait for background agent")?;
@@ -194,19 +196,20 @@ async fn run_post_completion(
     changeset_id: &ChangesetId,
     exit_code: Option<i32>,
 ) -> anyhow::Result<bool> {
-    let ctx = PhantomContext::load().await?;
+    let ctx = PhantomContext::locate()?;
+    let events = ctx.open_events().await?;
+    let overlays = ctx.open_overlays();
 
     // Clean up the context file.
-    let upper_dir = ctx
-        .overlays
+    let upper_dir = overlays
         .upper_dir(agent_id)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let context_file = upper_dir.join(".phantom-task.md");
-    let _ = std::fs::remove_file(&context_file);
+        ?;
+    let context_path = upper_dir.join(context_file::CONTEXT_FILE);
+    let _ = std::fs::remove_file(&context_path);
 
     let success = exit_code == Some(0);
 
-    // Record completion — the user must explicitly `phantom submit` and
+    // Record completion -- the user must explicitly `phantom submit` and
     // `phantom materialize` when they are ready.
     let event = Event {
         id: EventId(0),
@@ -218,10 +221,10 @@ async fn run_post_completion(
             materialized: false,
         },
     };
-    ctx.events
+    events
         .append(event)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        ?;
 
     if !success {
         anyhow::bail!(

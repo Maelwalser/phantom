@@ -6,6 +6,8 @@
 pub mod error;
 pub mod git;
 pub mod live_rebase;
+pub mod materialization_service;
 pub mod materializer;
 pub mod ripple;
 pub mod scheduler;
+pub mod submit_service;

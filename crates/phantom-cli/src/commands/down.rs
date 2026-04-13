@@ -124,11 +124,10 @@ fn list_agent_dirs(overlays_dir: &Path) -> Vec<String> {
         return agents;
     };
     for entry in entries.flatten() {
-        if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
-            if let Some(name) = entry.file_name().to_str() {
+        if entry.file_type().is_ok_and(|ft| ft.is_dir())
+            && let Some(name) = entry.file_name().to_str() {
                 agents.push(name.to_string());
             }
-        }
     }
     agents.sort();
     agents
@@ -222,20 +221,19 @@ fn unmount_agent_fuse(overlays_dir: &Path, agent: &str) -> bool {
         let _ = std::fs::remove_file(&pid_file);
 
         // Kill the FUSE daemon process.
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = pid_str.trim().parse::<i32>() {
                 unsafe {
                     libc::kill(pid, libc::SIGTERM);
                 }
             }
-        }
 
         return true;
     }
 
     // Kill the FUSE daemon and retry unmount.
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+        && let Ok(pid) = pid_str.trim().parse::<i32>() {
             unsafe {
                 libc::kill(pid, libc::SIGTERM);
             }
@@ -255,7 +253,6 @@ fn unmount_agent_fuse(overlays_dir: &Path, agent: &str) -> bool {
                 return true;
             }
         }
-    }
 
     warn!(agent, "failed to unmount FUSE");
     false

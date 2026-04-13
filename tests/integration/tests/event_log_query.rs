@@ -1,7 +1,5 @@
 //! Integration test: event log queries across agents, changesets, and time.
 
-mod common;
-
 use std::path::PathBuf;
 
 use chrono::{Duration, Utc};
@@ -9,8 +7,7 @@ use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{AgentId, ChangesetId, ContentHash, EventId, GitOid};
 use phantom_core::traits::EventStore;
 use phantom_events::EventQuery;
-
-use crate::common::TestContext;
+use phantom_testkit::TestContext;
 
 /// Helper to create a test event.
 fn make_event(
@@ -28,9 +25,9 @@ fn make_event(
     }
 }
 
-#[test]
-fn test_event_log_queries() {
-    let ctx = TestContext::new();
+#[tokio::test]
+async fn test_event_log_queries() {
+    let ctx = TestContext::new_async().await;
     let base_time = Utc::now();
 
     // Generate events across 2 agents and 3 changesets.
@@ -50,6 +47,7 @@ fn test_event_log_queries() {
                 },
                 base_time,
             ))
+            .await
             .unwrap();
     }
 
@@ -65,6 +63,7 @@ fn test_event_log_queries() {
                 },
                 base_time + Duration::seconds(1),
             ))
+            .await
             .unwrap();
     }
 
@@ -80,6 +79,7 @@ fn test_event_log_queries() {
                 },
                 base_time + Duration::seconds(2),
             ))
+            .await
             .unwrap();
     }
 
@@ -94,6 +94,7 @@ fn test_event_log_queries() {
             },
             base_time - Duration::seconds(10),
         ))
+        .await
         .unwrap();
 
     ctx.events
@@ -105,6 +106,7 @@ fn test_event_log_queries() {
             },
             base_time + Duration::seconds(5),
         ))
+        .await
         .unwrap();
 
     ctx.events
@@ -116,12 +118,13 @@ fn test_event_log_queries() {
             },
             base_time + Duration::seconds(10),
         ))
+        .await
         .unwrap();
 
     let total_events = 5 + 3 + 4 + 1 + 1 + 1; // 15
 
     // --- Query all → verify total count ---
-    let all = ctx.events.query_all().unwrap();
+    let all = ctx.events.query_all().await.unwrap();
     assert_eq!(
         all.len(),
         total_events,
@@ -132,6 +135,7 @@ fn test_event_log_queries() {
     let agent_a_events = ctx
         .events
         .query_by_agent(&AgentId("agent-a".into()))
+        .await
         .unwrap();
     // agent-a has: 5 (cs-001 writes) + 3 (cs-002 writes) + 1 (overlay created) + 1 (materialized) = 10
     assert_eq!(agent_a_events.len(), 10, "agent-a should have 10 events");
@@ -144,6 +148,7 @@ fn test_event_log_queries() {
     let agent_b_events = ctx
         .events
         .query_by_agent(&AgentId("agent-b".into()))
+        .await
         .unwrap();
     // agent-b has: 4 (cs-003 writes) + 1 (materialized) = 5
     assert_eq!(agent_b_events.len(), 5, "agent-b should have 5 events");
@@ -152,6 +157,7 @@ fn test_event_log_queries() {
     let cs2_events = ctx
         .events
         .query_by_changeset(&ChangesetId("cs-002".into()))
+        .await
         .unwrap();
     assert_eq!(cs2_events.len(), 3, "cs-002 should have 3 events");
     assert!(
@@ -163,6 +169,7 @@ fn test_event_log_queries() {
     let since_result = ctx
         .events
         .query_since(base_time + Duration::seconds(1))
+        .await
         .unwrap();
     // Events at base_time+1s (3), base_time+2s (4), base_time+5s (1), base_time+10s (1) = 9
     assert_eq!(
@@ -184,10 +191,11 @@ fn test_event_log_queries() {
     let dropped = ctx
         .events
         .mark_dropped(&ChangesetId("cs-001".into()))
+        .await
         .unwrap();
     assert!(dropped > 0, "should drop at least one event");
 
-    let remaining = ctx.events.query_all().unwrap();
+    let remaining = ctx.events.query_all().await.unwrap();
     assert!(
         remaining.len() < total_events,
         "after dropping cs-001, total should decrease"
@@ -201,6 +209,7 @@ fn test_event_log_queries() {
     let cs1_after_drop = ctx
         .events
         .query_by_changeset(&ChangesetId("cs-001".into()))
+        .await
         .unwrap();
     assert!(
         cs1_after_drop.is_empty(),
@@ -215,6 +224,7 @@ fn test_event_log_queries() {
             changeset_id: Some(ChangesetId("cs-002".into())),
             ..Default::default()
         })
+        .await
         .unwrap();
     assert_eq!(
         intersection.len(),

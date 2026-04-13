@@ -1,19 +1,16 @@
 //! Integration test: rollback a middle changeset and replay downstream.
 
-mod common;
-
 use std::path::{Path, PathBuf};
 
 use phantom_core::id::ChangesetId;
 use phantom_core::traits::EventStore;
 use phantom_events::ReplayEngine;
 use phantom_orchestrator::materializer::MaterializeResult;
+use phantom_testkit::TestContext;
 
-use crate::common::TestContext;
-
-#[test]
-fn test_rollback_middle_changeset_replays_downstream() {
-    let ctx = TestContext::new();
+#[tokio::test]
+async fn test_rollback_middle_changeset_replays_downstream() {
+    let ctx = TestContext::new_async().await;
 
     // Seed trunk with a base file.
     let base = ctx.commit_files(&[("src/lib.rs", "// base\n")]);
@@ -31,6 +28,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     let mat = ctx.materializer();
     let r1 = mat
         .materialize(&cs_001, upper_1.path(), &ctx.events, &ctx.merger, "test commit")
+        .await
         .unwrap();
     let commit_after_001 = match r1 {
         MaterializeResult::Success { new_commit } => new_commit,
@@ -52,6 +50,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     let mat2 = ctx.materializer();
     let r2 = mat2
         .materialize(&cs_002, upper_2.path(), &ctx.events, &ctx.merger, "test commit")
+        .await
         .unwrap();
     let commit_after_002 = match r2 {
         MaterializeResult::Success { new_commit } => new_commit,
@@ -76,6 +75,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     let mat3 = ctx.materializer();
     let r3 = mat3
         .materialize(&cs_003, upper_3.path(), &ctx.events, &ctx.merger, "test commit")
+        .await
         .unwrap();
     assert!(
         matches!(r3, MaterializeResult::Success { .. }),
@@ -102,6 +102,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     let engine = ReplayEngine::new(&ctx.events);
     let after_002 = engine
         .changesets_after(&ChangesetId("cs-002".into()))
+        .await
         .unwrap();
     assert_eq!(after_002.len(), 1, "only cs-003 should be after cs-002");
     assert_eq!(after_002[0].0, "cs-003");
@@ -110,6 +111,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     let dropped = ctx
         .events
         .mark_dropped(&ChangesetId("cs-002".into()))
+        .await
         .unwrap();
     assert!(dropped > 0, "should have dropped at least one event");
 
@@ -138,6 +140,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     let mat_replay = ctx.materializer();
     let r3_replay = mat_replay
         .materialize(&cs_003_replayed, upper_3b.path(), &ctx.events, &ctx.merger, "test commit")
+        .await
         .unwrap();
     assert!(
         matches!(r3_replay, MaterializeResult::Success { .. }),
@@ -172,6 +175,7 @@ fn test_rollback_middle_changeset_replays_downstream() {
     let cs2_events = ctx
         .events
         .query_by_changeset(&ChangesetId("cs-002".into()))
+        .await
         .unwrap();
     assert!(
         cs2_events.is_empty(),

@@ -61,13 +61,13 @@ async fn run_loop(stdout: &mut io::Stdout, interval: Duration) -> anyhow::Result
 
         // Clear each line as we write to handle shrinking output.
         for line in output.lines() {
-            write!(stdout, "\x1b[2K{line}\n")?;
+            writeln!(stdout, "\x1b[2K{line}")?;
         }
 
         // If previous frame had more lines, clear the leftover lines.
         if prev_lines > line_count {
             for _ in 0..(prev_lines - line_count) {
-                write!(stdout, "\x1b[2K\n")?;
+                writeln!(stdout, "\x1b[2K")?;
             }
             // Move cursor back up to end of current frame.
             let extra = prev_lines - line_count;
@@ -88,11 +88,13 @@ async fn run_loop(stdout: &mut io::Stdout, interval: Duration) -> anyhow::Result
 }
 
 async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
-    let ctx = PhantomContext::load().await?;
-    let all_events = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let ctx = PhantomContext::locate()?;
+    let events_store = ctx.open_events().await?;
+    let git = ctx.open_git()?;
+    let all_events = events_store.query_all().await?;
     let projection = Projection::from_events(&all_events);
 
-    let head = ctx.git.head_oid().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let head = git.head_oid()?;
     let head_short = head.to_hex();
     let head_short = &head_short[..12.min(head_short.len())];
 

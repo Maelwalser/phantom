@@ -13,7 +13,9 @@ use phantom_core::changeset::ChangesetStatus;
 use phantom_core::event::EventKind;
 use phantom_core::id::AgentId;
 use phantom_core::traits::EventStore;
-use phantom_events::Projection;
+use phantom_events::{Projection, SqliteEventStore};
+use phantom_orchestrator::git::GitOps;
+use phantom_overlay::OverlayManager;
 
 use super::agent_monitor;
 use crate::context::PhantomContext;
@@ -44,20 +46,27 @@ pub enum AgentRunState {
 }
 
 pub async fn run(args: StatusArgs) -> anyhow::Result<()> {
-    let ctx = PhantomContext::load().await?;
+    let ctx = PhantomContext::locate()?;
+    let git = ctx.open_git()?;
+    let events = ctx.open_events().await?;
+    let overlays = ctx.open_overlays_restored()?;
 
     if let Some(agent_name) = &args.agent {
-        run_detailed(&ctx, agent_name).await
+        run_detailed(&ctx.phantom_dir, &events, &overlays, agent_name).await
     } else {
-        run_summary(&ctx).await
+        run_summary(&ctx.phantom_dir, &git, &events).await
     }
 }
 
 /// Summary view: show all active agents and pending changesets.
-async fn run_summary(ctx: &PhantomContext) -> anyhow::Result<()> {
-    let head = ctx.git.head_oid().map_err(|e| anyhow::anyhow!("{e}"))?;
+async fn run_summary(
+    phantom_dir: &Path,
+    git: &GitOps,
+    events: &SqliteEventStore,
+) -> anyhow::Result<()> {
+    let head = git.head_oid()?;
 
-    let all_events = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let all_events = events.query_all().await?;
     let projection = Projection::from_events(&all_events);
 
     // Header
@@ -73,7 +82,7 @@ async fn run_summary(ctx: &PhantomContext) -> anyhow::Result<()> {
     } else {
         println!("Active overlays:");
         for agent in &active_agents {
-            let run_state = read_agent_run_state(&ctx.phantom_dir, &agent.0);
+            let run_state = read_agent_run_state(phantom_dir, &agent.0);
             let state_str = format_run_state_short(&run_state);
 
             // Find the task description from the most recent OverlayCreated event.
@@ -107,8 +116,8 @@ async fn run_summary(ctx: &PhantomContext) -> anyhow::Result<()> {
     } else {
         println!("Pending changesets:");
         println!(
-            "  {:<20} {:<14} {:>5}   {}",
-            "ID", "AGENT", "FILES", "STATUS"
+            "  {:<20} {:<14} {:>5}   STATUS",
+            "ID", "AGENT", "FILES"
         );
         for cs in &pending {
             println!(
@@ -128,10 +137,15 @@ async fn run_summary(ctx: &PhantomContext) -> anyhow::Result<()> {
 }
 
 /// Detailed view for a specific agent.
-async fn run_detailed(ctx: &PhantomContext, agent_name: &str) -> anyhow::Result<()> {
+async fn run_detailed(
+    phantom_dir: &Path,
+    events: &SqliteEventStore,
+    overlays: &OverlayManager,
+    agent_name: &str,
+) -> anyhow::Result<()> {
     let agent_id = AgentId(agent_name.to_string());
 
-    let all_events = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let all_events = events.query_all().await?;
     let projection = Projection::from_events(&all_events);
 
     // Find the changeset for this agent.
@@ -172,12 +186,12 @@ async fn run_detailed(ctx: &PhantomContext, agent_name: &str) -> anyhow::Result<
     println!();
 
     // Background agent run state
-    let run_state = read_agent_run_state(&ctx.phantom_dir, agent_name);
+    let run_state = read_agent_run_state(phantom_dir, agent_name);
     println!("Run state: {}", format_run_state_long(&run_state));
     println!();
 
     // Files modified in overlay
-    match ctx.overlays.get_layer(&agent_id) {
+    match overlays.get_layer(&agent_id) {
         Ok(layer) => match layer.modified_files() {
             Ok(files) if !files.is_empty() => {
                 println!("Modified files ({}):", files.len());
@@ -208,13 +222,12 @@ async fn run_detailed(ctx: &PhantomContext, agent_name: &str) -> anyhow::Result<
     }
 
     // Log tail
-    let log_file = agent_monitor::log_path(&ctx.phantom_dir, agent_name);
-    if log_file.exists() {
-        if let Some(tail) = read_log_tail(&log_file, 20) {
+    let log_file = agent_monitor::log_path(phantom_dir, agent_name);
+    if log_file.exists()
+        && let Some(tail) = read_log_tail(&log_file, 20) {
             println!("Log (last 20 lines):");
             println!("{tail}");
         }
-    }
 
     Ok(())
 }
@@ -223,8 +236,8 @@ async fn run_detailed(ctx: &PhantomContext, agent_name: &str) -> anyhow::Result<
 pub fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
     // Check for completion marker first.
     let status_file = agent_monitor::status_path(phantom_dir, agent);
-    if let Ok(content) = std::fs::read_to_string(&status_file) {
-        if let Ok(status) = serde_json::from_str::<agent_monitor::AgentStatus>(&content) {
+    if let Ok(content) = std::fs::read_to_string(&status_file)
+        && let Ok(status) = serde_json::from_str::<agent_monitor::AgentStatus>(&content) {
             return if status.exit_code == Some(0) && status.error.is_none() {
                 AgentRunState::Finished
             } else {
@@ -233,12 +246,11 @@ pub fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
                 }
             };
         }
-    }
 
     // Check for running process.
     let pid_file = agent_monitor::pid_path(phantom_dir, agent);
-    if let Ok(content) = std::fs::read_to_string(&pid_file) {
-        if let Ok(pid) = content.trim().parse::<u32>() {
+    if let Ok(content) = std::fs::read_to_string(&pid_file)
+        && let Ok(pid) = content.trim().parse::<u32>() {
             // Check if process is still alive.
             let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
             if alive {
@@ -254,7 +266,6 @@ pub fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
             // Process is dead but no status file — crashed.
             return AgentRunState::Failed { status: None };
         }
-    }
 
     AgentRunState::Idle
 }

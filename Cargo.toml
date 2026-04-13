@@ -1,10 +1,3 @@
-[package]
-name = "phantom-integration-tests"
-version = "0.0.0"
-edition.workspace = true
-license.workspace = true
-publish = false
-
 [workspace]
 resolver = "3"
 members = [
@@ -13,7 +6,10 @@ members = [
     "crates/phantom-overlay",
     "crates/phantom-semantic",
     "crates/phantom-orchestrator",
+    "crates/phantom-session",
     "crates/phantom-cli",
+    "crates/phantom-testkit",
+    "tests/integration",
 ]
 
 [workspace.package]
@@ -21,22 +17,14 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 
-[dev-dependencies]
-phantom-core = { path = "crates/phantom-core" }
-phantom-events = { path = "crates/phantom-events" }
-phantom-overlay = { path = "crates/phantom-overlay" }
-phantom-semantic = { path = "crates/phantom-semantic" }
-phantom-orchestrator = { path = "crates/phantom-orchestrator" }
-chrono = { workspace = true }
-tempfile = { workspace = true }
-git2 = { workspace = true }
-
 [workspace.dependencies]
 phantom-core = { path = "crates/phantom-core" }
 phantom-events = { path = "crates/phantom-events" }
 phantom-overlay = { path = "crates/phantom-overlay" }
 phantom-semantic = { path = "crates/phantom-semantic" }
 phantom-orchestrator = { path = "crates/phantom-orchestrator" }
+phantom-session = { path = "crates/phantom-session" }
+phantom-testkit = { path = "crates/phantom-testkit" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }

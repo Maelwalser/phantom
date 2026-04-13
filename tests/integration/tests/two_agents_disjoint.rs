@@ -1,16 +1,13 @@
 //! Integration test: two agents modify disjoint files → both auto-merge.
 
-mod common;
-
 use std::path::PathBuf;
 
 use phantom_orchestrator::materializer::MaterializeResult;
+use phantom_testkit::TestContext;
 
-use crate::common::TestContext;
-
-#[test]
-fn test_two_agents_disjoint_files_auto_merges() {
-    let ctx = TestContext::new();
+#[tokio::test]
+async fn test_two_agents_disjoint_files_auto_merges() {
+    let ctx = TestContext::new_async().await;
 
     // Seed trunk with two files in separate modules.
     let base = ctx.commit_files(&[
@@ -55,6 +52,7 @@ fn test_two_agents_disjoint_files_auto_merges() {
     let mat = ctx.materializer();
     let result_a = mat
         .materialize(&cs_a, upper_a.path(), &ctx.events, &ctx.merger, "test commit")
+        .await
         .expect("materialize agent-a failed");
     assert!(
         matches!(result_a, MaterializeResult::Success { .. }),
@@ -65,6 +63,7 @@ fn test_two_agents_disjoint_files_auto_merges() {
     let mat2 = ctx.materializer();
     let result_b = mat2
         .materialize(&cs_b, upper_b.path(), &ctx.events, &ctx.merger, "test commit")
+        .await
         .expect("materialize agent-b failed");
     assert!(
         matches!(result_b, MaterializeResult::Success { .. }),

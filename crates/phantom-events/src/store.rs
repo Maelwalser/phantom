@@ -175,13 +175,13 @@ impl EventStore for SqliteEventStore {
     }
 
     async fn query_by_changeset(&self, id: &ChangesetId) -> Result<Vec<Event>, CoreError> {
-        self.query_events("changeset_id = $1 AND dropped = 0", &[id.0.clone()])
+        self.query_events("changeset_id = $1 AND dropped = 0", std::slice::from_ref(&id.0))
             .await
             .map_err(Into::into)
     }
 
     async fn query_by_agent(&self, id: &AgentId) -> Result<Vec<Event>, CoreError> {
-        self.query_events("agent_id = $1 AND dropped = 0", &[id.0.clone()])
+        self.query_events("agent_id = $1 AND dropped = 0", std::slice::from_ref(&id.0))
             .await
             .map_err(Into::into)
     }

@@ -1,19 +1,16 @@
 //! Integration test: after materialization, the ripple checker identifies
 //! which active agents are affected by the trunk change.
 
-mod common;
-
 use std::path::PathBuf;
 
 use phantom_core::id::AgentId;
 use phantom_orchestrator::materializer::MaterializeResult;
 use phantom_orchestrator::ripple::RippleChecker;
+use phantom_testkit::TestContext;
 
-use crate::common::TestContext;
-
-#[test]
-fn test_ripple_notification_after_materialize() {
-    let ctx = TestContext::new();
+#[tokio::test]
+async fn test_ripple_notification_after_materialize() {
+    let ctx = TestContext::new_async().await;
 
     // Seed trunk with a shared file.
     let base = ctx.commit_files(&[("src/shared.rs", "fn helper() {}\n")]);
@@ -38,6 +35,7 @@ fn test_ripple_notification_after_materialize() {
     let mat = ctx.materializer();
     let result = mat
         .materialize(&cs_a, upper_a.path(), &ctx.events, &ctx.merger, "test commit")
+        .await
         .expect("materialize failed");
 
     let new_head = match result {
@@ -94,11 +92,11 @@ fn test_ripple_notification_after_materialize() {
     );
 }
 
-#[test]
-fn test_overlay_lower_layer_reflects_new_trunk() {
+#[tokio::test]
+async fn test_overlay_lower_layer_reflects_new_trunk() {
     use phantom_overlay::layer::OverlayLayer;
 
-    let ctx = TestContext::new();
+    let ctx = TestContext::new_async().await;
     let trunk_path = ctx.git.repo().workdir().unwrap().to_path_buf();
 
     // Seed trunk with a file.

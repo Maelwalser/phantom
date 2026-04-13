@@ -1,0 +1,26 @@
+[package]
+name = "phantom-session"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Agent session lifecycle: PTY, adapters, context files, post-session automation"
+publish = false
+
+[dependencies]
+phantom-core = { workspace = true }
+phantom-events = { workspace = true }
+phantom-orchestrator = { workspace = true }
+phantom-overlay = { workspace = true }
+phantom-semantic = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+libc = { workspace = true }
+nix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

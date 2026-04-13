@@ -4,6 +4,7 @@
 //! writes go to a per-agent upper layer.
 
 pub mod error;
+#[cfg(feature = "fuse")]
 pub mod fuse_fs;
 pub mod layer;
 pub mod manager;
@@ -14,5 +15,5 @@ pub use layer::{DirEntry, FileType, OverlayLayer};
 pub use manager::{MountHandle, OverlayManager};
 pub use trunk_view::TrunkView;
 
-#[cfg(target_os = "linux")]
+#[cfg(feature = "fuse")]
 pub use fuse_fs::PhantomFs;

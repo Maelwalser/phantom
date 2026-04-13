@@ -1237,14 +1237,13 @@ dependencies = [
  "fuser",
  "git2",
  "libc",
- "nix",
  "phantom-core",
  "phantom-events",
  "phantom-orchestrator",
  "phantom-overlay",
  "phantom-semantic",
+ "phantom-session",
  "predicates",
- "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -1292,7 +1291,9 @@ dependencies = [
  "phantom-orchestrator",
  "phantom-overlay",
  "phantom-semantic",
+ "phantom-testkit",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -1305,6 +1306,7 @@ dependencies = [
  "git2",
  "phantom-core",
  "phantom-events",
+ "phantom-overlay",
  "phantom-semantic",
  "serde_json",
  "tempfile",
@@ -1342,6 +1344,42 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "phantom-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "libc",
+ "nix",
+ "phantom-core",
+ "phantom-events",
+ "phantom-orchestrator",
+ "phantom-overlay",
+ "phantom-semantic",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "phantom-testkit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "git2",
+ "phantom-core",
+ "phantom-events",
+ "phantom-orchestrator",
+ "phantom-semantic",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

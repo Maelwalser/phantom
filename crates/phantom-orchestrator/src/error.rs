@@ -35,3 +35,15 @@ pub enum OrchestratorError {
     #[error("live rebase error: {0}")]
     LiveRebase(String),
 }
+
+impl From<phantom_core::CoreError> for OrchestratorError {
+    fn from(e: phantom_core::CoreError) -> Self {
+        OrchestratorError::EventStore(e.to_string())
+    }
+}
+
+impl From<phantom_semantic::SemanticError> for OrchestratorError {
+    fn from(e: phantom_semantic::SemanticError) -> Self {
+        OrchestratorError::Semantic(e.to_string())
+    }
+}

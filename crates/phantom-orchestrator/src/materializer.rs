@@ -707,8 +707,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn conflict_detected() {
+    #[tokio::test]
+    async fn conflict_detected() {
         let (_dir, git) = init_repo(&[("src/lib.rs", b"fn original() {}")]);
         let base = git.head_oid().unwrap();
 
@@ -737,7 +737,7 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit").await
             .unwrap();
 
         match result {
@@ -758,8 +758,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn new_file_not_in_base() {
+    #[tokio::test]
+    async fn new_file_not_in_base() {
         let (_dir, git) = init_repo(&[("src/main.rs", b"fn main() {}")]);
         let base = git.head_oid().unwrap();
 
@@ -773,7 +773,7 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit").await
             .unwrap();
 
         match result {
@@ -788,8 +788,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn multiple_files_partial_conflict() {
+    #[tokio::test]
+    async fn multiple_files_partial_conflict() {
         let (_dir, git) = init_repo(&[
             ("file_a.rs", b"fn a() {}"),
             ("file_b.rs", b"fn b() {}"),
@@ -849,7 +849,7 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit").await
             .unwrap();
 
         match result {
@@ -863,8 +863,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn trunk_unchanged_file_uses_agent_version_directly() {
+    #[tokio::test]
+    async fn trunk_unchanged_file_uses_agent_version_directly() {
         let (_dir, git) = init_repo(&[
             ("src/api.rs", b"fn api() {}"),
             ("src/other.rs", b"fn other() {}"),
@@ -881,7 +881,7 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit").await
             .unwrap();
 
         match result {
@@ -896,8 +896,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_path_traversal() {
+    #[tokio::test]
+    async fn rejects_path_traversal() {
         let (_dir, git) = init_repo(&[("src/main.rs", b"fn main() {}")]);
         let base = git.head_oid().unwrap();
 
@@ -910,15 +910,17 @@ mod tests {
         let changeset = make_changeset("cs-bad", base, vec![PathBuf::from("../../../etc/passwd")]);
 
         let materializer = Materializer::new(git);
-        let result = materializer.materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit");
+        let result = materializer
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("parent traversal"), "error was: {err}");
     }
 
-    #[test]
-    fn rejects_absolute_path() {
+    #[tokio::test]
+    async fn rejects_absolute_path() {
         let (_dir, git) = init_repo(&[("src/main.rs", b"fn main() {}")]);
         let base = git.head_oid().unwrap();
 
@@ -931,7 +933,9 @@ mod tests {
         let changeset = make_changeset("cs-abs", base, vec![PathBuf::from("/etc/passwd")]);
 
         let materializer = Materializer::new(git);
-        let result = materializer.materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit");
+        let result = materializer
+            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
