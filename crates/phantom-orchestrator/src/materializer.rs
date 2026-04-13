@@ -83,7 +83,7 @@ impl Materializer {
 
         if head == changeset.base_commit {
             return self
-                .direct_apply(changeset, upper_dir, &trunk_path, message, event_store)
+                .direct_apply(changeset, upper_dir, &head, message, event_store)
                 .await;
         }
 
@@ -99,22 +99,32 @@ impl Materializer {
     }
 
     /// Fast path: trunk hasn't moved, apply overlay directly.
+    ///
+    /// Reads overlay files into memory and commits via the git object database
+    /// (blobs → tree → commit) without copying files into the working tree.
+    /// This eliminates the TOCTOU window that the old `commit_overlay_changes`
+    /// approach had.
     async fn direct_apply(
         &self,
         changeset: &Changeset,
         upper_dir: &Path,
-        trunk_path: &Path,
+        head: &GitOid,
         message: &str,
         event_store: &dyn EventStore,
     ) -> Result<MaterializeResult, OrchestratorError> {
         debug!(changeset = %changeset.id, "direct apply — trunk has not advanced");
 
-        let new_commit = self.git.commit_overlay_changes(
-            upper_dir,
-            trunk_path,
-            message,
-            &changeset.agent_id.0,
-        )?;
+        let files = git::read_overlay_files(upper_dir)?;
+        let new_commit = self.commit_from_content(&files, head, message, &changeset.agent_id.0)?;
+
+        // Update working tree to match the new commit (best-effort).
+        if let Err(e) = self
+            .git
+            .repo()
+            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        {
+            debug!(error = %e, "checkout_head after direct apply failed (non-fatal)");
+        }
 
         self.append_materialized_event(changeset, &new_commit, event_store)
             .await?;

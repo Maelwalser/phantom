@@ -9,7 +9,7 @@ use phantom_core::conflict::{ConflictDetail, ConflictKind};
 use phantom_core::id::{ChangesetId, GitOid};
 use phantom_core::is_binary_or_non_utf8;
 use phantom_core::traits::MergeResult;
-use tracing::{debug, error, info};
+use tracing::info;
 
 use crate::error::OrchestratorError;
 
@@ -111,149 +111,6 @@ impl GitOps {
         })?;
 
         Ok(paths)
-    }
-
-    /// Commit all files from `upper_dir` into the repository whose working
-    /// directory is `trunk_path`.
-    ///
-    /// 1. Recursively walk `upper_dir` to discover modified files.
-    /// 2. Copy each file into the corresponding location under `trunk_path`.
-    /// 3. Stage all changed files in the index.
-    /// 4. Write the index as a tree and create a new commit.
-    ///
-    /// Returns the OID of the newly created commit.
-    pub fn commit_overlay_changes(
-        &self,
-        upper_dir: &Path,
-        trunk_path: &Path,
-        message: &str,
-        author: &str,
-    ) -> Result<GitOid, OrchestratorError> {
-        let files = collect_files_recursive(upper_dir)?;
-
-        // Back up existing trunk files so we can restore on partial failure.
-        let backup_dir = tempfile::TempDir::new().map_err(|e| {
-            OrchestratorError::MaterializationFailed(format!(
-                "failed to create backup directory: {e}"
-            ))
-        })?;
-        let mut backed_up: Vec<PathBuf> = Vec::new();
-
-        let copy_result = (|| -> Result<(), OrchestratorError> {
-            for rel_path in &files {
-                let src = upper_dir.join(rel_path);
-                let dst = trunk_path.join(rel_path);
-
-                // Back up the existing file if present.
-                if dst.exists() || dst.symlink_metadata().is_ok() {
-                    let backup_path = backup_dir.path().join(rel_path);
-                    if let Some(parent) = backup_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    let dst_meta = std::fs::symlink_metadata(&dst)?;
-                    if dst_meta.is_symlink() {
-                        let link_target = std::fs::read_link(&dst)?;
-                        std::os::unix::fs::symlink(&link_target, &backup_path)?;
-                    } else {
-                        std::fs::copy(&dst, &backup_path)?;
-                    }
-                    backed_up.push(rel_path.clone());
-                }
-
-                if let Some(parent) = dst.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-
-                let src_meta = std::fs::symlink_metadata(&src)?;
-                if src_meta.is_symlink() {
-                    let target = std::fs::read_link(&src)?;
-                    let _ = std::fs::remove_file(&dst);
-                    std::os::unix::fs::symlink(&target, &dst)?;
-                } else {
-                    std::fs::copy(&src, &dst)?;
-                }
-                debug!(path = %rel_path.display(), "copied overlay file to trunk");
-            }
-            Ok(())
-        })();
-
-        if let Err(e) = copy_result {
-            // Restore backed-up files to leave trunk in its original state.
-            let mut recovery_errors: Vec<String> = Vec::new();
-
-            for rel_path in &backed_up {
-                let backup_path = backup_dir.path().join(rel_path);
-                let dst = trunk_path.join(rel_path);
-
-                if let Err(re) = std::fs::remove_file(&dst) {
-                    let msg = format!("remove {}: {re}", dst.display());
-                    error!(path = %dst.display(), error = %re, "recovery: failed to remove file");
-                    recovery_errors.push(msg);
-                }
-
-                match std::fs::symlink_metadata(&backup_path) {
-                    Ok(meta) => {
-                        let restore_result = if meta.is_symlink() {
-                            std::fs::read_link(&backup_path)
-                                .and_then(|target| std::os::unix::fs::symlink(&target, &dst))
-                        } else {
-                            std::fs::copy(&backup_path, &dst).map(|_| ())
-                        };
-                        if let Err(re) = restore_result {
-                            let msg = format!("restore {}: {re}", rel_path.display());
-                            error!(path = %rel_path.display(), error = %re, "recovery: failed to restore file");
-                            recovery_errors.push(msg);
-                        }
-                    }
-                    Err(re) => {
-                        let msg = format!("backup lost for {}: {re}", rel_path.display());
-                        error!(path = %rel_path.display(), error = %re, "recovery: backup file inaccessible");
-                        recovery_errors.push(msg);
-                    }
-                }
-            }
-
-            if recovery_errors.is_empty() {
-                return Err(OrchestratorError::MaterializationFailed(format!(
-                    "overlay copy failed, trunk restored to original state: {e}"
-                )));
-            } else {
-                return Err(OrchestratorError::MaterializationRecoveryFailed {
-                    cause: e.to_string(),
-                    recovery_errors: recovery_errors.join("; "),
-                });
-            }
-        }
-
-        let mut index = self.repo.index()?;
-        for rel_path in &files {
-            index.add_path(rel_path)?;
-        }
-        index.write()?;
-
-        let tree_oid = index.write_tree()?;
-        let tree = self.repo.find_tree(tree_oid)?;
-
-        let sig = git2::Signature::now(author, &format!("{author}@phantom"))?;
-
-        let parent_commit = match self.repo.head() {
-            Ok(head) => {
-                let oid = head
-                    .target()
-                    .ok_or_else(|| OrchestratorError::NotFound("HEAD has no target".into()))?;
-                Some(self.repo.find_commit(oid)?)
-            }
-            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => None,
-            Err(e) => return Err(OrchestratorError::Git(e)),
-        };
-
-        let parents: Vec<&git2::Commit<'_>> = parent_commit.iter().collect();
-        let new_oid = self
-            .repo
-            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
-
-        debug!(commit = %new_oid, "created commit");
-        Ok(oid_to_git_oid(new_oid))
     }
 
     /// Revert a specific commit by creating a new commit that undoes its
@@ -529,6 +386,20 @@ pub fn build_tree_with_blobs(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Read all files under an overlay upper directory into memory, returning
+/// `(relative_path, content)` pairs suitable for [`build_tree_with_blobs`].
+pub(crate) fn read_overlay_files(
+    upper_dir: &Path,
+) -> Result<Vec<(PathBuf, Vec<u8>)>, OrchestratorError> {
+    let paths = collect_files_recursive(upper_dir)?;
+    let mut files = Vec::with_capacity(paths.len());
+    for rel_path in paths {
+        let content = std::fs::read(upper_dir.join(&rel_path))?;
+        files.push((rel_path, content));
+    }
+    Ok(files)
+}
+
 /// Recursively collect all file paths relative to `root`.
 fn collect_files_recursive(root: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     let mut result = Vec::new();
@@ -561,6 +432,67 @@ fn collect_files_inner(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Test-only helpers on GitOps
+// ---------------------------------------------------------------------------
+
+/// `commit_overlay_changes` physically copies overlay files into the working
+/// tree and stages them via the index. This is intentionally **not** used in
+/// production (see `Materializer::commit_from_content` for the atomic,
+/// in-memory approach). It is retained here for test helpers that need a quick
+/// way to advance trunk without going through the full materializer pipeline.
+#[cfg(test)]
+impl GitOps {
+    pub fn commit_overlay_changes(
+        &self,
+        upper_dir: &Path,
+        trunk_path: &Path,
+        message: &str,
+        author: &str,
+    ) -> Result<GitOid, OrchestratorError> {
+        let files = collect_files_recursive(upper_dir)?;
+
+        for rel_path in &files {
+            let src = upper_dir.join(rel_path);
+            let dst = trunk_path.join(rel_path);
+
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&src, &dst)?;
+        }
+
+        let mut index = self.repo.index()?;
+        for rel_path in &files {
+            index.add_path(rel_path)?;
+        }
+        index.write()?;
+
+        let tree_oid = index.write_tree()?;
+        let tree = self.repo.find_tree(tree_oid)?;
+
+        let sig = git2::Signature::now(author, &format!("{author}@phantom"))?;
+
+        let parent_commit = match self.repo.head() {
+            Ok(head) => {
+                let oid = head
+                    .target()
+                    .ok_or_else(|| OrchestratorError::NotFound("HEAD has no target".into()))?;
+                Some(self.repo.find_commit(oid)?)
+            }
+            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => None,
+            Err(e) => return Err(OrchestratorError::Git(e)),
+        };
+
+        let parents: Vec<&git2::Commit<'_>> = parent_commit.iter().collect();
+        let new_oid = self
+            .repo
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
+
+        Ok(oid_to_git_oid(new_oid))
+    }
 }
 
 #[cfg(test)]
