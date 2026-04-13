@@ -5,7 +5,7 @@
 
 #[cfg(target_os = "linux")]
 mod inner {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::ffi::OsStr;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -38,6 +38,12 @@ mod inner {
         /// every `lookup`, `create`, `mkdir`, and `readdir` reply that
         /// hands an inode to the kernel; decremented by `forget`.
         lookup_count: Mutex<HashMap<u64, u64>>,
+        /// Inodes that have been unlinked from the directory tree but still
+        /// have a non-zero kernel lookup count.  The `ino_to_path` entry is
+        /// kept alive so that open file descriptors can still resolve the
+        /// inode.  `forget()` performs final cleanup when the count drops
+        /// to zero.
+        unlinked: Mutex<HashSet<u64>>,
     }
 
     impl InodeTable {
@@ -48,6 +54,7 @@ mod inner {
                 ino_to_path: Mutex::new(HashMap::new()),
                 path_to_ino: Mutex::new(HashMap::new()),
                 lookup_count: Mutex::new(HashMap::new()),
+                unlinked: Mutex::new(HashSet::new()),
             };
             // Root directory is inode 1.
             table
@@ -86,12 +93,24 @@ mod inner {
             ino
         }
 
-        fn remove(&self, path: &PathBuf) {
+        /// Unlink a path from the directory tree without dropping the inode.
+        ///
+        /// Removes the `path -> ino` mapping so the name is gone from the
+        /// directory, but keeps the `ino -> path` entry alive so that open
+        /// file descriptors can still resolve the inode to its backing
+        /// storage path.  The inode is marked as unlinked; `forget()` will
+        /// perform final cleanup when the kernel drops all references.
+        fn unlink(&self, path: &PathBuf) {
             let mut p2i = self.path_to_ino.lock().unwrap();
             if let Some(ino) = p2i.remove(path) {
-                self.ino_to_path.lock().unwrap().remove(&ino);
-                self.lookup_count.lock().unwrap().remove(&ino);
+                self.unlinked.lock().unwrap().insert(ino);
             }
+        }
+
+        /// Returns `true` if the inode has been unlinked from the directory
+        /// tree but still has outstanding kernel references.
+        fn is_unlinked(&self, ino: u64) -> bool {
+            self.unlinked.lock().unwrap().contains(&ino)
         }
 
         /// Re-key an inode (and all child inodes for directory renames) from
@@ -104,10 +123,11 @@ mod inner {
             let mut p2i = self.path_to_ino.lock().unwrap();
             let mut i2p = self.ino_to_path.lock().unwrap();
 
-            // Evict any existing inode at the destination.
+            // The destination is being overwritten (POSIX rename semantics).
+            // Remove from path_to_ino so lookup no longer finds it, but
+            // keep ino_to_path alive for any open file descriptors.
             if let Some(dest_ino) = p2i.remove(new_path) {
-                i2p.remove(&dest_ino);
-                self.lookup_count.lock().unwrap().remove(&dest_ino);
+                self.unlinked.lock().unwrap().insert(dest_ino);
             }
 
             // Re-key the source itself.
@@ -138,8 +158,13 @@ mod inner {
         }
 
         /// Decrement the kernel lookup count for `ino` by `nlookup`.
-        /// When the count reaches zero the inode is evicted from both
-        /// maps, freeing the memory.  The root inode (1) is never evicted.
+        /// When the count reaches zero the inode is evicted from the
+        /// translation maps, freeing the memory.  The root inode (1) is
+        /// never evicted.
+        ///
+        /// For unlinked inodes, `path_to_ino` was already removed by
+        /// `unlink()` — only `ino_to_path` remains and is cleaned up here.
+        /// For normal (non-unlinked) inodes, both maps are cleaned up.
         fn forget(&self, ino: u64, nlookup: u64) {
             if ino == 1 {
                 // Root inode is permanent.
@@ -151,9 +176,17 @@ mod inner {
                 *count = count.saturating_sub(nlookup);
                 if *count == 0 {
                     counts.remove(&ino);
-                    let mut i2p = self.ino_to_path.lock().unwrap();
-                    if let Some(path) = i2p.remove(&ino) {
-                        self.path_to_ino.lock().unwrap().remove(&path);
+                    let mut unlinked = self.unlinked.lock().unwrap();
+                    if unlinked.remove(&ino) {
+                        // Was unlinked — path_to_ino entry already removed;
+                        // only ino_to_path remains.
+                        self.ino_to_path.lock().unwrap().remove(&ino);
+                    } else {
+                        // Normal forget — clean up both maps.
+                        let mut i2p = self.ino_to_path.lock().unwrap();
+                        if let Some(path) = i2p.remove(&ino) {
+                            self.path_to_ino.lock().unwrap().remove(&path);
+                        }
                     }
                 }
             }
@@ -284,7 +317,13 @@ mod inner {
 
             let layer = self.layer.lock().unwrap();
             match layer.getattr(&path) {
-                Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
+                Ok(meta) => {
+                    let mut attr = metadata_to_attr(ino.0, &meta);
+                    if self.inodes.is_unlinked(ino.0) {
+                        attr.nlink = 0;
+                    }
+                    reply.attr(&TTL, &attr);
+                }
                 Err(_) => reply.error(Errno::ENOENT),
             }
         }
@@ -497,7 +536,7 @@ mod inner {
             match layer.delete_file(&child_path) {
                 Ok(()) => {
                     drop(layer);
-                    self.inodes.remove(&child_path);
+                    self.inodes.unlink(&child_path);
                     reply.ok();
                 }
                 Err(e) => {
@@ -670,7 +709,7 @@ mod inner {
                             let _ = layer.delete_file(&child_path);
                         }
                         drop(layer);
-                        self.inodes.remove(&child_path);
+                        self.inodes.unlink(&child_path);
                         reply.ok();
                     }
                     Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) => {
