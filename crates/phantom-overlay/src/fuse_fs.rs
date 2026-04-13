@@ -646,6 +646,7 @@ mod inner {
                             return;
                         }
                     };
+                    let ino = self.inodes.get_or_create_inode(&child_path);
                     drop(layer);
 
                     let file = match OpenOptions::new().read(true).write(true).open(&real_path) {
@@ -665,8 +666,6 @@ mod inner {
                             writable: true,
                         },
                     );
-
-                    let ino = self.inodes.get_or_create_inode(&child_path);
                     let now = SystemTime::now();
                     let attr = FileAttr {
                         ino: INodeNo(ino),
@@ -711,8 +710,8 @@ mod inner {
 
             match layer.delete_file(&child_path) {
                 Ok(()) => {
-                    drop(layer);
                     self.inodes.unlink(&child_path);
+                    drop(layer);
                     reply.ok();
                 }
                 Err(e) => {
@@ -860,8 +859,8 @@ mod inner {
 
             match layer.rename_file(&old_path, &new_path) {
                 Ok(()) => {
-                    drop(layer);
                     self.inodes.rename(&old_path, &new_path);
+                    drop(layer);
                     reply.ok();
                 }
                 Err(crate::error::OverlayError::PathNotFound(_)) => {
@@ -903,8 +902,8 @@ mod inner {
                             // Add whiteout so the dir is hidden even if it exists in lower layer.
                             let _ = layer.delete_file(&child_path);
                         }
-                        drop(layer);
                         self.inodes.unlink(&child_path);
+                        drop(layer);
                         reply.ok();
                     }
                     Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) => {
