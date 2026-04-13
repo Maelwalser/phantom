@@ -7,7 +7,8 @@
 
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -181,6 +182,65 @@ impl OverlayLayer {
             let _ = self.persist_whiteouts();
         }
 
+        Ok(())
+    }
+
+    /// Truncate or extend a file to `new_size` bytes without reading the full
+    /// contents into memory.
+    ///
+    /// Uses `File::set_len` (`ftruncate(2)`) to adjust the file size in-place.
+    /// When the file only exists in the lower layer, it is first copied to the
+    /// upper layer (only up to `new_size` bytes for truncation, avoiding a full
+    /// read of large files).
+    pub fn truncate_file(&mut self, rel_path: &Path, new_size: u64) -> Result<(), OverlayError> {
+        if is_passthrough(rel_path) {
+            let lower_path = self.lower.join(rel_path);
+            let file = OpenOptions::new().write(true).open(&lower_path)?;
+            file.set_len(new_size)?;
+            trace!(path = %rel_path.display(), new_size, layer = "lower-passthrough", "truncate");
+            return Ok(());
+        }
+
+        let upper_path = self.upper.join(rel_path);
+
+        if !upper_path.exists() {
+            // File only exists in the lower layer — COW copy to upper before truncating.
+            let lower_path = self.lower.join(rel_path);
+            if !lower_path.exists() && !self.whiteouts.contains(rel_path) {
+                return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+            }
+
+            if let Some(parent) = upper_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            if lower_path.exists() {
+                let lower_size = fs::metadata(&lower_path)?.len();
+                let copy_bytes = new_size.min(lower_size);
+
+                let src = fs::File::open(&lower_path)?;
+                let mut dst = fs::File::create(&upper_path)?;
+
+                if copy_bytes > 0 {
+                    std::io::copy(&mut src.take(copy_bytes), &mut dst)?;
+                }
+                dst.set_len(new_size)?;
+            } else {
+                // Whiteout'd file being re-created via truncate (rare but valid).
+                let file = fs::File::create(&upper_path)?;
+                file.set_len(new_size)?;
+            }
+        } else {
+            // File already in upper layer — truncate in place.
+            let file = OpenOptions::new().write(true).open(&upper_path)?;
+            file.set_len(new_size)?;
+        }
+
+        if self.whiteouts.remove(rel_path) {
+            let _ = self.persist_whiteouts();
+        }
+
+        trace!(path = %rel_path.display(), new_size, layer = "upper", "truncate");
         Ok(())
     }
 
@@ -395,6 +455,167 @@ impl OverlayLayer {
         is_passthrough(rel_path)
     }
 
+    /// Rename a file or directory within the overlay.
+    ///
+    /// Handles all COW semantics: if the source is only in the lower layer,
+    /// it is copied up to the upper layer at the new path and the old path
+    /// is whiteout'd. If the source is in the upper layer, it is moved
+    /// directly. Passthrough paths (`.git/`) are renamed in the lower layer.
+    ///
+    /// Per POSIX, if the destination already exists it is replaced (for files)
+    /// or the rename fails with `ENOTEMPTY` (for non-empty directories).
+    pub fn rename_file(&mut self, old: &Path, new: &Path) -> Result<(), OverlayError> {
+        // Hidden paths are never accessible.
+        if is_hidden(old) || is_hidden(new) {
+            return Err(OverlayError::PathNotFound(old.to_path_buf()));
+        }
+
+        let old_passthrough = is_passthrough(old);
+        let new_passthrough = is_passthrough(new);
+
+        // Cross-layer rename between passthrough and COW is invalid.
+        if old_passthrough != new_passthrough {
+            return Err(OverlayError::Io(std::io::Error::from_raw_os_error(22))); // EINVAL
+        }
+
+        // Passthrough: rename directly in lower layer.
+        if old_passthrough {
+            let lower_old = self.lower.join(old);
+            let lower_new = self.lower.join(new);
+            if let Some(parent) = lower_new.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::rename(&lower_old, &lower_new)?;
+            debug!(old = %old.display(), new = %new.display(), "passthrough rename");
+            return Ok(());
+        }
+
+        // Source must exist in the overlay.
+        if !self.exists(old) {
+            return Err(OverlayError::PathNotFound(old.to_path_buf()));
+        }
+
+        let upper_old = self.upper.join(old);
+        let upper_new = self.upper.join(new);
+        let upper_old_exists = upper_old.exists();
+        let lower_old_exists = self.lower.join(old).exists() && !self.whiteouts.contains(old);
+        let mut whiteouts_changed = false;
+
+        // Snapshot pre-existing child whiteouts under `old` BEFORE we modify
+        // the set. These need to be migrated to `new` after the rename.
+        let pre_existing_child_whiteouts: Vec<PathBuf> = self
+            .whiteouts
+            .iter()
+            .filter(|w| {
+                w.strip_prefix(old)
+                    .is_ok_and(|suffix| !suffix.as_os_str().is_empty())
+            })
+            .cloned()
+            .collect();
+
+        // Ensure destination parent directories exist in upper.
+        if let Some(parent) = upper_new.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if upper_old_exists {
+            // Source is in upper layer — move directly.
+            fs::rename(&upper_old, &upper_new)?;
+
+            // If source also exists in lower, whiteout the old path to hide
+            // the lower-layer ghost.
+            if lower_old_exists {
+                self.whiteouts.insert(old.to_path_buf());
+                whiteouts_changed = true;
+            }
+        } else {
+            // Source is only in lower layer — copy up to new position.
+            let lower_old = self.lower.join(old);
+            if lower_old.is_dir() {
+                self.copy_up_dir(old, new)?;
+                // Whiteout all files within the lower directory so they don't
+                // bleed through (the whiteout model is per-file, not
+                // hierarchical).
+                let lower_children = walk_files(&lower_old, &self.lower)?;
+                for child in lower_children {
+                    self.whiteouts.insert(child);
+                }
+            } else {
+                let content = fs::read(&lower_old)?;
+                fs::write(&upper_new, &content)?;
+            }
+
+            // Whiteout the old path.
+            self.whiteouts.insert(old.to_path_buf());
+            whiteouts_changed = true;
+        }
+
+        // Clean up destination whiteouts (the new path is now live).
+        if self.whiteouts.remove(new) {
+            whiteouts_changed = true;
+        }
+        // Also remove child whiteouts under the new path (strict children only).
+        let to_remove: Vec<PathBuf> = self
+            .whiteouts
+            .iter()
+            .filter(|w| {
+                w.strip_prefix(new)
+                    .is_ok_and(|suffix| !suffix.as_os_str().is_empty())
+            })
+            .cloned()
+            .collect();
+        for w in &to_remove {
+            self.whiteouts.remove(w);
+            whiteouts_changed = true;
+        }
+
+        // For directory renames, migrate pre-existing child whiteouts from
+        // old prefix to new prefix (captured before we modified the set).
+        for w in pre_existing_child_whiteouts {
+            if let Ok(suffix) = w.strip_prefix(old) {
+                self.whiteouts.remove(&w);
+                self.whiteouts.insert(new.join(suffix));
+                whiteouts_changed = true;
+            }
+        }
+
+        if whiteouts_changed {
+            self.persist_whiteouts()?;
+        }
+
+        debug!(old = %old.display(), new = %new.display(), "rename");
+        Ok(())
+    }
+
+    /// Copy a directory from the overlay-merged view to the upper layer at a
+    /// new path. Used when renaming a directory that exists only in the lower
+    /// layer.
+    fn copy_up_dir(&self, old_rel: &Path, new_rel: &Path) -> Result<(), OverlayError> {
+        let upper_dst = self.upper.join(new_rel);
+        fs::create_dir_all(&upper_dst)?;
+
+        let entries = self.read_dir(old_rel)?;
+        for entry in entries {
+            let child_old = old_rel.join(&entry.name);
+            let child_new = new_rel.join(&entry.name);
+            match entry.file_type {
+                FileType::Directory => {
+                    self.copy_up_dir(&child_old, &child_new)?;
+                }
+                FileType::File | FileType::Symlink => {
+                    let content = self.read_file(&child_old)?;
+                    let dst = self.upper.join(&child_new);
+                    if let Some(parent) = dst.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::write(&dst, &content)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Clear all files from the upper layer and reset whiteouts.
     ///
     /// After a successful materialization, the agent's changes live in trunk.
@@ -405,7 +626,12 @@ impl OverlayLayer {
         for entry in fs::read_dir(&self.upper)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir() {
+            // Use entry.file_type() instead of path.is_dir() to avoid following
+            // symlinks. path.is_dir() traverses symlinks, so a symlink pointing
+            // to an external directory would cause remove_dir_all to delete the
+            // target directory's contents.
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
                 fs::remove_dir_all(&path)?;
             } else {
                 fs::remove_file(&path)?;
@@ -755,5 +981,187 @@ mod tests {
         // Reads must come from lower, not upper.
         let config = layer.read_file(Path::new(".git/config")).unwrap();
         assert_eq!(config, b"[core]\nbare = false");
+    }
+
+    // ── rename_file tests ──────────────────────────────────────────────
+
+    #[test]
+    fn rename_file_in_upper() {
+        let (lower, upper) = setup();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        layer.write_file(Path::new("old.txt"), b"data").unwrap();
+        layer
+            .rename_file(Path::new("old.txt"), Path::new("new.txt"))
+            .unwrap();
+
+        assert!(!layer.exists(Path::new("old.txt")));
+        assert_eq!(layer.read_file(Path::new("new.txt")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn rename_file_from_lower_copies_up() {
+        let (lower, upper) = setup();
+        fs::write(lower.path().join("src.txt"), b"from trunk").unwrap();
+
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        layer
+            .rename_file(Path::new("src.txt"), Path::new("dst.txt"))
+            .unwrap();
+
+        // New path is readable, old path is gone.
+        assert_eq!(layer.read_file(Path::new("dst.txt")).unwrap(), b"from trunk");
+        assert!(!layer.exists(Path::new("src.txt")));
+
+        // Whiteout was created for old path.
+        assert!(layer.deleted_files().contains(&PathBuf::from("src.txt")));
+
+        // New file lives in upper layer.
+        assert!(upper.path().join("dst.txt").exists());
+    }
+
+    #[test]
+    fn rename_overwrites_existing_destination() {
+        let (lower, upper) = setup();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        layer.write_file(Path::new("a.txt"), b"content-a").unwrap();
+        layer.write_file(Path::new("b.txt"), b"content-b").unwrap();
+
+        layer
+            .rename_file(Path::new("a.txt"), Path::new("b.txt"))
+            .unwrap();
+
+        assert!(!layer.exists(Path::new("a.txt")));
+        assert_eq!(layer.read_file(Path::new("b.txt")).unwrap(), b"content-a");
+    }
+
+    #[test]
+    fn rename_upper_file_whiteouts_lower_ghost() {
+        let (lower, upper) = setup();
+        fs::write(lower.path().join("shared.txt"), b"lower").unwrap();
+
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        // Write to upper so the file exists in both layers.
+        layer
+            .write_file(Path::new("shared.txt"), b"upper")
+            .unwrap();
+
+        layer
+            .rename_file(Path::new("shared.txt"), Path::new("moved.txt"))
+            .unwrap();
+
+        // Old path hidden (lower ghost whiteout'd).
+        assert!(!layer.exists(Path::new("shared.txt")));
+        assert!(layer.deleted_files().contains(&PathBuf::from("shared.txt")));
+
+        // New path has upper content.
+        assert_eq!(layer.read_file(Path::new("moved.txt")).unwrap(), b"upper");
+    }
+
+    #[test]
+    fn rename_directory_in_upper() {
+        let (lower, upper) = setup();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        layer
+            .write_file(Path::new("dir/child.txt"), b"hello")
+            .unwrap();
+        layer
+            .rename_file(Path::new("dir"), Path::new("renamed"))
+            .unwrap();
+
+        assert!(!layer.exists(Path::new("dir/child.txt")));
+        assert_eq!(
+            layer.read_file(Path::new("renamed/child.txt")).unwrap(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn rename_directory_from_lower() {
+        let (lower, upper) = setup();
+        fs::create_dir_all(lower.path().join("pkg")).unwrap();
+        fs::write(lower.path().join("pkg/mod.rs"), b"pub mod foo;").unwrap();
+
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        layer
+            .rename_file(Path::new("pkg"), Path::new("lib"))
+            .unwrap();
+
+        assert!(!layer.exists(Path::new("pkg/mod.rs")));
+        assert_eq!(
+            layer.read_file(Path::new("lib/mod.rs")).unwrap(),
+            b"pub mod foo;"
+        );
+        assert!(layer.deleted_files().contains(&PathBuf::from("pkg")));
+    }
+
+    #[test]
+    fn rename_within_passthrough() {
+        let (lower, _upper) = setup();
+        fs::create_dir_all(lower.path().join(".git/refs")).unwrap();
+        fs::write(lower.path().join(".git/refs/old"), b"ref").unwrap();
+
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), _upper.path().to_path_buf()).unwrap();
+        layer
+            .rename_file(Path::new(".git/refs/old"), Path::new(".git/refs/new"))
+            .unwrap();
+
+        assert!(!lower.path().join(".git/refs/old").exists());
+        assert_eq!(
+            fs::read(lower.path().join(".git/refs/new")).unwrap(),
+            b"ref"
+        );
+        // No whiteouts for passthrough operations.
+        assert!(layer.deleted_files().is_empty());
+    }
+
+    #[test]
+    fn rename_cross_passthrough_fails() {
+        let (lower, upper) = setup();
+        fs::create_dir_all(lower.path().join(".git")).unwrap();
+        fs::write(lower.path().join(".git/x"), b"data").unwrap();
+        fs::write(lower.path().join("y"), b"data").unwrap();
+
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        // Passthrough → normal should fail.
+        assert!(layer.rename_file(Path::new(".git/x"), Path::new("z")).is_err());
+        // Normal → passthrough should fail.
+        assert!(layer.rename_file(Path::new("y"), Path::new(".git/w")).is_err());
+    }
+
+    #[test]
+    fn rename_hidden_path_fails() {
+        let (lower, upper) = setup();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        layer.write_file(Path::new("a.txt"), b"data").unwrap();
+        assert!(layer
+            .rename_file(Path::new("a.txt"), Path::new(".phantom/x"))
+            .is_err());
+        assert!(layer
+            .rename_file(Path::new(".phantom/x"), Path::new("b.txt"))
+            .is_err());
+    }
+
+    #[test]
+    fn rename_nonexistent_source_fails() {
+        let (lower, upper) = setup();
+        let mut layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        let result = layer.rename_file(Path::new("ghost.txt"), Path::new("dst.txt"));
+        assert!(result.is_err());
     }
 }

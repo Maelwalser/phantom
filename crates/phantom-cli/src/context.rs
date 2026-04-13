@@ -11,7 +11,7 @@ use phantom_events::SqliteEventStore;
 use phantom_orchestrator::git::GitOps;
 use phantom_overlay::OverlayManager;
 use phantom_semantic::SemanticMerger;
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// Lightweight handle to a Phantom-managed repository.
 ///
@@ -153,7 +153,7 @@ fn cleanup_stale_fuse_mount(overlay_dir: &Path, agent_name: &str) {
             .stderr(std::process::Stdio::null())
             .status();
         let _ = std::fs::remove_file(&pid_file);
-        warn!(agent = agent_name, pid, "cleaned up stale FUSE mount");
+        debug!(agent = agent_name, pid, "cleaned up stale FUSE mount");
     }
 }
 

@@ -14,8 +14,8 @@ mod inner {
 
     use fuser::{
         BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
-        INodeNo, LockOwner, OpenFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-        ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, WriteFlags,
+        INodeNo, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
+        ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, WriteFlags,
     };
     use phantom_core::AgentId;
     use tracing::{debug, warn};
@@ -91,6 +91,49 @@ mod inner {
             if let Some(ino) = p2i.remove(path) {
                 self.ino_to_path.lock().unwrap().remove(&ino);
                 self.lookup_count.lock().unwrap().remove(&ino);
+            }
+        }
+
+        /// Re-key an inode (and all child inodes for directory renames) from
+        /// `old_path` to `new_path`.
+        ///
+        /// If the destination already has an inode mapping it is evicted
+        /// (the old destination is being overwritten by POSIX rename
+        /// semantics).
+        fn rename(&self, old_path: &PathBuf, new_path: &PathBuf) {
+            let mut p2i = self.path_to_ino.lock().unwrap();
+            let mut i2p = self.ino_to_path.lock().unwrap();
+
+            // Evict any existing inode at the destination.
+            if let Some(dest_ino) = p2i.remove(new_path) {
+                i2p.remove(&dest_ino);
+                self.lookup_count.lock().unwrap().remove(&dest_ino);
+            }
+
+            // Re-key the source itself.
+            if let Some(ino) = p2i.remove(old_path) {
+                p2i.insert(new_path.clone(), ino);
+                i2p.insert(ino, new_path.clone());
+            }
+
+            // Re-key child paths (directory rename).
+            let old_prefix = {
+                let mut p = old_path.clone();
+                p.push("");
+                p
+            };
+            let children: Vec<(PathBuf, u64)> = p2i
+                .iter()
+                .filter(|(path, _)| path.starts_with(&old_prefix))
+                .map(|(path, &ino)| (path.clone(), ino))
+                .collect();
+            for (child_path, ino) in children {
+                if let Ok(suffix) = child_path.strip_prefix(old_path) {
+                    let new_child = new_path.join(suffix);
+                    p2i.remove(&child_path);
+                    p2i.insert(new_child.clone(), ino);
+                    i2p.insert(ino, new_child);
+                }
             }
         }
 
@@ -490,14 +533,11 @@ mod inner {
             // Handle truncate (size = 0 or explicit size).
             if let Some(new_size) = size {
                 let mut layer = self.layer.lock().unwrap();
-                let mut content = layer.read_file(&path).unwrap_or_default();
-                content.resize(new_size as usize, 0);
-                if let Err(e) = layer.write_file(&path, &content) {
+                if let Err(e) = layer.truncate_file(&path, new_size) {
                     warn!(error = %e, "setattr truncate failed");
                     reply.error(Errno::EIO);
                     return;
                 }
-                layer.remove_whiteout(&path);
             }
 
             let layer = self.layer.lock().unwrap();
@@ -543,6 +583,63 @@ mod inner {
                 }
                 Err(e) => {
                     warn!(error = %e, "mkdir failed");
+                    reply.error(Errno::EIO);
+                }
+            }
+        }
+
+        fn rename(
+            &self,
+            _req: &Request,
+            parent: INodeNo,
+            name: &OsStr,
+            newparent: INodeNo,
+            newname: &OsStr,
+            flags: RenameFlags,
+            reply: ReplyEmpty,
+        ) {
+            // Atomic exchange is not supported.
+            if flags.contains(RenameFlags::RENAME_EXCHANGE) {
+                reply.error(Errno::ENOSYS);
+                return;
+            }
+
+            let Some(old_parent_path) = self.inodes.get_path(parent.0) else {
+                reply.error(Errno::ENOENT);
+                return;
+            };
+            let Some(new_parent_path) = self.inodes.get_path(newparent.0) else {
+                reply.error(Errno::ENOENT);
+                return;
+            };
+
+            let old_path = old_parent_path.join(name);
+            let new_path = new_parent_path.join(newname);
+
+            let mut layer = self.layer.lock().unwrap();
+
+            // RENAME_NOREPLACE: fail if destination already exists.
+            if flags.contains(RenameFlags::RENAME_NOREPLACE) && layer.exists(&new_path) {
+                reply.error(Errno::EEXIST);
+                return;
+            }
+
+            match layer.rename_file(&old_path, &new_path) {
+                Ok(()) => {
+                    drop(layer);
+                    self.inodes.rename(&old_path, &new_path);
+                    reply.ok();
+                }
+                Err(crate::error::OverlayError::PathNotFound(_)) => {
+                    reply.error(Errno::ENOENT);
+                }
+                Err(crate::error::OverlayError::Io(ref e))
+                    if e.raw_os_error() == Some(libc::ENOTEMPTY) =>
+                {
+                    reply.error(Errno::ENOTEMPTY);
+                }
+                Err(e) => {
+                    warn!(error = %e, "rename failed");
                     reply.error(Errno::EIO);
                 }
             }
