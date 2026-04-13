@@ -75,21 +75,81 @@ async fn run_summary(
     println!("Trunk HEAD: {head_short}");
     println!();
 
-    // Active overlays with run state
+    // Active overlays with run state.
+    // Group plan-prefixed agents together for better readability.
     let active_agents = projection.active_agents();
+
+    // Detect plans: find PlanCreated events to map plan IDs to their request text.
+    let mut plan_agents: std::collections::HashMap<String, Vec<&AgentId>> =
+        std::collections::HashMap::new();
+    let mut standalone_agents: Vec<&AgentId> = Vec::new();
+    let mut plan_requests: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    // Collect plan metadata from events.
+    for event in &all_events {
+        if let EventKind::PlanCreated {
+            plan_id,
+            request,
+            ..
+        } = &event.kind
+        {
+            plan_requests.insert(plan_id.0.clone(), request.clone());
+        }
+    }
+
+    // Classify agents into plan groups vs standalone.
+    for agent in &active_agents {
+        // Agent IDs from plans follow the pattern: plan-YYYYMMDD-HHMMSS-domain-name
+        let plan_prefix = extract_plan_prefix(&agent.0);
+        if let Some(prefix) = plan_prefix {
+            plan_agents.entry(prefix).or_default().push(agent);
+        } else {
+            standalone_agents.push(agent);
+        }
+    }
+
     if active_agents.is_empty() {
         println!("Active overlays: (none)");
     } else {
         println!("Active overlays:");
-        for agent in &active_agents {
+
+        // Print plan groups first.
+        for (plan_prefix, agents) in &plan_agents {
+            let request = plan_requests
+                .get(plan_prefix)
+                .map(|r| {
+                    if r.len() > 60 {
+                        format!("{}...", &r[..57])
+                    } else {
+                        r.clone()
+                    }
+                })
+                .unwrap_or_default();
+            println!("  Plan: {plan_prefix} — {request}");
+
+            for agent in agents {
+                let run_state = read_agent_run_state(phantom_dir, &agent.0);
+                let state_str = format_run_state_short(&run_state);
+                // Extract the domain name from the agent ID (everything after the plan prefix).
+                let domain_name = agent
+                    .0
+                    .strip_prefix(&format!("{plan_prefix}-"))
+                    .unwrap_or(&agent.0);
+                println!("    {domain_name:<20} {state_str}");
+            }
+            println!();
+        }
+
+        // Print standalone agents.
+        for agent in &standalone_agents {
             let run_state = read_agent_run_state(phantom_dir, &agent.0);
             let state_str = format_run_state_short(&run_state);
 
-            // Find the task description from the most recent TaskCreated event.
             let task = all_events
                 .iter()
                 .rev()
-                .find(|e| e.agent_id == *agent && matches!(e.kind, EventKind::TaskCreated { .. }))
+                .find(|e| e.agent_id == **agent && matches!(e.kind, EventKind::TaskCreated { .. }))
                 .and_then(|e| match &e.kind {
                     EventKind::TaskCreated { task, .. } if !task.is_empty() => Some(task.as_str()),
                     _ => None,
@@ -331,6 +391,25 @@ pub fn format_duration(d: &Duration) -> String {
         format!("{}m{}s", secs / 60, secs % 60)
     } else {
         format!("{secs}s")
+    }
+}
+
+/// Extract the plan prefix from an agent ID, if it matches the plan naming pattern.
+///
+/// Plan agent IDs follow: `plan-YYYYMMDD-HHMMSS-domain-name`.
+/// Returns `Some("plan-YYYYMMDD-HHMMSS")` if matched.
+fn extract_plan_prefix(agent_id: &str) -> Option<String> {
+    if !agent_id.starts_with("plan-") {
+        return None;
+    }
+    // Expected format: plan-YYYYMMDD-HHMMSS-rest
+    // The prefix is the first 22 characters: "plan-" (5) + "YYYYMMDD" (8) + "-" (1) + "HHMMSS" (6) + "-" (1) = 21
+    // But we need to be flexible. Split by '-' and take plan + date + time.
+    let parts: Vec<&str> = agent_id.splitn(4, '-').collect();
+    if parts.len() >= 4 && parts[1].len() == 8 && parts[2].len() == 6 {
+        Some(format!("{}-{}-{}", parts[0], parts[1], parts[2]))
+    } else {
+        None
     }
 }
 

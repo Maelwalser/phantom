@@ -149,6 +149,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
         task,
         &work_dir,
         true, // auto_materialize
+        None,
     )?;
 
     let log_file = ctx

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::changeset::{SemanticOperation, TestResult};
 use crate::conflict::ConflictDetail;
-use crate::id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, SymbolId};
+use crate::id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, PlanId, SymbolId};
 
 /// Result of a semantic merge check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +120,26 @@ pub enum EventKind {
         merged_files: Vec<PathBuf>,
         /// Files that had conflicts and were left unchanged in the upper layer.
         conflicted_files: Vec<PathBuf>,
+    },
+    /// A plan was created and agents dispatched.
+    PlanCreated {
+        /// Unique plan identifier.
+        plan_id: PlanId,
+        /// The original user request.
+        request: String,
+        /// Number of domains in the plan.
+        domain_count: u32,
+        /// Agent IDs dispatched for each domain.
+        agent_ids: Vec<String>,
+    },
+    /// A plan completed (all agents finished).
+    PlanCompleted {
+        /// Unique plan identifier.
+        plan_id: PlanId,
+        /// Number of domains that succeeded.
+        succeeded: u32,
+        /// Number of domains that failed.
+        failed: u32,
     },
     /// Unrecognized event kind from a newer schema version.
     ///
@@ -246,6 +266,17 @@ mod tests {
             EventKind::AgentCompleted {
                 exit_code: Some(0),
                 materialized: true,
+            },
+            EventKind::PlanCreated {
+                plan_id: crate::id::PlanId("plan-001".into()),
+                request: "add caching".into(),
+                domain_count: 2,
+                agent_ids: vec!["plan-001-cache".into()],
+            },
+            EventKind::PlanCompleted {
+                plan_id: crate::id::PlanId("plan-001".into()),
+                succeeded: 2,
+                failed: 0,
             },
         ];
 

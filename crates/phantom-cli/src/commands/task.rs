@@ -178,6 +178,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             task,
             &work_dir,
             args.auto_materialize,
+            None,
         )?;
 
         println!("Agent '{}' {verb} (background).", args.agent);
@@ -406,6 +407,7 @@ async fn check_changeset_resumable(events: &SqliteEventStore, cs_id: &ChangesetI
 /// Spawn the `phantom _agent-monitor` process which will in turn spawn and
 /// monitor the claude process. This ensures the monitor is the parent of
 /// claude and can `waitpid` to get the real exit code.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_agent_monitor(
     phantom_dir: &Path,
     repo_root: &Path,
@@ -414,6 +416,7 @@ pub(crate) fn spawn_agent_monitor(
     task: &str,
     work_dir: &Path,
     auto_materialize: bool,
+    system_prompt_file: Option<&Path>,
 ) -> anyhow::Result<()> {
     let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
     let overlay_root = phantom_dir.join("overlays").join(agent);
@@ -434,6 +437,10 @@ pub(crate) fn spawn_agent_monitor(
 
     if auto_materialize {
         cmd.arg("--auto-materialize");
+    }
+
+    if let Some(path) = system_prompt_file {
+        cmd.arg("--system-prompt-file").arg(path);
     }
 
     let child = cmd

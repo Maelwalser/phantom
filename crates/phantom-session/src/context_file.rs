@@ -317,6 +317,157 @@ fn lang_from_path(path: &std::path::Path) -> &'static str {
     }
 }
 
+/// Write a domain-specific instruction file for a `phantom plan` agent.
+///
+/// The generated markdown provides the agent with its task scope, requirements
+/// checklist, verification commands, and awareness of other parallel domains.
+/// This file is passed to Claude Code via `--append-system-prompt-file`.
+pub fn write_plan_domain_instructions(
+    instructions_path: &Path,
+    domain: &phantom_core::plan::PlanDomain,
+    plan: &phantom_core::plan::Plan,
+) -> anyhow::Result<()> {
+    use std::fmt::Write;
+
+    let mut content = String::new();
+
+    writeln!(content, "# Phantom Plan Domain: {}", domain.name).unwrap();
+    writeln!(content).unwrap();
+    writeln!(
+        content,
+        "You are an autonomous agent working on one domain of a larger plan."
+    )
+    .unwrap();
+    writeln!(
+        content,
+        "Your changes will be automatically submitted and materialized when you finish."
+    )
+    .unwrap();
+    writeln!(content).unwrap();
+
+    // Task
+    writeln!(content, "## Your Task").unwrap();
+    writeln!(content, "{}", domain.description).unwrap();
+    writeln!(content).unwrap();
+
+    // Requirements
+    if !domain.requirements.is_empty() {
+        writeln!(content, "## Requirements").unwrap();
+        for req in &domain.requirements {
+            writeln!(content, "- [ ] {req}").unwrap();
+        }
+        writeln!(content).unwrap();
+    }
+
+    // Scope
+    writeln!(content, "## Scope").unwrap();
+    writeln!(content).unwrap();
+    if !domain.files_to_modify.is_empty() {
+        writeln!(content, "### Files you SHOULD modify").unwrap();
+        for file in &domain.files_to_modify {
+            writeln!(content, "- `{}`", file.display()).unwrap();
+        }
+        writeln!(content).unwrap();
+    }
+    if !domain.files_not_to_modify.is_empty() {
+        writeln!(content, "### Files you MUST NOT modify").unwrap();
+        for pattern in &domain.files_not_to_modify {
+            writeln!(content, "- `{pattern}` (owned by another domain)").unwrap();
+        }
+        writeln!(content).unwrap();
+    }
+
+    // Parallel work awareness
+    let other_domains: Vec<_> = plan
+        .domains
+        .iter()
+        .filter(|d| d.name != domain.name)
+        .collect();
+    if !other_domains.is_empty() {
+        writeln!(content, "## Parallel Work Awareness").unwrap();
+        writeln!(
+            content,
+            "Other agents are working on these domains simultaneously:"
+        )
+        .unwrap();
+        for other in &other_domains {
+            writeln!(content, "- **{}**: {}", other.name, other.description).unwrap();
+        }
+        writeln!(content).unwrap();
+        writeln!(
+            content,
+            "Do NOT modify files owned by other domains. Phantom's semantic merge"
+        )
+        .unwrap();
+        writeln!(content, "will compose all domains' work automatically.").unwrap();
+        writeln!(content).unwrap();
+    }
+
+    // Dependencies
+    if !domain.depends_on.is_empty() {
+        writeln!(content, "## Dependencies").unwrap();
+        writeln!(
+            content,
+            "This domain depends on work from these other domains:"
+        )
+        .unwrap();
+        for dep in &domain.depends_on {
+            writeln!(content, "- **{dep}**").unwrap();
+        }
+        writeln!(
+            content,
+            "Their changes may or may not be on trunk yet. Code defensively."
+        )
+        .unwrap();
+        writeln!(content).unwrap();
+    }
+
+    // Verification
+    if !domain.verification.is_empty() {
+        writeln!(content, "## Verification").unwrap();
+        writeln!(content, "Run these commands before finishing:").unwrap();
+        for cmd in &domain.verification {
+            writeln!(content, "```").unwrap();
+            writeln!(content, "{cmd}").unwrap();
+            writeln!(content, "```").unwrap();
+        }
+        writeln!(content).unwrap();
+    }
+
+    // Completion
+    writeln!(content, "## Completion").unwrap();
+    writeln!(
+        content,
+        "When all requirements are met and verification passes, your work will"
+    )
+    .unwrap();
+    writeln!(
+        content,
+        "be automatically submitted and materialized. Do not run `phantom submit`"
+    )
+    .unwrap();
+    writeln!(content, "or `phantom materialize` manually.").unwrap();
+
+    // Ensure parent directory exists.
+    if let Some(parent) = instructions_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create instructions directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std::fs::write(instructions_path, content).with_context(|| {
+        format!(
+            "failed to write instructions to {}",
+            instructions_path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
 /// Remove the generated context file from the overlay.
 pub fn cleanup_context_file(upper_dir: &Path) {
     let path = upper_dir.join(CONTEXT_FILE);

@@ -14,6 +14,7 @@ pub mod error;
 pub mod event;
 pub mod id;
 pub mod notification;
+pub mod plan;
 pub mod symbol;
 pub mod traits;
 
@@ -33,7 +34,8 @@ pub use changeset::{Changeset, ChangesetStatus, SemanticOperation, TestResult};
 pub use conflict::{ConflictDetail, ConflictKind, ConflictSpan};
 pub use error::CoreError;
 pub use event::{Event, EventKind, MergeCheckResult};
-pub use id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, SymbolId};
+pub use id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, PlanId, SymbolId};
 pub use symbol::{SymbolEntry, SymbolKind};
 pub use notification::{TrunkFileStatus, TrunkNotification};
+pub use plan::{Plan, PlanDomain, PlanStatus, RawPlanDomain, RawPlanOutput};
 pub use traits::{EventStore, MergeResult, SemanticAnalyzer, SymbolIndex};

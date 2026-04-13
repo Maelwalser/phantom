@@ -182,6 +182,20 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
                 .unwrap_or_else(|| "signal".into());
             format!("AgentCompleted {{ exit: {code}, materialized: {materialized} }}")
         }
+        EventKind::PlanCreated {
+            plan_id,
+            domain_count,
+            ..
+        } => {
+            format!("PlanCreated {{ {plan_id}, {domain_count} domain(s) }}")
+        }
+        EventKind::PlanCompleted {
+            plan_id,
+            succeeded,
+            failed,
+        } => {
+            format!("PlanCompleted {{ {plan_id}, {succeeded} ok, {failed} failed }}")
+        }
         EventKind::Unknown => "Unknown".into(),
     }
 }

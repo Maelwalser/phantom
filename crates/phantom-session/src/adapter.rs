@@ -84,11 +84,15 @@ pub trait CliAdapter {
     ///
     /// Returns `Some(Command)` if the CLI supports headless mode, `None` otherwise.
     /// For Claude Code this uses `-p` (prompt mode) instead of interactive mode.
+    ///
+    /// When `system_prompt_file` is `Some`, the CLI should append the file's
+    /// contents to its system prompt (e.g. `--append-system-prompt-file`).
     fn build_headless_command(
         &self,
         _work_dir: &Path,
         _task: &str,
         _env_vars: &[(&str, &str)],
+        _system_prompt_file: Option<&Path>,
     ) -> Option<Command> {
         None
     }
@@ -143,6 +147,7 @@ impl CliAdapter for ClaudeAdapter {
         work_dir: &Path,
         task: &str,
         env_vars: &[(&str, &str)],
+        system_prompt_file: Option<&Path>,
     ) -> Option<Command> {
         let mut cmd = Command::new("claude");
         cmd.current_dir(work_dir);
@@ -157,6 +162,13 @@ impl CliAdapter for ClaudeAdapter {
 
         if let Some(dir_str) = work_dir.to_str() {
             cmd.args(["--add-dir", dir_str]);
+        }
+
+        // Inject custom instructions while preserving built-in capabilities.
+        if let Some(path) = system_prompt_file
+            && let Some(path_str) = path.to_str()
+        {
+            cmd.args(["--append-system-prompt-file", path_str]);
         }
 
         Some(cmd)

@@ -38,6 +38,9 @@ pub struct AgentMonitorArgs {
     /// Automatically materialize after submitting
     #[arg(long)]
     pub auto_materialize: bool,
+    /// Path to a system prompt file to append to the claude invocation
+    #[arg(long)]
+    pub system_prompt_file: Option<String>,
 }
 
 /// Completion status written to `.phantom/overlays/<agent>/agent.status`.
@@ -87,8 +90,16 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     let work_dir = PathBuf::from(&args.work_dir);
 
     // Spawn the claude process as our child so we can waitpid for it.
+    let system_prompt_file = args.system_prompt_file.as_deref().map(PathBuf::from);
     let (claude_pid, exit_code) =
-        spawn_and_wait_claude(&ctx.phantom_dir, &args.agent, &work_dir, &args.task, &args.repo_root)?;
+        spawn_and_wait_claude(
+            &ctx.phantom_dir,
+            &args.agent,
+            &work_dir,
+            &args.task,
+            &args.repo_root,
+            system_prompt_file.as_deref(),
+        )?;
 
     // Emit AgentLaunched event now that we have the real PID.
     let launch_event = Event {
@@ -150,6 +161,7 @@ fn spawn_and_wait_claude(
     work_dir: &Path,
     task: &str,
     repo_root: &str,
+    system_prompt_file: Option<&Path>,
 ) -> anyhow::Result<(u32, Option<i32>)> {
     let overlay_root = phantom_dir.join("overlays").join(agent);
     let log_file = overlay_root.join("agent.log");
@@ -171,7 +183,7 @@ fn spawn_and_wait_claude(
     ];
 
     let mut cmd = cli_adapter
-        .build_headless_command(work_dir, task, &env_vars)
+        .build_headless_command(work_dir, task, &env_vars, system_prompt_file)
         .context("CLI adapter does not support headless mode")?;
 
     cmd.stdin(std::process::Stdio::null())
