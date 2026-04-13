@@ -187,11 +187,7 @@ pub fn write_resolve_context_file(
         let lang = lang_from_path(&conflict.detail.file);
 
         // BASE
-        writeln!(
-            content,
-            "#### BASE (common ancestor at {base_short})"
-        )
-        .unwrap();
+        writeln!(content, "#### BASE (common ancestor at {base_short})").unwrap();
         write_code_block(
             &mut content,
             lang,
@@ -209,7 +205,11 @@ pub fn write_resolve_context_file(
         );
 
         // THEIRS
-        writeln!(content, "#### THEIRS (agent's version — in your working directory)").unwrap();
+        writeln!(
+            content,
+            "#### THEIRS (agent's version — in your working directory)"
+        )
+        .unwrap();
         write_code_block(
             &mut content,
             lang,
@@ -293,7 +293,9 @@ fn format_conflict_kind(kind: phantom_core::ConflictKind) -> &'static str {
     match kind {
         phantom_core::ConflictKind::BothModifiedSymbol => "BothModifiedSymbol",
         phantom_core::ConflictKind::ModifyDeleteSymbol => "ModifyDeleteSymbol",
-        phantom_core::ConflictKind::BothModifiedDependencyVersion => "BothModifiedDependencyVersion",
+        phantom_core::ConflictKind::BothModifiedDependencyVersion => {
+            "BothModifiedDependencyVersion"
+        }
         phantom_core::ConflictKind::RawTextConflict => "RawTextConflict",
         phantom_core::ConflictKind::BinaryFile => "BinaryFile",
     }
@@ -327,54 +329,53 @@ pub fn write_plan_domain_instructions(
     domain: &phantom_core::plan::PlanDomain,
     plan: &phantom_core::plan::Plan,
 ) -> anyhow::Result<()> {
-    use std::fmt::Write;
+    use std::fmt::Write as _;
 
     let mut content = String::new();
 
-    writeln!(content, "# Phantom Plan Domain: {}", domain.name).unwrap();
-    writeln!(content).unwrap();
-    writeln!(
+    // Writing to a String is infallible — no need for unwrap/error handling.
+    let _ = writeln!(content, "# Phantom Plan Domain: {}", domain.name);
+    let _ = writeln!(content);
+    let _ = writeln!(
         content,
         "You are an autonomous agent working on one domain of a larger plan."
-    )
-    .unwrap();
-    writeln!(
+    );
+    let _ = writeln!(
         content,
         "Your changes will be automatically submitted and materialized when you finish."
-    )
-    .unwrap();
-    writeln!(content).unwrap();
+    );
+    let _ = writeln!(content);
 
     // Task
-    writeln!(content, "## Your Task").unwrap();
-    writeln!(content, "{}", domain.description).unwrap();
-    writeln!(content).unwrap();
+    let _ = writeln!(content, "## Your Task");
+    let _ = writeln!(content, "{}", domain.description);
+    let _ = writeln!(content);
 
     // Requirements
     if !domain.requirements.is_empty() {
-        writeln!(content, "## Requirements").unwrap();
+        let _ = writeln!(content, "## Requirements");
         for req in &domain.requirements {
-            writeln!(content, "- [ ] {req}").unwrap();
+            let _ = writeln!(content, "- [ ] {req}");
         }
-        writeln!(content).unwrap();
+        let _ = writeln!(content);
     }
 
     // Scope
-    writeln!(content, "## Scope").unwrap();
-    writeln!(content).unwrap();
+    let _ = writeln!(content, "## Scope");
+    let _ = writeln!(content);
     if !domain.files_to_modify.is_empty() {
-        writeln!(content, "### Files you SHOULD modify").unwrap();
+        let _ = writeln!(content, "### Files you SHOULD modify");
         for file in &domain.files_to_modify {
-            writeln!(content, "- `{}`", file.display()).unwrap();
+            let _ = writeln!(content, "- `{}`", file.display());
         }
-        writeln!(content).unwrap();
+        let _ = writeln!(content);
     }
     if !domain.files_not_to_modify.is_empty() {
-        writeln!(content, "### Files you MUST NOT modify").unwrap();
+        let _ = writeln!(content, "### Files you MUST NOT modify");
         for pattern in &domain.files_not_to_modify {
-            writeln!(content, "- `{pattern}` (owned by another domain)").unwrap();
+            let _ = writeln!(content, "- `{pattern}` (owned by another domain)");
         }
-        writeln!(content).unwrap();
+        let _ = writeln!(content);
     }
 
     // Parallel work awareness
@@ -384,69 +385,60 @@ pub fn write_plan_domain_instructions(
         .filter(|d| d.name != domain.name)
         .collect();
     if !other_domains.is_empty() {
-        writeln!(content, "## Parallel Work Awareness").unwrap();
-        writeln!(
+        let _ = writeln!(content, "## Parallel Work Awareness");
+        let _ = writeln!(
             content,
             "Other agents are working on these domains simultaneously:"
-        )
-        .unwrap();
+        );
         for other in &other_domains {
-            writeln!(content, "- **{}**: {}", other.name, other.description).unwrap();
+            let _ = writeln!(content, "- **{}**: {}", other.name, other.description);
         }
-        writeln!(content).unwrap();
-        writeln!(
+        let _ = writeln!(content);
+        let _ = writeln!(
             content,
-            "Do NOT modify files owned by other domains. Phantom's semantic merge"
-        )
-        .unwrap();
-        writeln!(content, "will compose all domains' work automatically.").unwrap();
-        writeln!(content).unwrap();
+            "Do NOT modify files owned by other domains. Phantom's semantic merge \
+             will compose all domains' work automatically."
+        );
+        let _ = writeln!(content);
     }
 
     // Dependencies
     if !domain.depends_on.is_empty() {
-        writeln!(content, "## Dependencies").unwrap();
-        writeln!(
+        let _ = writeln!(content, "## Dependencies");
+        let _ = writeln!(
             content,
             "This domain depends on work from these other domains:"
-        )
-        .unwrap();
+        );
         for dep in &domain.depends_on {
-            writeln!(content, "- **{dep}**").unwrap();
+            let _ = writeln!(content, "- **{dep}**");
         }
-        writeln!(
+        let _ = writeln!(
             content,
             "Their changes may or may not be on trunk yet. Code defensively."
-        )
-        .unwrap();
-        writeln!(content).unwrap();
+        );
+        let _ = writeln!(content);
     }
 
     // Verification
     if !domain.verification.is_empty() {
-        writeln!(content, "## Verification").unwrap();
-        writeln!(content, "Run these commands before finishing:").unwrap();
+        let _ = writeln!(content, "## Verification");
+        let _ = writeln!(content, "Run these commands before finishing:");
         for cmd in &domain.verification {
-            writeln!(content, "```").unwrap();
-            writeln!(content, "{cmd}").unwrap();
-            writeln!(content, "```").unwrap();
+            let _ = writeln!(content, "```");
+            let _ = writeln!(content, "{cmd}");
+            let _ = writeln!(content, "```");
         }
-        writeln!(content).unwrap();
+        let _ = writeln!(content);
     }
 
     // Completion
-    writeln!(content, "## Completion").unwrap();
-    writeln!(
+    let _ = writeln!(content, "## Completion");
+    let _ = writeln!(
         content,
-        "When all requirements are met and verification passes, your work will"
-    )
-    .unwrap();
-    writeln!(
-        content,
-        "be automatically submitted and materialized. Do not run `phantom submit`"
-    )
-    .unwrap();
-    writeln!(content, "or `phantom materialize` manually.").unwrap();
+        "When all requirements are met and verification passes, your work will \
+         be automatically submitted and materialized. Do not run `phantom submit` \
+         or `phantom materialize` manually."
+    );
 
     // Ensure parent directory exists.
     if let Some(parent) = instructions_path.parent() {

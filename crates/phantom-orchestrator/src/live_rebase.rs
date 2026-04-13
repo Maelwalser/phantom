@@ -487,11 +487,7 @@ mod tests {
 
         // Agent: also changes the same line differently.
         std::fs::create_dir_all(upper_dir.path().join("src")).unwrap();
-        std::fs::write(
-            upper_dir.path().join("src/shared.rs"),
-            b"agent version\n",
-        )
-        .unwrap();
+        std::fs::write(upper_dir.path().join("src/shared.rs"), b"agent version\n").unwrap();
 
         let result = rebase_agent(
             &git,
@@ -535,7 +531,14 @@ mod tests {
         let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
         let sig = git2::Signature::now("test", "test@test.com").unwrap();
         let oid = repo
-            .commit(Some("HEAD"), &sig, &sig, "delete file", &tree, &[&head_commit])
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "delete file",
+                &tree,
+                &[&head_commit],
+            )
             .unwrap();
         let mut head_bytes = [0u8; 20];
         head_bytes.copy_from_slice(oid.as_bytes());
@@ -558,7 +561,10 @@ mod tests {
 
         assert!(result.merged.is_empty());
         assert_eq!(result.conflicted.len(), 1);
-        assert_eq!(result.conflicted[0].1[0].kind, ConflictKind::ModifyDeleteSymbol);
+        assert_eq!(
+            result.conflicted[0].1[0].kind,
+            ConflictKind::ModifyDeleteSymbol
+        );
     }
 
     #[test]
@@ -585,7 +591,12 @@ mod tests {
             b"// top\nfn trunk_fn() {}\nfn alpha() {}\n// bottom\n",
             "trunk clean",
         );
-        let head = commit_file(&git, "src/conflict.rs", b"trunk version\n", "trunk conflict");
+        let head = commit_file(
+            &git,
+            "src/conflict.rs",
+            b"trunk version\n",
+            "trunk conflict",
+        );
 
         // Agent: add to clean file (at bottom), change conflict file differently.
         std::fs::create_dir_all(upper_dir.path().join("src")).unwrap();
@@ -625,16 +636,8 @@ mod tests {
         let agent = AgentId("agent-b".into());
         let head = git.head_oid().unwrap();
 
-        let result = rebase_agent(
-            &git,
-            &analyzer,
-            &agent,
-            &head,
-            &head,
-            upper_dir.path(),
-            &[],
-        )
-        .unwrap();
+        let result =
+            rebase_agent(&git, &analyzer, &agent, &head, &head, upper_dir.path(), &[]).unwrap();
 
         assert!(result.merged.is_empty());
         assert!(result.conflicted.is_empty());

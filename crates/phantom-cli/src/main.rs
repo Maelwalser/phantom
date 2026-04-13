@@ -6,11 +6,6 @@ use tracing::error;
 mod commands;
 mod context;
 
-
-
-
-
-
 fn print_banner() {
     println!(
         r#"

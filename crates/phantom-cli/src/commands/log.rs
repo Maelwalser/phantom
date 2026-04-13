@@ -46,10 +46,7 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
         kind_prefixes: Vec::new(),
     };
 
-    let events = events_store
-        .query(&query)
-        .await
-        ?;
+    let events = events_store.query(&query).await?;
 
     if events.is_empty() {
         println!("No events found.");
@@ -228,6 +225,8 @@ fn event_kind_label(kind: &phantom_core::EventKind) -> &'static str {
         EventKind::ConflictResolutionStarted { .. } => "conflict resolution",
         EventKind::AgentLaunched { .. } => "agent launched",
         EventKind::AgentCompleted { .. } => "agent completed",
+        EventKind::PlanCreated { .. } => "plan created",
+        EventKind::PlanCompleted { .. } => "plan completed",
         EventKind::Unknown => "unknown",
     }
 }

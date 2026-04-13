@@ -66,9 +66,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     );
 
     // Build the three-way conflict context for each conflict.
-    let upper_dir = overlays
-        .upper_dir(&agent_id)?
-        .to_path_buf();
+    let upper_dir = overlays.upper_dir(&agent_id)?.to_path_buf();
 
     let mut resolve_contexts = Vec::with_capacity(conflict_details.len());
     for detail in &conflict_details {
@@ -181,10 +179,7 @@ fn is_fuse_mounted(mount_point: &std::path::Path) -> bool {
         None => return false,
     };
 
-    match (
-        std::fs::metadata(mount_point),
-        std::fs::metadata(parent),
-    ) {
+    match (std::fs::metadata(mount_point), std::fs::metadata(parent)) {
         (Ok(m), Ok(p)) => m.dev() != p.dev(),
         _ => false,
     }

@@ -101,7 +101,10 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     let now = chrono::Local::now().format("%H:%M:%S");
 
     // Header
-    writeln!(out, "\x1b[1mphantom background\x1b[0m — watching agents  \x1b[2m{now}  (Ctrl+C to exit)\x1b[0m")?;
+    writeln!(
+        out,
+        "\x1b[1mphantom background\x1b[0m — watching agents  \x1b[2m{now}  (Ctrl+C to exit)\x1b[0m"
+    )?;
     writeln!(out)?;
     writeln!(out, "Trunk HEAD: \x1b[36m{head_short}\x1b[0m")?;
     writeln!(out)?;
@@ -117,7 +120,10 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     all_agents.dedup();
 
     if all_agents.is_empty() {
-        writeln!(out, "\x1b[2m  No agents found. Use `phantom <agent> --background` to start one.\x1b[0m")?;
+        writeln!(
+            out,
+            "\x1b[2m  No agents found. Use `phantom <agent> --background` to start one.\x1b[0m"
+        )?;
         return Ok(());
     }
 
@@ -153,9 +159,7 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
             .rev()
             .find(|e| e.agent_id == *agent && matches!(e.kind, EventKind::TaskCreated { .. }))
             .and_then(|e| match &e.kind {
-                EventKind::TaskCreated { task, .. } if !task.is_empty() => {
-                    Some(task.as_str())
-                }
+                EventKind::TaskCreated { task, .. } if !task.is_empty() => Some(task.as_str()),
                 _ => None,
             })
             .unwrap_or("");
@@ -200,9 +204,7 @@ fn format_state_columns(state: &AgentRunState) -> (&'static str, String, String)
             "running".into(),
             status::format_duration(elapsed),
         ),
-        AgentRunState::Finished => {
-            ("\x1b[32m✓ ", "finished".into(), String::new())
-        }
+        AgentRunState::Finished => ("\x1b[32m✓ ", "finished".into(), String::new()),
         AgentRunState::Failed { status: s } => {
             let label = if let Some(s) = s {
                 s.exit_code

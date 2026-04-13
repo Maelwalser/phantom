@@ -51,8 +51,7 @@ pub fn save_session(
     session: &CliSession,
 ) -> anyhow::Result<()> {
     let path = session_path(phantom_dir, agent_id);
-    let json = serde_json::to_string_pretty(session)
-        .context("failed to serialize CLI session")?;
+    let json = serde_json::to_string_pretty(session).context("failed to serialize CLI session")?;
     std::fs::write(&path, json)
         .with_context(|| format!("failed to write CLI session to {}", path.display()))?;
     Ok(())
@@ -176,8 +175,10 @@ impl CliAdapter for ClaudeAdapter {
 
     fn extract_session_id(&self, output_tail: &str) -> Option<String> {
         // Claude Code prints: "claude --resume <UUID>" near the end of output.
-        let re = Regex::new(r"claude --resume ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
-            .ok()?;
+        let re = Regex::new(
+            r"claude --resume ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        )
+        .ok()?;
         re.captures(output_tail)
             .and_then(|caps| caps.get(1))
             .map(|m| m.as_str().to_string())

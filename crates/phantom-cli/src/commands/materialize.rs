@@ -1,14 +1,12 @@
 //! `phantom materialize` — commit a changeset to trunk.
 
 use anyhow::Context;
+use phantom_core::event::EventKind;
 use phantom_core::id::{AgentId, ChangesetId};
 use phantom_core::traits::EventStore;
 use phantom_events::Projection;
-use phantom_orchestrator::materialization_service::{
-    self, ActiveOverlay, MaterializeOutput,
-};
+use phantom_orchestrator::materialization_service::{self, ActiveOverlay, MaterializeOutput};
 use phantom_orchestrator::materializer::{MaterializeResult, Materializer};
-use phantom_core::event::EventKind;
 
 use crate::context::PhantomContext;
 
@@ -60,7 +58,8 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
         cs.agent_id.0.clone()
     };
 
-    let output = materialize_changeset(&ctx, &events, &mut overlays, &changeset_id, &commit_message).await?;
+    let output =
+        materialize_changeset(&ctx, &events, &mut overlays, &changeset_id, &commit_message).await?;
 
     match output.result {
         MaterializeResult::Success { new_commit } => {
@@ -95,7 +94,9 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
                 let kind_label = match detail.kind {
                     phantom_core::ConflictKind::BothModifiedSymbol => "both modified",
                     phantom_core::ConflictKind::ModifyDeleteSymbol => "modify/delete",
-                    phantom_core::ConflictKind::BothModifiedDependencyVersion => "dependency version",
+                    phantom_core::ConflictKind::BothModifiedDependencyVersion => {
+                        "dependency version"
+                    }
                     phantom_core::ConflictKind::RawTextConflict => "text conflict",
                     phantom_core::ConflictKind::BinaryFile => "binary file",
                 };
@@ -128,7 +129,10 @@ fn format_conflict_location(detail: &phantom_core::ConflictDetail) -> String {
         if span.start_line == span.end_line {
             parts.push(format!("theirs: line {}", span.start_line));
         } else {
-            parts.push(format!("theirs: lines {}–{}", span.start_line, span.end_line));
+            parts.push(format!(
+                "theirs: lines {}–{}",
+                span.start_line, span.end_line
+            ));
         }
     }
     if let Some(span) = &detail.base_span {
@@ -161,9 +165,7 @@ pub async fn materialize_changeset(
         .with_context(|| format!("changeset '{changeset_id}' not found"))?
         .clone();
 
-    let upper_dir = overlays
-        .upper_dir(&changeset.agent_id)?
-        .to_path_buf();
+    let upper_dir = overlays.upper_dir(&changeset.agent_id)?.to_path_buf();
 
     let materializer = Materializer::new(
         phantom_orchestrator::git::GitOps::open(&ctx.repo_root)
@@ -177,15 +179,15 @@ pub async fn materialize_changeset(
         .into_iter()
         .filter(|a| *a != changeset.agent_id)
         .filter_map(|a| {
-            let agent_cs = all_events
-                .iter()
-                .filter(|e| e.agent_id == a)
-                .find_map(|e| match &e.kind {
-                    EventKind::TaskCreated { .. } => Some(e.changeset_id.clone()),
-                    _ => None,
-                });
-            let cs_data = agent_cs
-                .and_then(|cs_id| projection.changeset(&cs_id).cloned());
+            let agent_cs =
+                all_events
+                    .iter()
+                    .filter(|e| e.agent_id == a)
+                    .find_map(|e| match &e.kind {
+                        EventKind::TaskCreated { .. } => Some(e.changeset_id.clone()),
+                        _ => None,
+                    });
+            let cs_data = agent_cs.and_then(|cs_id| projection.changeset(&cs_id).cloned());
             let agent_upper = overlays.upper_dir(&a).ok().map(|p| p.to_path_buf());
             match (cs_data, agent_upper) {
                 (Some(cs), Some(upper)) => Some(ActiveOverlay {

@@ -121,16 +121,12 @@ pub async fn materialize_and_ripple(
                         if let Err(e) =
                             ripple::write_trunk_notification(phantom_dir, agent_id, &notif)
                         {
-                            eprintln!(
-                                "warning: failed to write notification for {agent_id}: {e}"
-                            );
+                            eprintln!("warning: failed to write notification for {agent_id}: {e}");
                         }
                         if let Err(e) =
                             live_rebase::write_current_base(phantom_dir, agent_id, &head)
                         {
-                            eprintln!(
-                                "warning: failed to update current_base for {agent_id}: {e}"
-                            );
+                            eprintln!("warning: failed to update current_base for {agent_id}: {e}");
                         }
                         ripple_effects.push(RippleEffect {
                             agent_id: agent_id.clone(),

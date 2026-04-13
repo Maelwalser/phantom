@@ -125,9 +125,10 @@ fn list_agent_dirs(overlays_dir: &Path) -> Vec<String> {
     };
     for entry in entries.flatten() {
         if entry.file_type().is_ok_and(|ft| ft.is_dir())
-            && let Some(name) = entry.file_name().to_str() {
-                agents.push(name.to_string());
-            }
+            && let Some(name) = entry.file_name().to_str()
+        {
+            agents.push(name.to_string());
+        }
     }
     agents.sort();
     agents
@@ -155,8 +156,7 @@ fn agent_has_fuse(overlays_dir: &Path, agent: &str) -> bool {
 
 fn agent_has_process(overlays_dir: &Path, agent: &str) -> bool {
     let overlay_dir = overlays_dir.join(agent);
-    is_pid_alive(&overlay_dir.join("agent.pid"))
-        || is_pid_alive(&overlay_dir.join("monitor.pid"))
+    is_pid_alive(&overlay_dir.join("agent.pid")) || is_pid_alive(&overlay_dir.join("monitor.pid"))
 }
 
 fn is_pid_alive(pid_file: &Path) -> bool {
@@ -222,37 +222,39 @@ fn unmount_agent_fuse(overlays_dir: &Path, agent: &str) -> bool {
 
         // Kill the FUSE daemon process.
         if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-            && let Ok(pid) = pid_str.trim().parse::<i32>() {
-                unsafe {
-                    libc::kill(pid, libc::SIGTERM);
-                }
+            && let Ok(pid) = pid_str.trim().parse::<i32>()
+        {
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
             }
+        }
 
         return true;
     }
 
     // Kill the FUSE daemon and retry unmount.
     if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-        && let Ok(pid) = pid_str.trim().parse::<i32>() {
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
-            std::thread::sleep(Duration::from_millis(300));
-
-            let retry_ok = std::process::Command::new("fusermount3")
-                .arg("-u")
-                .arg(&mount_point)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success());
-
-            if retry_ok {
-                info!(agent, "FUSE unmounted after killing daemon");
-                let _ = std::fs::remove_file(&pid_file);
-                return true;
-            }
+        && let Ok(pid) = pid_str.trim().parse::<i32>()
+    {
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
         }
+        std::thread::sleep(Duration::from_millis(300));
+
+        let retry_ok = std::process::Command::new("fusermount3")
+            .arg("-u")
+            .arg(&mount_point)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+
+        if retry_ok {
+            info!(agent, "FUSE unmounted after killing daemon");
+            let _ = std::fs::remove_file(&pid_file);
+            return true;
+        }
+    }
 
     warn!(agent, "failed to unmount FUSE");
     false

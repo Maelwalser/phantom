@@ -15,8 +15,8 @@ use tracing::{debug, trace};
 
 use crate::error::OverlayError;
 use crate::trunk_view::{read_dir_entries, walk_files};
-use crate::types::{is_hidden, is_passthrough, DirEntry, FileType};
-use crate::whiteout::{load_whiteouts, WhiteoutSet, INTERNAL_FILES, WHITEOUT_FILE};
+use crate::types::{DirEntry, FileType, is_hidden, is_passthrough};
+use crate::whiteout::{INTERNAL_FILES, WHITEOUT_FILE, WhiteoutSet, load_whiteouts};
 
 /// Copy-on-write overlay layer.
 ///

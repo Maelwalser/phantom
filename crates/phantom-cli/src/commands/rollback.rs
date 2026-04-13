@@ -11,9 +11,9 @@ use phantom_core::changeset::Changeset;
 use phantom_core::event::EventKind;
 use phantom_core::id::{ChangesetId, GitOid};
 use phantom_core::traits::EventStore;
+use phantom_events::ReplayEngine;
 use phantom_events::projection::Projection;
 use phantom_events::store::SqliteEventStore;
-use phantom_events::ReplayEngine;
 use phantom_orchestrator::git::GitOps;
 
 use crate::context::PhantomContext;
@@ -98,10 +98,7 @@ async fn rollback_single(
 
 /// Present an interactive menu of materialized changesets and roll back
 /// everything after the selected checkpoint.
-async fn run_interactive(
-    ctx: &PhantomContext,
-    events: &SqliteEventStore,
-) -> anyhow::Result<()> {
+async fn run_interactive(ctx: &PhantomContext, events: &SqliteEventStore) -> anyhow::Result<()> {
     let replay = ReplayEngine::new(events);
     let materialized = replay.materialized_changesets().await?;
 

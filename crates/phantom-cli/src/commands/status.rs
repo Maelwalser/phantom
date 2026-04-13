@@ -31,10 +31,7 @@ pub struct StatusArgs {
 pub enum AgentRunState {
     /// Agent process is currently running.
     /// Agent process is currently running.
-    Running {
-        pid: u32,
-        elapsed: Duration,
-    },
+    Running { pid: u32, elapsed: Duration },
     /// Agent process finished successfully.
     Finished,
     /// Agent process failed or crashed.
@@ -89,9 +86,7 @@ async fn run_summary(
     // Collect plan metadata from events.
     for event in &all_events {
         if let EventKind::PlanCreated {
-            plan_id,
-            request,
-            ..
+            plan_id, request, ..
         } = &event.kind
         {
             plan_requests.insert(plan_id.0.clone(), request.clone());
@@ -119,8 +114,9 @@ async fn run_summary(
             let request = plan_requests
                 .get(plan_prefix)
                 .map(|r| {
-                    if r.len() > 60 {
-                        format!("{}...", &r[..57])
+                    if r.chars().count() > 60 {
+                        let truncated: String = r.chars().take(57).collect();
+                        format!("{truncated}...")
                     } else {
                         r.clone()
                     }
@@ -175,10 +171,7 @@ async fn run_summary(
         println!("Pending changesets: (none)");
     } else {
         println!("Pending changesets:");
-        println!(
-            "  {:<20} {:<14} {:>5}   STATUS",
-            "ID", "AGENT", "FILES"
-        );
+        println!("  {:<20} {:<14} {:>5}   STATUS", "ID", "AGENT", "FILES");
         for cs in &pending {
             println!(
                 "  {:<20} {:<14} {:>5}   {:?}",
@@ -223,9 +216,7 @@ async fn run_detailed(
         .iter()
         .rev()
         .find_map(|e| match &e.kind {
-            EventKind::TaskCreated { task, .. } => {
-                Some((e.changeset_id.clone(), task.clone()))
-            }
+            EventKind::TaskCreated { task, .. } => Some((e.changeset_id.clone(), task.clone())),
             _ => None,
         })
         .context("no overlay found for this agent")?;
@@ -284,10 +275,11 @@ async fn run_detailed(
     // Log tail
     let log_file = agent_monitor::log_path(phantom_dir, agent_name);
     if log_file.exists()
-        && let Some(tail) = read_log_tail(&log_file, 20) {
-            println!("Log (last 20 lines):");
-            println!("{tail}");
-        }
+        && let Some(tail) = read_log_tail(&log_file, 20)
+    {
+        println!("Log (last 20 lines):");
+        println!("{tail}");
+    }
 
     Ok(())
 }
@@ -297,35 +289,37 @@ pub fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
     // Check for completion marker first.
     let status_file = agent_monitor::status_path(phantom_dir, agent);
     if let Ok(content) = std::fs::read_to_string(&status_file)
-        && let Ok(status) = serde_json::from_str::<agent_monitor::AgentStatus>(&content) {
-            return if status.exit_code == Some(0) && status.error.is_none() {
-                AgentRunState::Finished
-            } else {
-                AgentRunState::Failed {
-                    status: Some(status),
-                }
-            };
-        }
+        && let Ok(status) = serde_json::from_str::<agent_monitor::AgentStatus>(&content)
+    {
+        return if status.exit_code == Some(0) && status.error.is_none() {
+            AgentRunState::Finished
+        } else {
+            AgentRunState::Failed {
+                status: Some(status),
+            }
+        };
+    }
 
     // Check for running process.
     let pid_file = agent_monitor::pid_path(phantom_dir, agent);
     if let Ok(content) = std::fs::read_to_string(&pid_file)
-        && let Ok(pid) = content.trim().parse::<u32>() {
-            // Check if process is still alive.
-            let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
-            if alive {
-                // Estimate elapsed time from PID file modification time.
-                let elapsed = std::fs::metadata(&pid_file)
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.elapsed().ok())
-                    .unwrap_or_default();
-                return AgentRunState::Running { pid, elapsed };
-            }
-
-            // Process is dead but no status file — crashed.
-            return AgentRunState::Failed { status: None };
+        && let Ok(pid) = content.trim().parse::<u32>()
+    {
+        // Check if process is still alive.
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        if alive {
+            // Estimate elapsed time from PID file modification time.
+            let elapsed = std::fs::metadata(&pid_file)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .unwrap_or_default();
+            return AgentRunState::Running { pid, elapsed };
         }
+
+        // Process is dead but no status file — crashed.
+        return AgentRunState::Failed { status: None };
+    }
 
     AgentRunState::Idle
 }
@@ -356,10 +350,7 @@ pub fn format_run_state_short(state: &AgentRunState) -> String {
 fn format_run_state_long(state: &AgentRunState) -> String {
     match state {
         AgentRunState::Running { pid, elapsed } => {
-            format!(
-                "Running (pid {pid}, elapsed {})",
-                format_duration(elapsed)
-            )
+            format!("Running (pid {pid}, elapsed {})", format_duration(elapsed))
         }
         AgentRunState::Finished => "Finished".into(),
         AgentRunState::Failed { status } => {

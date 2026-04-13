@@ -130,7 +130,7 @@ pub enum EventKind {
         /// Number of domains in the plan.
         domain_count: u32,
         /// Agent IDs dispatched for each domain.
-        agent_ids: Vec<String>,
+        agent_ids: Vec<AgentId>,
     },
     /// A plan completed (all agents finished).
     PlanCompleted {
@@ -271,7 +271,7 @@ mod tests {
                 plan_id: crate::id::PlanId("plan-001".into()),
                 request: "add caching".into(),
                 domain_count: 2,
-                agent_ids: vec!["plan-001-cache".into()],
+                agent_ids: vec![AgentId("plan-001-cache".into())],
             },
             EventKind::PlanCompleted {
                 plan_id: crate::id::PlanId("plan-001".into()),

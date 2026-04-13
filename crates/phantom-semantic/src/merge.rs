@@ -398,10 +398,7 @@ fn text_merge(
     path: &Path,
 ) -> Result<MergeResult, CoreError> {
     // Reject binary or non-UTF-8 content to prevent silent data corruption.
-    if is_binary_or_non_utf8(base)
-        || is_binary_or_non_utf8(ours)
-        || is_binary_or_non_utf8(theirs)
-    {
+    if is_binary_or_non_utf8(base) || is_binary_or_non_utf8(ours) || is_binary_or_non_utf8(theirs) {
         return Ok(MergeResult::Conflict(vec![ConflictDetail {
             kind: ConflictKind::BinaryFile,
             file: path.to_path_buf(),

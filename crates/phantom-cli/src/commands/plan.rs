@@ -37,10 +37,7 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     let events = ctx.open_events().await?;
 
     // Step 1: Generate plan via AI planner.
-    println!(
-        "Planning... analyzing codebase for: {:?}",
-        args.description
-    );
+    println!("Planning... analyzing codebase for: {:?}", args.description);
     println!();
 
     let raw_output = run_planner(&ctx.repo_root, &args.description)?;
@@ -82,32 +79,32 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     std::fs::create_dir_all(&plan_dir)
         .with_context(|| format!("failed to create plan directory {}", plan_dir.display()))?;
 
-    let plan_json = serde_json::to_string_pretty(&plan)
-        .context("failed to serialize plan")?;
-    std::fs::write(plan_dir.join("plan.json"), &plan_json)
-        .context("failed to write plan.json")?;
+    let plan_json = serde_json::to_string_pretty(&plan).context("failed to serialize plan")?;
+    std::fs::write(plan_dir.join("plan.json"), &plan_json).context("failed to write plan.json")?;
 
     // Step 6: Dispatch agents.
     let mut plan = plan;
-    plan.status = PlanStatus::Dispatched;
-
     let auto_materialize = !args.no_materialize;
     let mut dispatched_agents = Vec::new();
+    let mut overlays = ctx.open_overlays_restored()?;
 
     for domain in &plan.domains {
         dispatch_domain(
             &ctx,
             &events,
+            &mut overlays,
             &plan,
             domain,
             &plan_dir,
             auto_materialize,
         )
         .await?;
-        dispatched_agents.push(domain.agent_id.clone());
+        dispatched_agents.push(AgentId(domain.agent_id.clone()));
     }
 
-    // Step 7: Emit PlanCreated event.
+    // Step 7: Emit PlanCreated event and update persisted status.
+    plan.status = PlanStatus::Dispatched;
+
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
@@ -122,12 +119,8 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     };
     events.append(event).await?;
 
-    // Update persisted plan status.
-    plan.status = PlanStatus::Dispatched;
-    let plan_json = serde_json::to_string_pretty(&plan)
-        .context("failed to serialize plan")?;
-    std::fs::write(plan_dir.join("plan.json"), &plan_json)
-        .context("failed to update plan.json")?;
+    let plan_json = serde_json::to_string_pretty(&plan).context("failed to serialize plan")?;
+    std::fs::write(plan_dir.join("plan.json"), &plan_json).context("failed to update plan.json")?;
 
     println!();
     println!("Run `phantom background` to watch progress.");
@@ -172,9 +165,7 @@ fn run_planner(repo_root: &Path, description: &str) -> anyhow::Result<RawPlanOut
         return Ok(parsed);
     }
 
-    anyhow::bail!(
-        "failed to parse planner output as plan JSON. Raw output:\n{stdout}"
-    )
+    anyhow::bail!("failed to parse planner output as plan JSON. Raw output:\n{stdout}")
 }
 
 /// Try to extract a `RawPlanOutput` from text that may contain markdown fences
@@ -186,13 +177,12 @@ fn try_extract_plan_json(text: &str) -> Option<RawPlanOutput> {
     }
 
     // Extract from markdown code fence.
-    let json_str = extract_json_from_fences(text)?;
+    let json_str = extract_json_object(text)?;
     serde_json::from_str::<RawPlanOutput>(json_str).ok()
 }
 
-/// Extract JSON content from markdown code fences (```json ... ``` or ``` ... ```).
-fn extract_json_from_fences(text: &str) -> Option<&str> {
-    // Find the first { and last } — covers most common wrapping patterns.
+/// Extract the outermost JSON object from text by finding the first `{` and last `}`.
+fn extract_json_object(text: &str) -> Option<&str> {
     let start = text.find('{')?;
     let end = text.rfind('}')?;
     if end > start {
@@ -275,10 +265,7 @@ fn build_plan(plan_id: &PlanId, request: &str, raw: RawPlanOutput) -> Plan {
 /// Display the plan to the user.
 fn display_plan(plan: &Plan) {
     println!("Plan: {}", plan.id);
-    println!(
-        "  {} domain(s) identified:",
-        plan.domains.len()
-    );
+    println!("  {} domain(s) identified:", plan.domains.len());
     println!();
 
     for (i, domain) in plan.domains.iter().enumerate() {
@@ -303,13 +290,13 @@ fn display_plan(plan: &Plan) {
 async fn dispatch_domain(
     ctx: &PhantomContext,
     events: &SqliteEventStore,
+    overlays: &mut phantom_overlay::OverlayManager,
     plan: &Plan,
     domain: &PlanDomain,
     plan_dir: &Path,
     auto_materialize: bool,
 ) -> anyhow::Result<()> {
     let agent_id = AgentId(domain.agent_id.clone());
-    let mut overlays = ctx.open_overlays_restored()?;
     let git = ctx.open_git()?;
     let head = git.head_oid().context("failed to read HEAD")?;
 
@@ -337,21 +324,26 @@ async fn dispatch_domain(
     events.append(event).await?;
 
     // Write initial current_base.
-    phantom_orchestrator::live_rebase::write_current_base(
-        &ctx.phantom_dir,
-        &agent_id,
-        &head,
-    )
-    .context("failed to write initial current_base")?;
+    phantom_orchestrator::live_rebase::write_current_base(&ctx.phantom_dir, &agent_id, &head)
+        .context("failed to write initial current_base")?;
 
-    // Spawn FUSE daemon.
-    let fuse_mounted = spawn_fuse_if_available(
-        &ctx.phantom_dir,
-        &ctx.repo_root,
-        &domain.agent_id,
-        &mount_point,
-        &upper_dir,
-    );
+    // Spawn FUSE daemon (blocking I/O — run off the async executor).
+    let fuse_phantom_dir = ctx.phantom_dir.clone();
+    let fuse_repo_root = ctx.repo_root.clone();
+    let fuse_agent = domain.agent_id.clone();
+    let fuse_mount = mount_point.clone();
+    let fuse_upper = upper_dir.clone();
+    let fuse_mounted = tokio::task::spawn_blocking(move || {
+        spawn_fuse_if_available(
+            &fuse_phantom_dir,
+            &fuse_repo_root,
+            &fuse_agent,
+            &fuse_mount,
+            &fuse_upper,
+        )
+    })
+    .await
+    .unwrap_or(false);
 
     let work_dir = if fuse_mounted {
         mount_point.clone()
@@ -404,23 +396,8 @@ async fn dispatch_domain(
     Ok(())
 }
 
-/// Generate a unique changeset ID (same logic as task.rs).
-async fn generate_changeset_id(events: &SqliteEventStore) -> anyhow::Result<ChangesetId> {
-    let all = events.query_all().await?;
-
-    let overlay_count = all
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::TaskCreated { .. }))
-        .count();
-
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros()
-        % 1_000_000;
-
-    Ok(ChangesetId(format!("cs-{:04}-{ts:06}", overlay_count + 1)))
-}
+/// Re-export from task module to avoid duplication.
+use super::task::generate_changeset_id;
 
 /// Try to spawn a FUSE daemon. Returns true if mounted, false if FUSE unavailable.
 fn spawn_fuse_if_available(
@@ -499,7 +476,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_json_from_fences_direct() {
+    fn extract_json_object_direct() {
         let text = r#"{"domains": [{"name": "test", "description": "d", "requirements": [], "verification": []}]}"#;
         let result = try_extract_plan_json(text);
         assert!(result.is_some());
@@ -536,7 +513,10 @@ mod tests {
         };
         let plan_id = PlanId("plan-20260413-143022".into());
         let plan = build_plan(&plan_id, "test", raw);
-        assert_eq!(plan.domains[0].agent_id, "plan-20260413-143022-rate-limiting");
+        assert_eq!(
+            plan.domains[0].agent_id,
+            "plan-20260413-143022-rate-limiting"
+        );
         assert_eq!(plan.status, PlanStatus::Draft);
     }
 

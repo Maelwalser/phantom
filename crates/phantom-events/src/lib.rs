@@ -213,10 +213,7 @@ mod tests {
         assert_eq!(since_base.len(), 2);
 
         // query_since(base - 1h) should return 3 events
-        let since_minus1 = store
-            .query_since(base - Duration::hours(1))
-            .await
-            .unwrap();
+        let since_minus1 = store.query_since(base - Duration::hours(1)).await.unwrap();
         assert_eq!(since_minus1.len(), 3);
     }
 
@@ -514,9 +511,7 @@ mod tests {
     async fn test_open_with_custom_config() {
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join("events.db");
-        let config = crate::EventStoreConfig {
-            max_connections: 3,
-        };
+        let config = crate::EventStoreConfig { max_connections: 3 };
         let store = SqliteEventStore::open_with_config(&db_path, config)
             .await
             .unwrap();

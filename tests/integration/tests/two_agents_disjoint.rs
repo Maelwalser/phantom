@@ -51,7 +51,13 @@ async fn test_two_agents_disjoint_files_auto_merges() {
     // Materialize agent-a first.
     let mat = ctx.materializer();
     let result_a = mat
-        .materialize(&cs_a, upper_a.path(), &ctx.events, &ctx.merger, "test commit")
+        .materialize(
+            &cs_a,
+            upper_a.path(),
+            &ctx.events,
+            &ctx.merger,
+            "test commit",
+        )
         .await
         .expect("materialize agent-a failed");
     assert!(
@@ -62,7 +68,13 @@ async fn test_two_agents_disjoint_files_auto_merges() {
     // Materialize agent-b — different files, should also succeed.
     let mat2 = ctx.materializer();
     let result_b = mat2
-        .materialize(&cs_b, upper_b.path(), &ctx.events, &ctx.merger, "test commit")
+        .materialize(
+            &cs_b,
+            upper_b.path(),
+            &ctx.events,
+            &ctx.merger,
+            "test commit",
+        )
         .await
         .expect("materialize agent-b failed");
     assert!(

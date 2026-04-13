@@ -30,8 +30,7 @@ fn read_falls_through_to_lower() {
     let (lower, upper) = setup();
     fs::write(lower.path().join("trunk.txt"), b"from trunk").unwrap();
 
-    let layer =
-        OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
     let data = layer.read_file(Path::new("trunk.txt")).unwrap();
     assert_eq!(data, b"from trunk");
 }
@@ -169,8 +168,7 @@ fn whiteout_persistence_across_instances() {
     }
 
     // New instance from the same upper dir should restore whiteouts.
-    let layer2 =
-        OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+    let layer2 = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
     assert!(!layer2.exists(Path::new("persist.txt")));
     assert!(layer2.read_file(Path::new("persist.txt")).is_err());
 }
@@ -216,8 +214,7 @@ fn hidden_dirs_are_invisible() {
     fs::create_dir_all(lower.path().join(".phantom/overlays/agent/mount")).unwrap();
     fs::write(lower.path().join("visible.txt"), b"hello").unwrap();
 
-    let layer =
-        OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
     // Hidden paths must be invisible.
     assert!(!layer.exists(Path::new(".phantom")));
@@ -318,8 +315,7 @@ fn git_passthrough_not_affected_by_upper_or_whiteouts() {
     fs::create_dir_all(upper.path().join(".git")).unwrap();
     fs::write(upper.path().join(".git/config"), b"DECOY").unwrap();
 
-    let layer =
-        OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
     // Reads must come from lower, not upper.
     let config = layer.read_file(Path::new(".git/config")).unwrap();
@@ -355,7 +351,10 @@ fn rename_file_from_lower_copies_up() {
         .unwrap();
 
     // New path is readable, old path is gone.
-    assert_eq!(layer.read_file(Path::new("dst.txt")).unwrap(), b"from trunk");
+    assert_eq!(
+        layer.read_file(Path::new("dst.txt")).unwrap(),
+        b"from trunk"
+    );
     assert!(!layer.exists(Path::new("src.txt")));
 
     // Whiteout was created for old path.
@@ -390,9 +389,7 @@ fn rename_upper_file_whiteouts_lower_ghost() {
     let mut layer =
         OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
     // Write to upper so the file exists in both layers.
-    layer
-        .write_file(Path::new("shared.txt"), b"upper")
-        .unwrap();
+    layer.write_file(Path::new("shared.txt"), b"upper").unwrap();
 
     layer
         .rename_file(Path::new("shared.txt"), Path::new("moved.txt"))
@@ -478,9 +475,17 @@ fn rename_cross_passthrough_fails() {
         OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
     // Passthrough → normal should fail.
-    assert!(layer.rename_file(Path::new(".git/x"), Path::new("z")).is_err());
+    assert!(
+        layer
+            .rename_file(Path::new(".git/x"), Path::new("z"))
+            .is_err()
+    );
     // Normal → passthrough should fail.
-    assert!(layer.rename_file(Path::new("y"), Path::new(".git/w")).is_err());
+    assert!(
+        layer
+            .rename_file(Path::new("y"), Path::new(".git/w"))
+            .is_err()
+    );
 }
 
 #[test]
@@ -490,12 +495,16 @@ fn rename_hidden_path_fails() {
         OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
     layer.write_file(Path::new("a.txt"), b"data").unwrap();
-    assert!(layer
-        .rename_file(Path::new("a.txt"), Path::new(".phantom/x"))
-        .is_err());
-    assert!(layer
-        .rename_file(Path::new(".phantom/x"), Path::new("b.txt"))
-        .is_err());
+    assert!(
+        layer
+            .rename_file(Path::new("a.txt"), Path::new(".phantom/x"))
+            .is_err()
+    );
+    assert!(
+        layer
+            .rename_file(Path::new(".phantom/x"), Path::new("b.txt"))
+            .is_err()
+    );
 }
 
 #[test]

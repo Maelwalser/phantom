@@ -36,7 +36,13 @@ pub async fn run_interactive_session(
     let cli_adapter = adapter::adapter_for(command);
 
     // Write context file into the working directory.
-    context_file::write_context_file(work_dir, agent_id, changeset_id, base_commit, args.task.as_deref())?;
+    context_file::write_context_file(
+        work_dir,
+        agent_id,
+        changeset_id,
+        base_commit,
+        args.task.as_deref(),
+    )?;
 
     // Load a previously saved session for this agent + CLI combination.
     let existing_session = adapter::load_session(&ctx.phantom_dir, agent_id);
@@ -59,10 +65,7 @@ pub async fn run_interactive_session(
         ),
         ("PHANTOM_INTERACTIVE", "1".to_string()),
     ];
-    let env_refs: Vec<(&str, &str)> = env_vars
-        .iter()
-        .map(|(k, v)| (*k, v.as_str()))
-        .collect();
+    let env_refs: Vec<(&str, &str)> = env_vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     // Use PTY when stdin is a terminal (enables output capture for session IDs).
     // Fall back to direct Stdio::inherit() when not a TTY (tests, CI, piped input).

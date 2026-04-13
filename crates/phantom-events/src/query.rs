@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use phantom_core::id::{AgentId, ChangesetId, SymbolId};
 
 use crate::error::EventStoreError;
-use crate::store::{row_to_event, SqliteEventStore};
+use crate::store::{SqliteEventStore, row_to_event};
 
 /// A flexible query filter for events.
 ///
@@ -32,10 +32,7 @@ pub struct EventQuery {
 
 impl SqliteEventStore {
     /// Execute a flexible query against the event store.
-    pub async fn query(
-        &self,
-        q: &EventQuery,
-    ) -> Result<Vec<phantom_core::Event>, EventStoreError> {
+    pub async fn query(&self, q: &EventQuery) -> Result<Vec<phantom_core::Event>, EventStoreError> {
         let mut conditions = vec!["dropped = 0".to_string()];
         let mut param_values: Vec<String> = Vec::new();
 
@@ -94,11 +91,10 @@ impl SqliteEventStore {
     ///
     /// Returns the number of rows affected.
     pub async fn mark_dropped(&self, changeset_id: &ChangesetId) -> Result<u64, EventStoreError> {
-        let result =
-            sqlx::query("UPDATE events SET dropped = 1 WHERE changeset_id = $1")
-                .bind(&changeset_id.0)
-                .execute(&self.pool)
-                .await?;
+        let result = sqlx::query("UPDATE events SET dropped = 1 WHERE changeset_id = $1")
+            .bind(&changeset_id.0)
+            .execute(&self.pool)
+            .await?;
         Ok(result.rows_affected())
     }
 }
