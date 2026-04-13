@@ -7,8 +7,10 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use std::str::FromStr;
+
 use sqlx::Row;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
 use tracing::debug;
 
 use phantom_core::error::CoreError;
@@ -91,9 +93,9 @@ pub struct SqliteEventStore {
 impl SqliteEventStore {
     /// Open or create an event store at the given file path.
     ///
-    /// Enables WAL mode, sets a 5-second busy timeout, enables foreign keys,
-    /// and runs schema migrations. Uses [`EventStoreConfig::default`] for pool
-    /// settings.
+    /// Every connection in the pool is configured at handshake time with
+    /// WAL mode, a 5-second busy timeout, and foreign key enforcement.
+    /// Uses [`EventStoreConfig::default`] for pool settings.
     pub async fn open(path: &Path) -> Result<Self, EventStoreError> {
         Self::open_with_config(path, EventStoreConfig::default()).await
     }
@@ -103,13 +105,17 @@ impl SqliteEventStore {
         path: &Path,
         config: EventStoreConfig,
     ) -> Result<Self, EventStoreError> {
-        let url = format!("sqlite:{}?mode=rwc", path.display());
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .pragma("journal_mode", "WAL")
+            .pragma("busy_timeout", "5000")
+            .pragma("foreign_keys", "ON");
         let pool = SqlitePoolOptions::new()
             .max_connections(config.max_connections)
-            .connect(&url)
+            .connect_with(options)
             .await?;
         let store = Self { pool };
-        store.configure().await?;
         store.ensure_schema().await?;
         store.run_migrations().await?;
         debug!(?path, "opened event store");
@@ -120,30 +126,19 @@ impl SqliteEventStore {
     pub async fn in_memory() -> Result<Self, EventStoreError> {
         // In-memory databases are per-connection, so we use a single
         // connection to keep the database alive and consistent.
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")?
+            .pragma("journal_mode", "WAL")
+            .pragma("busy_timeout", "5000")
+            .pragma("foreign_keys", "ON");
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect("sqlite::memory:")
+            .connect_with(options)
             .await?;
         let store = Self { pool };
-        store.configure().await?;
         store.ensure_schema().await?;
         store.run_migrations().await?;
         debug!("opened in-memory event store");
         Ok(store)
-    }
-
-    /// Configure SQLite pragmas.
-    async fn configure(&self) -> Result<(), EventStoreError> {
-        sqlx::query("PRAGMA journal_mode = WAL")
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("PRAGMA busy_timeout = 5000")
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&self.pool)
-            .await?;
-        Ok(())
     }
 
     /// Create the events table, schema_meta table, and indexes if they do not exist.

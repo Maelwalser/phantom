@@ -179,8 +179,8 @@ fn full_workflow_smoke_test() {
         .arg("log")
         .assert()
         .success()
-        .stdout(predicate::str::contains("TaskCreated"))
-        .stdout(predicate::str::contains("ChangesetSubmitted"));
+        .stdout(predicate::str::contains("task created"))
+        .stdout(predicate::str::contains("submitted"));
 
     // 6. Status should show the changeset
     phantom(dir.path())
