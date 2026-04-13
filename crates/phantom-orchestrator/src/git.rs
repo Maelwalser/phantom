@@ -131,23 +131,71 @@ impl GitOps {
     ) -> Result<GitOid, OrchestratorError> {
         let files = collect_files_recursive(upper_dir)?;
 
-        for rel_path in &files {
-            let src = upper_dir.join(rel_path);
-            let dst = trunk_path.join(rel_path);
+        // Back up existing trunk files so we can restore on partial failure.
+        let backup_dir = tempfile::TempDir::new().map_err(|e| {
+            OrchestratorError::MaterializationFailed(format!(
+                "failed to create backup directory: {e}"
+            ))
+        })?;
+        let mut backed_up: Vec<PathBuf> = Vec::new();
 
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)?;
+        let copy_result = (|| -> Result<(), OrchestratorError> {
+            for rel_path in &files {
+                let src = upper_dir.join(rel_path);
+                let dst = trunk_path.join(rel_path);
+
+                // Back up the existing file if present.
+                if dst.exists() || dst.symlink_metadata().is_ok() {
+                    let backup_path = backup_dir.path().join(rel_path);
+                    if let Some(parent) = backup_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    let dst_meta = std::fs::symlink_metadata(&dst)?;
+                    if dst_meta.is_symlink() {
+                        let link_target = std::fs::read_link(&dst)?;
+                        std::os::unix::fs::symlink(&link_target, &backup_path)?;
+                    } else {
+                        std::fs::copy(&dst, &backup_path)?;
+                    }
+                    backed_up.push(rel_path.clone());
+                }
+
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                let src_meta = std::fs::symlink_metadata(&src)?;
+                if src_meta.is_symlink() {
+                    let target = std::fs::read_link(&src)?;
+                    let _ = std::fs::remove_file(&dst);
+                    std::os::unix::fs::symlink(&target, &dst)?;
+                } else {
+                    std::fs::copy(&src, &dst)?;
+                }
+                debug!(path = %rel_path.display(), "copied overlay file to trunk");
             }
+            Ok(())
+        })();
 
-            let src_meta = std::fs::symlink_metadata(&src)?;
-            if src_meta.is_symlink() {
-                let target = std::fs::read_link(&src)?;
+        if let Err(e) = copy_result {
+            // Restore backed-up files to leave trunk in its original state.
+            for rel_path in &backed_up {
+                let backup_path = backup_dir.path().join(rel_path);
+                let dst = trunk_path.join(rel_path);
                 let _ = std::fs::remove_file(&dst);
-                std::os::unix::fs::symlink(&target, &dst)?;
-            } else {
-                std::fs::copy(&src, &dst)?;
+                if let Ok(meta) = std::fs::symlink_metadata(&backup_path) {
+                    if meta.is_symlink() {
+                        if let Ok(link_target) = std::fs::read_link(&backup_path) {
+                            let _ = std::os::unix::fs::symlink(&link_target, &dst);
+                        }
+                    } else {
+                        let _ = std::fs::copy(&backup_path, &dst);
+                    }
+                }
             }
-            debug!(path = %rel_path.display(), "copied overlay file to trunk");
+            return Err(OrchestratorError::MaterializationFailed(format!(
+                "overlay copy failed, trunk restored to original state: {e}"
+            )));
         }
 
         let mut index = self.repo.index()?;
@@ -322,10 +370,17 @@ fn three_way_merge(
         return Ok(MergeResult::Conflict(vec![detail]));
     }
 
-    // Safe: all three buffers validated as UTF-8 above.
-    let base_s = std::str::from_utf8(base).unwrap();
-    let ours_s = std::str::from_utf8(ours).unwrap();
-    let theirs_s = std::str::from_utf8(theirs).unwrap();
+    // All three buffers were validated above, but use proper error propagation
+    // rather than unwrap to stay robust against future changes in the guard.
+    let base_s = std::str::from_utf8(base).map_err(|e| {
+        OrchestratorError::MaterializationFailed(format!("base is not valid UTF-8: {e}"))
+    })?;
+    let ours_s = std::str::from_utf8(ours).map_err(|e| {
+        OrchestratorError::MaterializationFailed(format!("ours is not valid UTF-8: {e}"))
+    })?;
+    let theirs_s = std::str::from_utf8(theirs).map_err(|e| {
+        OrchestratorError::MaterializationFailed(format!("theirs is not valid UTF-8: {e}"))
+    })?;
 
     let result = diffy::merge(base_s, ours_s, theirs_s);
     match result {
