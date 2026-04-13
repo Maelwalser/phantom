@@ -96,6 +96,58 @@ impl Parser {
             .map(|ext| self.ext_to_index.contains_key(ext))
             .unwrap_or(false)
     }
+
+    /// Check if `content` has syntax errors when parsed with the grammar for
+    /// `path`. Returns `true` if the parse tree contains `ERROR` or `MISSING`
+    /// nodes, indicating that the content is not syntactically valid.
+    ///
+    /// Returns `false` for unsupported languages (no grammar to check against).
+    #[must_use]
+    pub fn has_syntax_errors(&self, path: &Path, content: &[u8]) -> bool {
+        let ext = match path.extension().and_then(|e| e.to_str()) {
+            Some(e) => e,
+            None => return false,
+        };
+        let idx = match self.ext_to_index.get(ext) {
+            Some(i) => *i,
+            None => return false,
+        };
+
+        let language = self.extractors[idx].language();
+        let mut ts_parser = tree_sitter::Parser::new();
+        if ts_parser.set_language(&language).is_err() {
+            return false;
+        }
+
+        match ts_parser.parse(content, None) {
+            Some(tree) => tree_has_errors(&tree),
+            None => true, // parse failure counts as an error
+        }
+    }
+}
+
+/// Recursively check if a tree-sitter tree contains ERROR or MISSING nodes.
+fn tree_has_errors(tree: &tree_sitter::Tree) -> bool {
+    let root = tree.root_node();
+    // Fast path: tree-sitter sets has_error on ancestor nodes.
+    if !root.has_error() {
+        return false;
+    }
+    node_has_error(&root)
+}
+
+/// Walk the tree looking for ERROR or MISSING nodes.
+fn node_has_error(node: &tree_sitter::Node) -> bool {
+    if node.is_error() || node.is_missing() {
+        return true;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.has_error() && node_has_error(&child) {
+            return true;
+        }
+    }
+    false
 }
 
 impl Default for Parser {

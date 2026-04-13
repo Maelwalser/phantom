@@ -248,7 +248,28 @@ impl SemanticMerger {
             &ours_symbols,
             &theirs_symbols,
         );
+
+        // Safety net: re-parse the merged output and fall back to text merge
+        // if the byte-range splicing produced broken syntax. Tree-sitter
+        // grammars can handle trailing whitespace, commas, and docstrings
+        // inconsistently, so the reconstructed file may not be syntactically
+        // valid even though the merge was logically clean.
+        if self.parser.has_syntax_errors(path, &merged) {
+            tracing::warn!(
+                ?path,
+                "semantic merge produced invalid syntax, falling back to text merge"
+            );
+            return text_merge(base, ours, theirs, path);
+        }
+
         Ok(MergeResult::Clean(merged))
+    }
+}
+
+/// Ensure `buf` ends with exactly one newline before appending a new symbol.
+fn ensure_newline(buf: &mut Vec<u8>) {
+    if buf.last() != Some(&b'\n') {
+        buf.push(b'\n');
     }
 }
 
@@ -343,12 +364,12 @@ fn reconstruct_merged_file(
             if let Some(theirs_sym) = theirs_map.get(&key) {
                 if theirs_sym.content_hash == ours_sym.content_hash {
                     // Identical — add from ours
-                    result.push(b'\n');
+                    ensure_newline(&mut result);
                     result.extend_from_slice(&ours[ours_sym.byte_range.clone()]);
                 }
                 // Different content is a conflict, already caught
             } else {
-                result.push(b'\n');
+                ensure_newline(&mut result);
                 result.extend_from_slice(&ours[ours_sym.byte_range.clone()]);
             }
         }
@@ -358,7 +379,7 @@ fn reconstruct_merged_file(
     for theirs_sym in theirs_symbols {
         let key = entity_key(theirs_sym);
         if !base_map.contains_key(&key) && !ours_map.contains_key(&key) {
-            result.push(b'\n');
+            ensure_newline(&mut result);
             result.extend_from_slice(&theirs[theirs_sym.byte_range.clone()]);
         }
     }
@@ -661,5 +682,57 @@ mod tests {
             }
             MergeResult::Conflict(_) => panic!("expected clean merge"),
         }
+    }
+
+    #[test]
+    fn appended_symbols_no_double_newline() {
+        // When base already ends with \n, appending should not produce \n\n
+        let base = b"fn existing() {}\n";
+        let ours = b"fn existing() {}\nfn from_ours() {}\n";
+        let theirs = b"fn existing() {}\n";
+
+        let result = merger()
+            .three_way_merge(base, ours, theirs, Path::new("test.rs"))
+            .unwrap();
+
+        match result {
+            MergeResult::Clean(merged) => {
+                let text = String::from_utf8_lossy(&merged);
+                assert!(
+                    !text.contains("\n\n\n"),
+                    "should not have triple newlines, got: {text:?}"
+                );
+                assert!(text.contains("from_ours"));
+            }
+            MergeResult::Conflict(c) => panic!("expected clean merge, got conflicts: {c:?}"),
+        }
+    }
+
+    #[test]
+    fn syntax_validation_catches_broken_merge() {
+        // Verify that has_syntax_errors works on known-bad Rust code
+        let parser = crate::parser::Parser::new();
+        let valid = b"fn valid() { 42 }\n";
+        let broken = b"fn broken( { 42 }\n"; // missing closing paren
+
+        assert!(
+            !parser.has_syntax_errors(Path::new("test.rs"), valid),
+            "valid code should not have errors"
+        );
+        assert!(
+            parser.has_syntax_errors(Path::new("test.rs"), broken),
+            "broken code should have errors"
+        );
+    }
+
+    #[test]
+    fn syntax_validation_ignores_unsupported_languages() {
+        let parser = crate::parser::Parser::new();
+        let content = b"this is { definitely not valid { code";
+
+        assert!(
+            !parser.has_syntax_errors(Path::new("config.toml"), content),
+            "unsupported languages should return false (no grammar to check)"
+        );
     }
 }
