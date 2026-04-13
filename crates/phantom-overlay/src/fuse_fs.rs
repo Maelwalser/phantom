@@ -10,7 +10,7 @@ mod inner {
     use std::fs::OpenOptions;
     use std::os::unix::fs::{FileExt, PermissionsExt};
     use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::sync::RwLock;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -36,8 +36,10 @@ mod inner {
     /// TTL for attribute and entry caching (1 second).
     const TTL: Duration = Duration::from_secs(1);
 
-    /// All mutable inode state protected by a single lock to prevent
-    /// lock-ordering deadlocks between concurrent FUSE operations.
+    /// All mutable inode state protected by a single `RwLock`.
+    /// Read-only lookups (`get_path`, `is_unlinked`) take the read lock;
+    /// mutations (`get_or_create_inode`, `unlink`, `rename`, `forget`)
+    /// take the write lock.
     struct InodeTableInner {
         ino_to_path: HashMap<u64, PathBuf>,
         path_to_ino: HashMap<PathBuf, u64>,
@@ -59,13 +61,11 @@ mod inner {
     /// FUSE `forget` callback, preventing unbounded growth when large
     /// directory trees are traversed.
     ///
-    /// All mutable state lives behind a single `Mutex` to avoid
-    /// lock-ordering issues — FUSE dispatches operations like `rename`
-    /// and `forget` concurrently, and using separate locks per map
-    /// risks deadlock when acquisition orders differ.
+    /// All mutable state lives behind a single `RwLock`. Read-only
+    /// lookups share the read lock; mutations take the write lock.
     struct InodeTable {
         next_ino: AtomicU64,
-        inner: Mutex<InodeTableInner>,
+        inner: RwLock<InodeTableInner>,
     }
 
     impl InodeTable {
@@ -78,7 +78,7 @@ mod inner {
             Self {
                 // inode 1 is the root directory.
                 next_ino: AtomicU64::new(2),
-                inner: Mutex::new(InodeTableInner {
+                inner: RwLock::new(InodeTableInner {
                     ino_to_path,
                     path_to_ino,
                     lookup_count: HashMap::new(),
@@ -88,7 +88,7 @@ mod inner {
         }
 
         fn get_path(&self, ino: u64) -> Option<PathBuf> {
-            self.inner.lock().unwrap().ino_to_path.get(&ino).cloned()
+            self.inner.read().unwrap().ino_to_path.get(&ino).cloned()
         }
 
         /// Return the inode for `path`, creating a new one if necessary.
@@ -98,7 +98,7 @@ mod inner {
         /// inode is actually being handed to the kernel (lookup reply,
         /// create reply, readdir entry, etc.).
         fn get_or_create_inode(&self, path: &PathBuf) -> u64 {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.write().unwrap();
             if let Some(&ino) = inner.path_to_ino.get(path) {
                 *inner.lookup_count.entry(ino).or_insert(0) += 1;
                 return ino;
@@ -118,7 +118,7 @@ mod inner {
         /// storage path.  The inode is marked as unlinked; `forget()` will
         /// perform final cleanup when the kernel drops all references.
         fn unlink(&self, path: &PathBuf) {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.write().unwrap();
             if let Some(ino) = inner.path_to_ino.remove(path) {
                 inner.unlinked.insert(ino);
             }
@@ -127,7 +127,7 @@ mod inner {
         /// Returns `true` if the inode has been unlinked from the directory
         /// tree but still has outstanding kernel references.
         fn is_unlinked(&self, ino: u64) -> bool {
-            self.inner.lock().unwrap().unlinked.contains(&ino)
+            self.inner.read().unwrap().unlinked.contains(&ino)
         }
 
         /// Re-key an inode (and all child inodes for directory renames) from
@@ -137,7 +137,7 @@ mod inner {
         /// (the old destination is being overwritten by POSIX rename
         /// semantics).
         fn rename(&self, old_path: &PathBuf, new_path: &PathBuf) {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.write().unwrap();
 
             // The destination is being overwritten (POSIX rename semantics).
             // Remove from path_to_ino so lookup no longer finds it, but
@@ -188,7 +188,7 @@ mod inner {
                 return;
             }
 
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.write().unwrap();
             if let Some(count) = inner.lookup_count.get_mut(&ino) {
                 *count = count.saturating_sub(nlookup);
                 if *count == 0 {
@@ -206,29 +206,57 @@ mod inner {
                 }
             }
         }
+
+        /// Remove all unlinked inodes that have no remaining kernel
+        /// references (lookup count is zero or absent).
+        ///
+        /// Call this during overlay teardown to reclaim memory for inodes
+        /// whose `forget` was never dispatched (e.g. after an unclean
+        /// unmount or agent crash).
+        fn purge_unlinked(&self) -> usize {
+            let mut inner = self.inner.write().unwrap();
+            let stale: Vec<u64> = inner
+                .unlinked
+                .iter()
+                .filter(|&&ino| {
+                    inner
+                        .lookup_count
+                        .get(&ino)
+                        .is_none_or(|&count| count == 0)
+                })
+                .copied()
+                .collect();
+            let purged = stale.len();
+            for ino in stale {
+                inner.unlinked.remove(&ino);
+                inner.ino_to_path.remove(&ino);
+                inner.lookup_count.remove(&ino);
+            }
+            purged
+        }
     }
 
     /// FUSE filesystem backed by an [`OverlayLayer`].
     pub struct PhantomFs {
-        layer: Mutex<OverlayLayer>,
+        layer: RwLock<OverlayLayer>,
         agent_id: AgentId,
         inodes: InodeTable,
         /// Counter for allocating unique file handles.
         next_fh: AtomicU64,
         /// Open file descriptor table. Keyed by the file handle returned to
         /// the kernel via `open()` / `create()`.
-        open_files: Mutex<HashMap<u64, OpenFile>>,
+        open_files: RwLock<HashMap<u64, OpenFile>>,
     }
 
     impl PhantomFs {
         /// Create a new FUSE filesystem for the given agent.
         pub fn new(layer: OverlayLayer, agent_id: AgentId) -> Self {
             Self {
-                layer: Mutex::new(layer),
+                layer: RwLock::new(layer),
                 agent_id,
                 inodes: InodeTable::new(),
                 next_fh: AtomicU64::new(1),
-                open_files: Mutex::new(HashMap::new()),
+                open_files: RwLock::new(HashMap::new()),
             }
         }
 
@@ -236,6 +264,19 @@ mod inner {
         #[must_use]
         pub fn agent_id(&self) -> &AgentId {
             &self.agent_id
+        }
+
+        /// Purge stale unlinked inodes whose `forget` was never dispatched.
+        ///
+        /// Returns the number of inodes purged. Call this during overlay
+        /// teardown to prevent memory leaks from unclean unmounts or agent
+        /// crashes.
+        pub fn purge_stale_inodes(&self) -> usize {
+            let purged = self.inodes.purge_unlinked();
+            if purged > 0 {
+                debug!(purged, agent = %self.agent_id, "purged stale unlinked inodes");
+            }
+            purged
         }
     }
 
@@ -307,7 +348,7 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let layer = self.layer.lock().unwrap();
+            let layer = self.layer.read().unwrap();
 
             match layer.getattr(&child_path) {
                 Ok(meta) => {
@@ -329,7 +370,7 @@ mod inner {
 
             // Root directory special case.
             if ino.0 == 1 {
-                let layer = self.layer.lock().unwrap();
+                let layer = self.layer.read().unwrap();
                 match layer.getattr(&path) {
                     Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
                     Err(_) => reply.attr(&TTL, &default_dir_attr(ino.0)),
@@ -337,7 +378,7 @@ mod inner {
                 return;
             }
 
-            let layer = self.layer.lock().unwrap();
+            let layer = self.layer.read().unwrap();
             match layer.getattr(&path) {
                 Ok(meta) => {
                     let mut attr = metadata_to_attr(ino.0, &meta);
@@ -363,12 +404,16 @@ mod inner {
                 return;
             };
 
-            let layer = self.layer.lock().unwrap();
-            let entries = match layer.read_dir(&path) {
-                Ok(e) => e,
-                Err(_) => {
-                    reply.error(Errno::ENOENT);
-                    return;
+            // Hold the read lock only for the directory listing, then release
+            // before touching the inode table.
+            let entries = {
+                let layer = self.layer.read().unwrap();
+                match layer.read_dir(&path) {
+                    Ok(e) => e,
+                    Err(_) => {
+                        reply.error(Errno::ENOENT);
+                        return;
+                    }
                 }
             };
 
@@ -417,23 +462,22 @@ mod inner {
             let writable = (raw & libc::O_WRONLY != 0) || (raw & libc::O_RDWR != 0);
             let truncate = raw & libc::O_TRUNC != 0;
 
-            let real_path = {
-                let mut layer = self.layer.lock().unwrap();
-                if writable {
-                    match layer.ensure_upper_copy(&path) {
-                        Ok(p) => p,
-                        Err(_) => {
-                            reply.error(Errno::ENOENT);
-                            return;
-                        }
+            let real_path = if writable {
+                let mut layer = self.layer.write().unwrap();
+                match layer.ensure_upper_copy(&path) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        reply.error(Errno::ENOENT);
+                        return;
                     }
-                } else {
-                    match layer.resolve_path(&path) {
-                        Ok(p) => p,
-                        Err(_) => {
-                            reply.error(Errno::ENOENT);
-                            return;
-                        }
+                }
+            } else {
+                let layer = self.layer.read().unwrap();
+                match layer.resolve_path(&path) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        reply.error(Errno::ENOENT);
+                        return;
                     }
                 }
             };
@@ -453,17 +497,17 @@ mod inner {
                 }
             };
 
-            if truncate {
-                if let Err(e) = file.set_len(0) {
-                    warn!(error = %e, "open: truncate failed");
-                    reply.error(Errno::EIO);
-                    return;
-                }
+            if truncate
+                && let Err(e) = file.set_len(0)
+            {
+                warn!(error = %e, "open: truncate failed");
+                reply.error(Errno::EIO);
+                return;
             }
 
             let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
             self.open_files
-                .lock()
+                .write()
                 .unwrap()
                 .insert(fh, OpenFile { file, writable });
             reply.opened(FileHandle(fh), FopenFlags::empty());
@@ -480,7 +524,7 @@ mod inner {
             _lock_owner: Option<LockOwner>,
             reply: ReplyData,
         ) {
-            let open_files = self.open_files.lock().unwrap();
+            let open_files = self.open_files.read().unwrap();
             let Some(open_file) = open_files.get(&fh.0) else {
                 reply.error(Errno::EBADF);
                 return;
@@ -509,7 +553,7 @@ mod inner {
             _lock_owner: Option<LockOwner>,
             reply: ReplyWrite,
         ) {
-            let open_files = self.open_files.lock().unwrap();
+            let open_files = self.open_files.read().unwrap();
             let Some(open_file) = open_files.get(&fh.0) else {
                 reply.error(Errno::EBADF);
                 return;
@@ -522,14 +566,13 @@ mod inner {
 
             // Extend file if writing past current end (creates a sparse hole).
             let write_end = offset + data.len() as u64;
-            if let Ok(meta) = open_file.file.metadata() {
-                if write_end > meta.len() {
-                    if let Err(e) = open_file.file.set_len(write_end) {
-                        warn!(error = %e, "write: set_len failed");
-                        reply.error(Errno::EIO);
-                        return;
-                    }
-                }
+            if let Ok(meta) = open_file.file.metadata()
+                && write_end > meta.len()
+                && let Err(e) = open_file.file.set_len(write_end)
+            {
+                warn!(error = %e, "write: set_len failed");
+                reply.error(Errno::EIO);
+                return;
             }
 
             match open_file.file.write_at(data, offset) {
@@ -557,7 +600,7 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let mut layer = self.layer.lock().unwrap();
+            let mut layer = self.layer.write().unwrap();
 
             match layer.write_file(&child_path, &[]) {
                 Ok(()) => {
@@ -585,7 +628,7 @@ mod inner {
 
                     let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
                     self.open_files
-                        .lock()
+                        .write()
                         .unwrap()
                         .insert(fh, OpenFile { file, writable: true });
 
@@ -630,7 +673,7 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let mut layer = self.layer.lock().unwrap();
+            let mut layer = self.layer.write().unwrap();
 
             match layer.delete_file(&child_path) {
                 Ok(()) => {
@@ -668,30 +711,39 @@ mod inner {
                 return;
             };
 
-            // Handle chmod.
-            if let Some(new_mode) = mode {
-                let mut layer = self.layer.lock().unwrap();
-                if let Err(e) = layer.set_permissions(&path, new_mode) {
+            let needs_write = mode.is_some() || size.is_some();
+
+            if needs_write {
+                // Single write lock for all mutations + final getattr.
+                let mut layer = self.layer.write().unwrap();
+
+                if let Some(new_mode) = mode
+                    && let Err(e) = layer.set_permissions(&path, new_mode)
+                {
                     warn!(error = %e, "setattr chmod failed");
                     reply.error(Errno::EIO);
                     return;
                 }
-            }
 
-            // Handle truncate (size = 0 or explicit size).
-            if let Some(new_size) = size {
-                let mut layer = self.layer.lock().unwrap();
-                if let Err(e) = layer.truncate_file(&path, new_size) {
+                if let Some(new_size) = size
+                    && let Err(e) = layer.truncate_file(&path, new_size)
+                {
                     warn!(error = %e, "setattr truncate failed");
                     reply.error(Errno::EIO);
                     return;
                 }
-            }
 
-            let layer = self.layer.lock().unwrap();
-            match layer.getattr(&path) {
-                Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
-                Err(_) => reply.error(Errno::ENOENT),
+                match layer.getattr(&path) {
+                    Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
+                    Err(_) => reply.error(Errno::ENOENT),
+                }
+            } else {
+                // Read-only: just fetch attributes.
+                let layer = self.layer.read().unwrap();
+                match layer.getattr(&path) {
+                    Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
+                    Err(_) => reply.error(Errno::ENOENT),
+                }
             }
         }
 
@@ -710,7 +762,7 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let mut layer = self.layer.lock().unwrap();
+            let mut layer = self.layer.write().unwrap();
 
             // Passthrough paths create directories directly in the lower layer.
             let target_path = if layer.is_passthrough(&child_path) {
@@ -764,7 +816,7 @@ mod inner {
             let old_path = old_parent_path.join(name);
             let new_path = new_parent_path.join(newname);
 
-            let mut layer = self.layer.lock().unwrap();
+            let mut layer = self.layer.write().unwrap();
 
             // RENAME_NOREPLACE: fail if destination already exists.
             if flags.contains(RenameFlags::RENAME_NOREPLACE) && layer.exists(&new_path) {
@@ -800,7 +852,7 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let mut layer = self.layer.lock().unwrap();
+            let mut layer = self.layer.write().unwrap();
             let is_passthrough = layer.is_passthrough(&child_path);
 
             let target_path = if is_passthrough {
@@ -844,7 +896,7 @@ mod inner {
             _flush: bool,
             reply: ReplyEmpty,
         ) {
-            self.open_files.lock().unwrap().remove(&fh.0);
+            self.open_files.write().unwrap().remove(&fh.0);
             reply.ok();
         }
     }
