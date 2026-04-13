@@ -236,6 +236,22 @@ mod inner {
         }
     }
 
+    /// Compute a stable, non-zero offset cookie for a directory entry name.
+    ///
+    /// FUSE uses the offset returned by `readdir` as a resumption cookie for
+    /// chunked directory listings.  Using a hash of the entry name (instead of
+    /// a volatile array index) keeps the cookie valid even when other entries
+    /// are added or removed between calls.
+    fn dir_entry_cookie(name: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut hasher);
+        let h = hasher.finish();
+        // Ensure non-zero (offset 0 means "start from beginning" in FUSE)
+        // and positive (avoid i64 sign issues in some FUSE implementations).
+        (h | 1) & 0x7FFF_FFFF_FFFF_FFFF
+    }
+
     /// FUSE filesystem backed by an [`OverlayLayer`].
     pub struct PhantomFs {
         layer: RwLock<OverlayLayer>,
@@ -444,8 +460,24 @@ mod inner {
                 all_entries.push((child_ino, ft, entry.name.to_string_lossy().into_owned()));
             }
 
-            for (i, (child_ino, ft, name)) in all_entries.iter().enumerate().skip(offset as usize) {
-                if reply.add(INodeNo(*child_ino), (i + 1) as u64, *ft, name) {
+            // Sort entries by name for deterministic order across calls.
+            all_entries.sort_by(|a, b| a.2.cmp(&b.2));
+
+            // offset == 0 means start from the beginning.
+            // offset != 0 means resume after the entry whose cookie matches.
+            let start_idx = if offset == 0 {
+                0
+            } else {
+                all_entries
+                    .iter()
+                    .position(|(_, _, name)| dir_entry_cookie(name) == offset)
+                    .map(|pos| pos + 1)
+                    .unwrap_or(0)
+            };
+
+            for (_, (child_ino, ft, name)) in all_entries.iter().enumerate().skip(start_idx) {
+                let cookie = dir_entry_cookie(name);
+                if reply.add(INodeNo(*child_ino), cookie, *ft, name) {
                     break;
                 }
             }
