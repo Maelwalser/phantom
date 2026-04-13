@@ -14,7 +14,7 @@ pub use error::EventStoreError;
 pub use projection::Projection;
 pub use query::EventQuery;
 pub use replay::ReplayEngine;
-pub use store::SqliteEventStore;
+pub use store::{EventStoreConfig, SqliteEventStore};
 
 #[cfg(test)]
 mod tests {
@@ -466,5 +466,88 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row.0, "wal");
+    }
+
+    // ── Test 9: Schema version tracking ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_schema_meta_table_created_with_version() {
+        let store = SqliteEventStore::in_memory().await.unwrap();
+        let row: (String,) =
+            sqlx::query_as("SELECT value FROM schema_meta WHERE key = 'schema_version'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(row.0, "2", "schema should be at version 2 after migrations");
+    }
+
+    // ── Test 10: kind_version column written and readable ───────────
+
+    #[tokio::test]
+    async fn test_kind_version_column_written() {
+        let store = SqliteEventStore::in_memory().await.unwrap();
+        let now = Utc::now();
+
+        store
+            .append(make_event(
+                "cs-1",
+                "agent-a",
+                EventKind::TaskCreated {
+                    base_commit: GitOid::zero(),
+                    task: String::new(),
+                },
+                now,
+            ))
+            .await
+            .unwrap();
+
+        let row: (i32,) = sqlx::query_as("SELECT kind_version FROM events WHERE id = 1")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.0, 1);
+    }
+
+    // ── Test 11: Configurable connection pool ───────────────────────
+
+    #[tokio::test]
+    async fn test_open_with_custom_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("events.db");
+        let config = crate::EventStoreConfig {
+            max_connections: 3,
+        };
+        let store = SqliteEventStore::open_with_config(&db_path, config)
+            .await
+            .unwrap();
+
+        // Verify the store is functional.
+        let all = store.query_all().await.unwrap();
+        assert!(all.is_empty());
+    }
+
+    // ── Test 12: Unknown events survive round-trip through store ────
+
+    #[tokio::test]
+    async fn test_unknown_event_kind_survives_store_roundtrip() {
+        let store = SqliteEventStore::in_memory().await.unwrap();
+
+        // Manually insert an event with an unrecognized kind JSON.
+        sqlx::query(
+            "INSERT INTO events (timestamp, changeset_id, agent_id, kind, kind_version)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind("cs-future")
+        .bind("agent-x")
+        .bind(r#""SomeFutureVariant""#)
+        .bind(99i32)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let events = store.query_all().await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, EventKind::Unknown);
     }
 }

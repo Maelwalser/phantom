@@ -116,6 +116,13 @@ pub enum EventKind {
         /// Files that had conflicts and were left unchanged in the upper layer.
         conflicted_files: Vec<PathBuf>,
     },
+    /// Unrecognized event kind from a newer schema version.
+    ///
+    /// Preserved in the event log but skipped during replay and projection.
+    /// This ensures that older Phantom binaries can still read databases
+    /// written by newer versions without crashing.
+    #[serde(other)]
+    Unknown,
 }
 
 /// An immutable record of something that happened in Phantom.
@@ -241,5 +248,32 @@ mod tests {
             let back: EventKind = serde_json::from_str(&json).unwrap();
             assert_eq!(*kind, back, "round-trip failed for {kind:?}");
         }
+    }
+
+    #[test]
+    fn unrecognized_variant_deserializes_as_unknown() {
+        // Simulate a future EventKind variant that this binary doesn't know about.
+        let json = r#""SomeFutureVariant""#;
+        let kind: EventKind = serde_json::from_str(json).unwrap();
+        assert_eq!(kind, EventKind::Unknown);
+    }
+
+    #[test]
+    fn unrecognized_variant_with_data_returns_error() {
+        // serde(other) only catches unit variants. Object-shaped unknown
+        // variants produce a deserialization error rather than silently
+        // losing data. This is acceptable — the store's row_to_event
+        // will surface this as an EventStoreError::Serialization.
+        let json = r#"{"NewFeatureEvent":{"field":"value"}}"#;
+        let result = serde_json::from_str::<EventKind>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unknown_variant_roundtrips_as_unknown() {
+        let kind = EventKind::Unknown;
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: EventKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, EventKind::Unknown);
     }
 }

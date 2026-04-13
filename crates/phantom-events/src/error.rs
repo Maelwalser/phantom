@@ -17,6 +17,15 @@ pub enum EventStoreError {
     #[error("invalid timestamp '{0}': {1}")]
     InvalidTimestamp(String, String),
 
+    /// The database schema version is incompatible with this binary.
+    #[error("schema version mismatch: expected {expected}, found {found}")]
+    SchemaMismatch {
+        /// The version this binary supports.
+        expected: u32,
+        /// The version found in the database.
+        found: u32,
+    },
+
     /// An error from phantom-core.
     #[error("core error: {0}")]
     Core(#[from] CoreError),
@@ -28,6 +37,7 @@ impl From<EventStoreError> for CoreError {
             EventStoreError::Serialization(_) | EventStoreError::InvalidTimestamp(..) => {
                 CoreError::Serialization(err.to_string())
             }
+            EventStoreError::SchemaMismatch { .. } => CoreError::Storage(err.to_string()),
             _ => CoreError::Storage(err.to_string()),
         }
     }

@@ -27,6 +27,14 @@ pub enum OrchestratorError {
     #[error("materialization failed: {0}")]
     MaterializationFailed(String),
 
+    /// Materialization failed AND the recovery/rollback also failed, leaving
+    /// the trunk working tree in an indeterminate state.
+    #[error("materialization failed: {cause}; RECOVERY ALSO FAILED — trunk may be corrupt: {recovery_errors}")]
+    MaterializationRecoveryFailed {
+        cause: String,
+        recovery_errors: String,
+    },
+
     /// A requested resource (commit, file, changeset) was not found.
     #[error("not found: {0}")]
     NotFound(String),

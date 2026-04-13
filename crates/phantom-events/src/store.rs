@@ -18,9 +18,34 @@ use phantom_core::traits::EventStore;
 
 use crate::error::EventStoreError;
 
+/// Current schema version for the event store database.
+///
+/// Increment this when adding migrations in [`SqliteEventStore::run_migrations`].
+const CURRENT_SCHEMA_VERSION: u32 = 2;
+
+/// Configuration for [`SqliteEventStore`].
+pub struct EventStoreConfig {
+    /// Maximum number of connections in the SQLite pool.
+    ///
+    /// SQLite WAL mode allows concurrent readers with a single writer.
+    /// Higher values help read-heavy workloads (multiple agents querying
+    /// status concurrently).
+    pub max_connections: u32,
+}
+
+impl Default for EventStoreConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: 10,
+        }
+    }
+}
+
 /// Parse a single SQLite row into an [`Event`].
 ///
 /// Expects columns: `id`, `timestamp`, `changeset_id`, `agent_id`, `kind`.
+/// Unrecognized `EventKind` variants deserialize as [`EventKind::Unknown`]
+/// instead of returning an error, ensuring forward compatibility.
 pub(crate) fn row_to_event(row: &SqliteRow) -> Result<Event, EventStoreError> {
     let id: i64 = row.get("id");
     let ts_str: String = row.get("timestamp");
@@ -32,6 +57,10 @@ pub(crate) fn row_to_event(row: &SqliteRow) -> Result<Event, EventStoreError> {
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| EventStoreError::InvalidTimestamp(ts_str, e.to_string()))?;
     let kind: EventKind = serde_json::from_str(&kind_json)?;
+
+    if kind == EventKind::Unknown {
+        tracing::warn!(event_id = id, kind_json, "deserialized unrecognized EventKind as Unknown");
+    }
 
     Ok(Event {
         id: EventId(id as u64),
@@ -54,16 +83,26 @@ impl SqliteEventStore {
     /// Open or create an event store at the given file path.
     ///
     /// Enables WAL mode, sets a 5-second busy timeout, enables foreign keys,
-    /// and runs schema migrations.
+    /// and runs schema migrations. Uses [`EventStoreConfig::default`] for pool
+    /// settings.
     pub async fn open(path: &Path) -> Result<Self, EventStoreError> {
+        Self::open_with_config(path, EventStoreConfig::default()).await
+    }
+
+    /// Open or create an event store with explicit configuration.
+    pub async fn open_with_config(
+        path: &Path,
+        config: EventStoreConfig,
+    ) -> Result<Self, EventStoreError> {
         let url = format!("sqlite:{}?mode=rwc", path.display());
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(config.max_connections)
             .connect(&url)
             .await?;
         let store = Self { pool };
         store.configure().await?;
         store.ensure_schema().await?;
+        store.run_migrations().await?;
         debug!(?path, "opened event store");
         Ok(store)
     }
@@ -79,6 +118,7 @@ impl SqliteEventStore {
         let store = Self { pool };
         store.configure().await?;
         store.ensure_schema().await?;
+        store.run_migrations().await?;
         debug!("opened in-memory event store");
         Ok(store)
     }
@@ -97,8 +137,24 @@ impl SqliteEventStore {
         Ok(())
     }
 
-    /// Create the events table and indexes if they do not exist.
+    /// Create the events table, schema_meta table, and indexes if they do not exist.
     async fn ensure_schema(&self) -> Result<(), EventStoreError> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS schema_meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Seed initial schema version if not present.
+        sqlx::query(
+            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('schema_version', '1')",
+        )
+        .execute(&self.pool)
+        .await?;
+
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS events (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,19 +181,70 @@ impl SqliteEventStore {
         Ok(())
     }
 
+    /// Read the current schema version from the database.
+    async fn schema_version(&self) -> Result<u32, EventStoreError> {
+        let row: (String,) =
+            sqlx::query_as("SELECT value FROM schema_meta WHERE key = 'schema_version'")
+                .fetch_one(&self.pool)
+                .await?;
+        row.0
+            .parse()
+            .map_err(|_| EventStoreError::SchemaMismatch {
+                expected: CURRENT_SCHEMA_VERSION,
+                found: 0,
+            })
+    }
+
+    /// Run forward migrations up to [`CURRENT_SCHEMA_VERSION`].
+    async fn run_migrations(&self) -> Result<(), EventStoreError> {
+        let version = self.schema_version().await?;
+
+        if version < 2 {
+            // Migration 1 → 2: add kind_version column for envelope versioning.
+            sqlx::query(
+                "ALTER TABLE events ADD COLUMN kind_version INTEGER NOT NULL DEFAULT 1",
+            )
+            .execute(&self.pool)
+            .await
+            // Column may already exist if a previous migration was interrupted
+            // after the ALTER but before the version update.
+            .or_else(|e| {
+                if e.to_string().contains("duplicate column") {
+                    Ok(Default::default())
+                } else {
+                    Err(e)
+                }
+            })?;
+
+            sqlx::query("UPDATE schema_meta SET value = '2' WHERE key = 'schema_version'")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if version > CURRENT_SCHEMA_VERSION {
+            return Err(EventStoreError::SchemaMismatch {
+                expected: CURRENT_SCHEMA_VERSION,
+                found: version,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Append an event, returning the auto-generated [`EventId`].
     async fn append_internal(&self, event: Event) -> Result<EventId, EventStoreError> {
         let kind_json = serde_json::to_string(&event.kind)?;
         let timestamp_str = event.timestamp.to_rfc3339();
 
         let result = sqlx::query(
-            "INSERT INTO events (timestamp, changeset_id, agent_id, kind)
-             VALUES ($1, $2, $3, $4)",
+            "INSERT INTO events (timestamp, changeset_id, agent_id, kind, kind_version)
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(&timestamp_str)
         .bind(&event.changeset_id.0)
         .bind(&event.agent_id.0)
         .bind(&kind_json)
+        .bind(1i32)
         .execute(&self.pool)
         .await?;
 

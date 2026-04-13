@@ -176,6 +176,7 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
                 .unwrap_or_else(|| "signal".into());
             format!("AgentCompleted {{ exit: {code}, materialized: {materialized} }}")
         }
+        EventKind::Unknown => "Unknown".into(),
     }
 }
 

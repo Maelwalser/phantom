@@ -291,19 +291,26 @@ impl Materializer {
             });
         }
 
-        // Write merged files to the working tree and commit
-        for (file, content) in &merged_files {
-            let dst = ctx.trunk_path.join(file);
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&dst, content)?;
-        }
+        // Commit directly from in-memory content. This builds the tree
+        // object from blobs without writing to the working directory first,
+        // eliminating the TOCTOU window between writing files to disk and
+        // staging them via index.add_path().
+        let new_commit = self.commit_from_content(
+            &merged_files,
+            ctx.head,
+            ctx.message,
+            &changeset.agent_id.0,
+        )?;
 
-        // Stage and commit, using the verified head OID as parent
-        let file_paths: Vec<_> = merged_files.iter().map(|(p, _)| p.clone()).collect();
-        let new_commit =
-            self.commit_merged_files(&file_paths, ctx.head, ctx.message, &changeset.agent_id.0)?;
+        // Update working tree to match the new commit (best-effort
+        // convenience). The commit is already correct regardless.
+        if let Err(e) = self
+            .git
+            .repo()
+            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        {
+            debug!(error = %e, "checkout_head after merge commit failed (non-fatal)");
+        }
 
         self.append_materialized_event(changeset, &new_commit, ctx.event_store)
             .await?;
@@ -343,34 +350,29 @@ impl Materializer {
         Ok(())
     }
 
-    /// Stage the given files and create a commit with a specific parent.
+    /// Build a commit from in-memory file contents without touching the
+    /// working tree.
     ///
-    /// Uses the provided `parent_oid` rather than re-fetching HEAD to avoid
-    /// TOCTOU races between the merge check and the commit.
-    fn commit_merged_files(
+    /// Creates blob objects directly from `files` content, builds a tree that
+    /// layers those blobs on top of `parent_oid`'s tree, and creates a commit.
+    /// This avoids TOCTOU races between writing files and staging them.
+    fn commit_from_content(
         &self,
-        files: &[PathBuf],
+        files: &[(PathBuf, Vec<u8>)],
         parent_oid: &GitOid,
         message: &str,
         author: &str,
     ) -> Result<GitOid, OrchestratorError> {
-        let mut index = self.git.repo().index()?;
-        for file in files {
-            index.add_path(file)?;
-        }
-        index.write()?;
-
-        let tree_oid = index.write_tree()?;
-        let tree = self.git.repo().find_tree(tree_oid)?;
-        let sig = git2::Signature::now(author, &format!("{author}@phantom"))?;
-
+        let repo = self.git.repo();
         let git2_parent_oid = git::git_oid_to_oid(parent_oid)?;
-        let parent = self.git.repo().find_commit(git2_parent_oid)?;
+        let parent = repo.find_commit(git2_parent_oid)?;
+        let base_tree = parent.tree()?;
 
-        let new_oid =
-            self.git
-                .repo()
-                .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
+        let new_tree_oid = git::build_tree_with_blobs(repo, &base_tree, files)?;
+        let new_tree = repo.find_tree(new_tree_oid)?;
+
+        let sig = git2::Signature::now(author, &format!("{author}@phantom"))?;
+        let new_oid = repo.commit(Some("HEAD"), &sig, &sig, message, &new_tree, &[&parent])?;
 
         Ok(git::oid_to_git_oid(new_oid))
     }

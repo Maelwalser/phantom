@@ -9,7 +9,7 @@ use phantom_core::conflict::{ConflictDetail, ConflictKind};
 use phantom_core::id::{ChangesetId, GitOid};
 use phantom_core::is_binary_or_non_utf8;
 use phantom_core::traits::MergeResult;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::error::OrchestratorError;
 
@@ -179,23 +179,50 @@ impl GitOps {
 
         if let Err(e) = copy_result {
             // Restore backed-up files to leave trunk in its original state.
+            let mut recovery_errors: Vec<String> = Vec::new();
+
             for rel_path in &backed_up {
                 let backup_path = backup_dir.path().join(rel_path);
                 let dst = trunk_path.join(rel_path);
-                let _ = std::fs::remove_file(&dst);
-                if let Ok(meta) = std::fs::symlink_metadata(&backup_path) {
-                    if meta.is_symlink() {
-                        if let Ok(link_target) = std::fs::read_link(&backup_path) {
-                            let _ = std::os::unix::fs::symlink(&link_target, &dst);
+
+                if let Err(re) = std::fs::remove_file(&dst) {
+                    let msg = format!("remove {}: {re}", dst.display());
+                    error!(path = %dst.display(), error = %re, "recovery: failed to remove file");
+                    recovery_errors.push(msg);
+                }
+
+                match std::fs::symlink_metadata(&backup_path) {
+                    Ok(meta) => {
+                        let restore_result = if meta.is_symlink() {
+                            std::fs::read_link(&backup_path)
+                                .and_then(|target| std::os::unix::fs::symlink(&target, &dst))
+                        } else {
+                            std::fs::copy(&backup_path, &dst).map(|_| ())
+                        };
+                        if let Err(re) = restore_result {
+                            let msg = format!("restore {}: {re}", rel_path.display());
+                            error!(path = %rel_path.display(), error = %re, "recovery: failed to restore file");
+                            recovery_errors.push(msg);
                         }
-                    } else {
-                        let _ = std::fs::copy(&backup_path, &dst);
+                    }
+                    Err(re) => {
+                        let msg = format!("backup lost for {}: {re}", rel_path.display());
+                        error!(path = %rel_path.display(), error = %re, "recovery: backup file inaccessible");
+                        recovery_errors.push(msg);
                     }
                 }
             }
-            return Err(OrchestratorError::MaterializationFailed(format!(
-                "overlay copy failed, trunk restored to original state: {e}"
-            )));
+
+            if recovery_errors.is_empty() {
+                return Err(OrchestratorError::MaterializationFailed(format!(
+                    "overlay copy failed, trunk restored to original state: {e}"
+                )));
+            } else {
+                return Err(OrchestratorError::MaterializationRecoveryFailed {
+                    cause: e.to_string(),
+                    recovery_errors: recovery_errors.join("; "),
+                });
+            }
         }
 
         let mut index = self.repo.index()?;
@@ -403,6 +430,99 @@ fn three_way_merge(
             Ok(MergeResult::Conflict(vec![detail]))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// In-memory tree building
+// ---------------------------------------------------------------------------
+
+/// Build a new tree by layering `files` (with in-memory content) on top of
+/// `base_tree`.
+///
+/// For each `(path, content)` pair:
+/// 1. Create a blob via `repo.blob(content)`.
+/// 2. Insert or replace the entry in the tree at the given path.
+///
+/// Handles nested paths by recursively building subtrees.
+pub fn build_tree_with_blobs(
+    repo: &git2::Repository,
+    base_tree: &git2::Tree<'_>,
+    files: &[(PathBuf, Vec<u8>)],
+) -> Result<git2::Oid, OrchestratorError> {
+    use std::collections::HashMap;
+
+    // Group files by their first path component. Files at the root level are
+    // stored under None; files in subdirectories under Some(dir_name).
+    let mut root_blobs: Vec<(&std::ffi::OsStr, &[u8])> = Vec::new();
+    let mut subdir_files: HashMap<&std::ffi::OsStr, Vec<(PathBuf, &[u8])>> = HashMap::new();
+
+    for (path, content) in files {
+        let mut components = path.components();
+        let first = components
+            .next()
+            .ok_or_else(|| OrchestratorError::MaterializationFailed("empty path".into()))?;
+
+        let remaining: PathBuf = components.collect();
+        let name = first.as_os_str();
+
+        if remaining.as_os_str().is_empty() {
+            // Leaf file at this level
+            root_blobs.push((name, content));
+        } else {
+            // File inside a subdirectory
+            subdir_files
+                .entry(name)
+                .or_default()
+                .push((remaining, content));
+        }
+    }
+
+    let mut builder = repo.treebuilder(Some(base_tree))?;
+
+    // Insert leaf blobs
+    for (name, content) in &root_blobs {
+        let blob_oid = repo.blob(content)?;
+        builder.insert(
+            name.to_str().ok_or_else(|| {
+                OrchestratorError::MaterializationFailed("non-UTF-8 filename".into())
+            })?,
+            blob_oid,
+            0o100644,
+        )?;
+    }
+
+    // Recursively build subtrees
+    for (dir_name, nested_files) in &subdir_files {
+        let dir_name_str = dir_name.to_str().ok_or_else(|| {
+            OrchestratorError::MaterializationFailed("non-UTF-8 directory name".into())
+        })?;
+
+        // Get existing subtree or create empty one
+        let existing_subtree = base_tree
+            .get_name(dir_name_str)
+            .and_then(|entry| entry.to_object(repo).ok())
+            .and_then(|obj| obj.into_tree().ok());
+
+        // Convert nested_files to owned Vec for the recursive call
+        let owned_files: Vec<(PathBuf, Vec<u8>)> = nested_files
+            .iter()
+            .map(|(p, c)| (p.clone(), c.to_vec()))
+            .collect();
+
+        let subtree_oid = if let Some(ref sub) = existing_subtree {
+            build_tree_with_blobs(repo, sub, &owned_files)?
+        } else {
+            // No existing subtree — create from an empty tree
+            let empty_oid = repo.treebuilder(None)?.write()?;
+            let empty_tree = repo.find_tree(empty_oid)?;
+            build_tree_with_blobs(repo, &empty_tree, &owned_files)?
+        };
+
+        builder.insert(dir_name_str, subtree_oid, 0o040000)?;
+    }
+
+    let tree_oid = builder.write()?;
+    Ok(tree_oid)
 }
 
 // ---------------------------------------------------------------------------
@@ -701,5 +821,101 @@ mod tests {
             }
             MergeResult::Clean(_) => panic!("expected BinaryFile conflict"),
         }
+    }
+
+    #[test]
+    fn test_recovery_failure_reported() {
+        // Verify MaterializationRecoveryFailed variant formats correctly and
+        // distinguishes itself from the normal MaterializationFailed.
+        let err = OrchestratorError::MaterializationRecoveryFailed {
+            cause: "copy failed: disk full".into(),
+            recovery_errors: "restore a.txt: permission denied".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("RECOVERY ALSO FAILED"), "error was: {msg}");
+        assert!(msg.contains("disk full"), "error was: {msg}");
+        assert!(msg.contains("permission denied"), "error was: {msg}");
+
+        // Normal recovery success uses MaterializationFailed (no recovery error).
+        let ok_err = OrchestratorError::MaterializationFailed(
+            "overlay copy failed, trunk restored to original state: disk full".into(),
+        );
+        let ok_msg = ok_err.to_string();
+        assert!(!ok_msg.contains("RECOVERY ALSO FAILED"), "error was: {ok_msg}");
+        assert!(ok_msg.contains("restored to original state"), "error was: {ok_msg}");
+    }
+
+    #[test]
+    fn test_build_tree_with_blobs_root_files() {
+        let (dir, _ops) = init_repo_with_commit(
+            &[("a.txt", b"aaa"), ("b.txt", b"bbb")],
+            "init",
+        );
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let base_tree = head.tree().unwrap();
+
+        let files = vec![
+            (PathBuf::from("a.txt"), b"modified-a".to_vec()),
+            (PathBuf::from("c.txt"), b"new-c".to_vec()),
+        ];
+
+        let new_tree_oid = build_tree_with_blobs(&repo, &base_tree, &files).unwrap();
+        let new_tree = repo.find_tree(new_tree_oid).unwrap();
+
+        // a.txt should be modified
+        let a_entry = new_tree.get_name("a.txt").unwrap();
+        let a_blob = repo.find_blob(a_entry.id()).unwrap();
+        assert_eq!(a_blob.content(), b"modified-a");
+
+        // b.txt should be preserved from base
+        let b_entry = new_tree.get_name("b.txt").unwrap();
+        let b_blob = repo.find_blob(b_entry.id()).unwrap();
+        assert_eq!(b_blob.content(), b"bbb");
+
+        // c.txt should be newly added
+        let c_entry = new_tree.get_name("c.txt").unwrap();
+        let c_blob = repo.find_blob(c_entry.id()).unwrap();
+        assert_eq!(c_blob.content(), b"new-c");
+    }
+
+    #[test]
+    fn test_build_tree_with_blobs_nested_paths() {
+        let (dir, _ops) = init_repo_with_commit(
+            &[("src/main.rs", b"fn main() {}"), ("src/lib.rs", b"pub mod lib;")],
+            "init",
+        );
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let base_tree = head.tree().unwrap();
+
+        let files = vec![
+            (PathBuf::from("src/main.rs"), b"fn main() { new }".to_vec()),
+            (PathBuf::from("src/utils/helper.rs"), b"pub fn help() {}".to_vec()),
+        ];
+
+        let new_tree_oid = build_tree_with_blobs(&repo, &base_tree, &files).unwrap();
+        let new_tree = repo.find_tree(new_tree_oid).unwrap();
+
+        // Navigate into src/
+        let src_entry = new_tree.get_name("src").unwrap();
+        let src_tree = repo.find_tree(src_entry.id()).unwrap();
+
+        // main.rs should be modified
+        let main_entry = src_tree.get_name("main.rs").unwrap();
+        let main_blob = repo.find_blob(main_entry.id()).unwrap();
+        assert_eq!(main_blob.content(), b"fn main() { new }");
+
+        // lib.rs should be preserved
+        let lib_entry = src_tree.get_name("lib.rs").unwrap();
+        let lib_blob = repo.find_blob(lib_entry.id()).unwrap();
+        assert_eq!(lib_blob.content(), b"pub mod lib;");
+
+        // utils/helper.rs should be newly created
+        let utils_entry = src_tree.get_name("utils").unwrap();
+        let utils_tree = repo.find_tree(utils_entry.id()).unwrap();
+        let helper_entry = utils_tree.get_name("helper.rs").unwrap();
+        let helper_blob = repo.find_blob(helper_entry.id()).unwrap();
+        assert_eq!(helper_blob.content(), b"pub fn help() {}");
     }
 }
