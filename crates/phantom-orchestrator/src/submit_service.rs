@@ -70,7 +70,7 @@ pub async fn submit_overlay(
         .iter()
         .rev()
         .find_map(|e| {
-            if let EventKind::OverlayCreated { base_commit, .. } = &e.kind {
+            if let EventKind::TaskCreated { base_commit, .. } = &e.kind {
                 Some((e.changeset_id.clone(), *base_commit))
             } else {
                 None
@@ -78,7 +78,7 @@ pub async fn submit_overlay(
         })
         .ok_or_else(|| {
             OrchestratorError::NotFound(format!(
-                "no overlay found for agent '{agent_id}' — was it dispatched?"
+                "no overlay found for agent '{agent_id}' — was it tasked?"
             ))
         })?;
 

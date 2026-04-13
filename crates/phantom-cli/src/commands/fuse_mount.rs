@@ -1,7 +1,7 @@
 //! Hidden `_fuse-mount` subcommand — FUSE daemon for agent overlays.
 //!
 //! This is NOT meant for direct user invocation. It is spawned by
-//! `phantom dispatch` as a background process. The process detaches from
+//! `phantom task` as a background process. The process detaches from
 //! the parent session, mounts a [`PhantomFs`] at the given mount point,
 //! and blocks until the filesystem is unmounted (via `fusermount3 -u` or
 //! SIGTERM).
@@ -30,7 +30,7 @@ pub struct FuseMountArgs {
 ///
 /// The FUSE event loop runs on a background thread via `fuser::spawn_mount2`.
 /// The main thread waits for SIGTERM and triggers a clean unmount when received.
-/// The calling code in `dispatch.rs` spawns this as a detached child process.
+/// The calling code in `task.rs` spawns this as a detached child process.
 pub fn run(args: FuseMountArgs) -> anyhow::Result<()> {
     #[cfg(not(target_os = "linux"))]
     {

@@ -213,7 +213,7 @@ fn find_phantom_dir(start: &Path) -> anyhow::Result<PathBuf> {
         }
         if !current.pop() {
             bail!(
-                "not a Phantom repository (no .phantom/ found above {}). Run `phantom up` first.",
+                "not a Phantom repository (no .phantom/ found above {}). Run `phantom init` first.",
                 start.display()
             );
         }

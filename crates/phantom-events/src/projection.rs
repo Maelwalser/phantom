@@ -19,7 +19,7 @@ impl Projection {
     /// Build a projection by replaying events in order.
     ///
     /// Each event updates the corresponding changeset record:
-    /// - `OverlayCreated` → new changeset with `InProgress` status
+    /// - `TaskCreated` → new changeset with `InProgress` status
     /// - `ChangesetSubmitted` → status becomes `Submitted`, operations stored
     /// - `ChangesetMaterialized` → status becomes `Materialized`
     /// - `ChangesetConflicted` → status becomes `Conflicted`
@@ -35,7 +35,7 @@ impl Projection {
                 .or_insert_with(|| new_changeset(&event.changeset_id, &event.agent_id));
 
             match &event.kind {
-                EventKind::OverlayCreated { base_commit, task } => {
+                EventKind::TaskCreated { base_commit, task } => {
                     cs.status = ChangesetStatus::InProgress;
                     cs.base_commit = *base_commit;
                     cs.task = task.clone();
@@ -218,7 +218,7 @@ mod tests {
             1,
             "cs-0001",
             "agent-a",
-            EventKind::OverlayCreated {
+            EventKind::TaskCreated {
                 base_commit: GitOid::zero(),
                 task: "task".into(),
             },
@@ -241,7 +241,7 @@ mod tests {
                 1,
                 "cs-0001",
                 "agent-a",
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: "task-a".into(),
                 },
@@ -259,7 +259,7 @@ mod tests {
                 3,
                 "cs-0002",
                 "agent-b",
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: "task-b".into(),
                 },
@@ -298,7 +298,7 @@ mod tests {
                 1,
                 "cs-0001",
                 "agent-a",
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: "old task".into(),
                 },
@@ -316,7 +316,7 @@ mod tests {
                 3,
                 "cs-0002",
                 "agent-a",
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: "new task".into(),
                 },
@@ -355,7 +355,7 @@ mod tests {
                 1,
                 "cs-0001",
                 "agent-a",
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: "done".into(),
                 },
@@ -382,7 +382,7 @@ mod tests {
                 4,
                 "cs-0002",
                 "agent-a",
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: "pending".into(),
                 },
@@ -400,7 +400,7 @@ mod tests {
                 6,
                 "cs-0003",
                 "agent-a",
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: "conflict".into(),
                 },

@@ -1,7 +1,7 @@
 # Phantom CLI Demo — real user workflow
 #
 # The setup script has already run:
-#   phantom up, phantom dispatch (x2), and agents wrote code.
+#   phantom init, phantom task (x2), and agents wrote code.
 # This tape shows the commands a user types to check status,
 # submit work, materialize to trunk, and query the event log.
 #

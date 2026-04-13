@@ -202,7 +202,7 @@ async fn materialize_changeset(
                 .iter()
                 .filter(|e| e.agent_id == a)
                 .find_map(|e| match &e.kind {
-                    EventKind::OverlayCreated { .. } => Some(e.changeset_id.clone()),
+                    EventKind::TaskCreated { .. } => Some(e.changeset_id.clone()),
                     _ => None,
                 });
             let cs_data = agent_cs

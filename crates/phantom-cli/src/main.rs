@@ -38,10 +38,10 @@ struct Cli {
 #[derive(clap::Subcommand)]
 enum Commands {
     /// Initialize Phantom in an existing git repository
-    Up,
+    Init,
     /// Assign a task to a new agent overlay
-    #[command(visible_alias = "d")]
-    Dispatch(commands::dispatch::DispatchArgs),
+    #[command(visible_alias = "t")]
+    Task(commands::task::TaskArgs),
     /// Submit an agent's work as a changeset
     #[command(visible_alias = "sub")]
     Submit(commands::submit::SubmitArgs),
@@ -89,8 +89,8 @@ async fn main() {
             println!();
             Ok(())
         }
-        Some(Commands::Up) => commands::up::run().await,
-        Some(Commands::Dispatch(args)) => commands::dispatch::run(args).await,
+        Some(Commands::Init) => commands::init::run().await,
+        Some(Commands::Task(args)) => commands::task::run(args).await,
         Some(Commands::Submit(args)) => commands::submit::run(args).await,
         Some(Commands::Status(args)) => commands::status::run(args).await,
         Some(Commands::Materialize(args)) => commands::materialize::run(args).await,

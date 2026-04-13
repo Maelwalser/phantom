@@ -117,7 +117,7 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     all_agents.dedup();
 
     if all_agents.is_empty() {
-        writeln!(out, "\x1b[2m  No agents found. Use `phantom dispatch --background` to start one.\x1b[0m")?;
+        writeln!(out, "\x1b[2m  No agents found. Use `phantom task --background` to start one.\x1b[0m")?;
         return Ok(());
     }
 
@@ -151,9 +151,9 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
         let task = all_events
             .iter()
             .rev()
-            .find(|e| e.agent_id == *agent && matches!(e.kind, EventKind::OverlayCreated { .. }))
+            .find(|e| e.agent_id == *agent && matches!(e.kind, EventKind::TaskCreated { .. }))
             .and_then(|e| match &e.kind {
-                EventKind::OverlayCreated { task, .. } if !task.is_empty() => {
+                EventKind::TaskCreated { task, .. } if !task.is_empty() => {
                     Some(task.as_str())
                 }
                 _ => None,

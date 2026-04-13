@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end CLI test for Phantom.
 #
-# Creates a temp repo, dispatches 2 agents, makes changes,
+# Creates a temp repo, tasks 2 agents, makes changes,
 # submits and materializes both, then rolls back the first
 # materialization to verify the CODE is actually reverted
 # (not just the event log).
@@ -126,31 +126,31 @@ git add -A
 git commit -q -m "initial commit"
 
 echo -e "${BOLD}1. Initialize Phantom${RESET}"
-OUTPUT=$($PHANTOM up 2>&1)
-assert_contains "phantom up succeeds" "$OUTPUT" "Phantom initialized"
+OUTPUT=$($PHANTOM init 2>&1)
+assert_contains "phantom init succeeds" "$OUTPUT" "Phantom initialized"
 assert_ok ".phantom/ directory exists" test -d .phantom
 assert_ok ".phantom/events.db exists" test -f .phantom/events.db
 assert_ok ".phantom/config.toml exists" test -f .phantom/config.toml
 assert_ok ".phantom/overlays/ exists" test -d .phantom/overlays
 
-# Commit the .gitignore that phantom up creates
+# Commit the .gitignore that phantom init creates
 git add .gitignore && git commit -q -m "add .gitignore"
 echo ""
 
 # ────────────────────────────────────────────────────────────
-# 2. Dispatch two agents in background mode
+# 2. Task two agents in background mode
 # ────────────────────────────────────────────────────────────
-echo -e "${BOLD}2. Dispatch two agents${RESET}"
+echo -e "${BOLD}2. Task two agents${RESET}"
 
-OUTPUT_A=$($PHANTOM dispatch agent-a --background --task "Add a greeting function to lib.rs" 2>&1)
-assert_contains "agent-a dispatched" "$OUTPUT_A" "Agent 'agent-a' dispatched"
+OUTPUT_A=$($PHANTOM task agent-a --background --task "Add a greeting function to lib.rs" 2>&1)
+assert_contains "agent-a tasked" "$OUTPUT_A" "Agent 'agent-a' tasked"
 assert_ok "agent-a overlay dir exists" test -d .phantom/overlays/agent-a/upper
 
-OUTPUT_B=$($PHANTOM dispatch agent-b --background --task "Add a multiply function to utils.rs" 2>&1)
-assert_contains "agent-b dispatched" "$OUTPUT_B" "Agent 'agent-b' dispatched"
+OUTPUT_B=$($PHANTOM task agent-b --background --task "Add a multiply function to utils.rs" 2>&1)
+assert_contains "agent-b tasked" "$OUTPUT_B" "Agent 'agent-b' tasked"
 assert_ok "agent-b overlay dir exists" test -d .phantom/overlays/agent-b/upper
 
-# Extract changeset IDs from dispatch output
+# Extract changeset IDs from task output
 CS_A=$(echo "$OUTPUT_A" | grep "Changeset:" | awk '{print $2}')
 CS_B=$(echo "$OUTPUT_B" | grep "Changeset:" | awk '{print $2}')
 echo "  Agent-a changeset: $CS_A"
@@ -252,7 +252,7 @@ echo ""
 # ────────────────────────────────────────────────────────────
 echo -e "${BOLD}7. Event log${RESET}"
 LOG=$($PHANTOM log 2>&1)
-assert_contains "log has OverlayCreated" "$LOG" "OverlayCreated"
+assert_contains "log has TaskCreated" "$LOG" "TaskCreated"
 assert_contains "log has ChangesetSubmitted" "$LOG" "ChangesetSubmitted"
 assert_contains "log has Materialized" "$LOG" "Materialized"
 
@@ -316,11 +316,11 @@ echo ""
 # ────────────────────────────────────────────────────────────
 # 10. Test rollback of a non-materialized changeset
 # ────────────────────────────────────────────────────────────
-echo -e "${BOLD}10. Edge case: dispatch + rollback without materializing${RESET}"
+echo -e "${BOLD}10. Edge case: task + rollback without materializing${RESET}"
 
-OUTPUT_C=$($PHANTOM dispatch agent-c --background --task "This will be cancelled" 2>&1)
+OUTPUT_C=$($PHANTOM task agent-c --background --task "This will be cancelled" 2>&1)
 CS_C=$(echo "$OUTPUT_C" | grep "Changeset:" | awk '{print $2}')
-assert_contains "agent-c dispatched" "$OUTPUT_C" "dispatched"
+assert_contains "agent-c tasked" "$OUTPUT_C" "tasked"
 
 # Write some work
 mkdir -p .phantom/overlays/agent-c/upper/src

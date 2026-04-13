@@ -1,7 +1,7 @@
-//! Interactive session launcher for `phantom dispatch`.
+//! Interactive session launcher for `phantom task`.
 //!
 //! Thin wrapper around `phantom_session` that integrates with the CLI's
-//! `PhantomContext` and `DispatchArgs`.
+//! `PhantomContext` and `TaskArgs`.
 
 use std::path::Path;
 
@@ -13,10 +13,10 @@ use phantom_session::post_session;
 use phantom_session::pty;
 use tracing::warn;
 
-use super::dispatch::DispatchArgs;
+use super::task::TaskArgs;
 use crate::context::PhantomContext;
 
-// Re-export write_context_file so dispatch.rs can still call
+// Re-export write_context_file so task.rs can still call
 // `super::interactive::write_context_file(...)`.
 pub use phantom_session::context_file::write_context_file;
 
@@ -30,7 +30,7 @@ pub async fn run_interactive_session(
     changeset_id: &ChangesetId,
     base_commit: &GitOid,
     work_dir: &Path,
-    args: &DispatchArgs,
+    args: &TaskArgs,
 ) -> anyhow::Result<()> {
     let command = args.command.as_deref().unwrap_or("claude");
     let cli_adapter = adapter::adapter_for(command);
@@ -73,7 +73,7 @@ pub async fn run_interactive_session(
         pty::spawn_direct(cli_adapter.as_ref(), work_dir, session_id, &env_refs)?
     };
 
-    // Persist the session ID for next dispatch.
+    // Persist the session ID for next task invocation.
     if let Some(ref sid) = captured_session_id {
         let session = CliSession {
             cli_name: cli_adapter.name().to_string(),

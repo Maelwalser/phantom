@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Read as _;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -241,6 +242,53 @@ impl OverlayLayer {
         }
 
         trace!(path = %rel_path.display(), new_size, layer = "upper", "truncate");
+        Ok(())
+    }
+
+    /// Set file permissions in the overlay.
+    ///
+    /// Passthrough paths are modified directly in the lower layer.
+    /// For normal paths, if the file only exists in the lower layer it is first
+    /// copied to the upper layer (COW) before applying the permission change.
+    pub fn set_permissions(&mut self, rel_path: &Path, mode: u32) -> Result<(), OverlayError> {
+        if is_hidden(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        let perms = fs::Permissions::from_mode(mode);
+
+        if is_passthrough(rel_path) {
+            let lower_path = self.lower.join(rel_path);
+            if !lower_path.exists() {
+                return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+            }
+            fs::set_permissions(&lower_path, perms)?;
+            trace!(path = %rel_path.display(), mode = format!("{mode:#o}"), layer = "lower-passthrough", "chmod");
+            return Ok(());
+        }
+
+        if self.whiteouts.contains(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        let upper_path = self.upper.join(rel_path);
+
+        if !upper_path.exists() {
+            // COW: copy from lower to upper before changing permissions.
+            let lower_path = self.lower.join(rel_path);
+            if !lower_path.exists() {
+                return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+            }
+
+            if let Some(parent) = upper_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            fs::copy(&lower_path, &upper_path)?;
+        }
+
+        fs::set_permissions(&upper_path, perms)?;
+        trace!(path = %rel_path.display(), mode = format!("{mode:#o}"), layer = "upper", "chmod");
         Ok(())
     }
 

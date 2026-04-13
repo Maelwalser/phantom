@@ -88,7 +88,7 @@ async fn test_event_log_queries() {
         .append(make_event(
             "cs-001",
             "agent-a",
-            EventKind::OverlayCreated {
+            EventKind::TaskCreated {
                 base_commit: GitOid::zero(),
                 task: String::new(),
             },

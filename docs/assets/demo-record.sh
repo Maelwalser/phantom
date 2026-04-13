@@ -9,14 +9,14 @@ DEMO_DIR="/tmp/phantom-demo"
 cd "$DEMO_DIR"
 
 echo -e "\033[1;36m# Initialize phantom in a git repo\033[0m"
-phantom up
+phantom init
 echo ""
 sleep 0.3
 
 echo -e "\033[1;36m# Dispatch two agents to work in parallel\033[0m"
-phantom dispatch agent-a --background --task "add user registration"
+phantom task agent-a --background --task "add user registration"
 echo ""
-phantom dispatch agent-b --background --task "add rate limiting"
+phantom task agent-b --background --task "add rate limiting"
 echo ""
 sleep 0.3
 

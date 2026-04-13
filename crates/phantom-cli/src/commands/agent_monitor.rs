@@ -2,7 +2,7 @@
 //! background agent process, then runs post-completion automation (submit +
 //! materialize).
 //!
-//! Spawned by `phantom dispatch --background`. The monitor is the parent of the
+//! Spawned by `phantom task --background`. The monitor is the parent of the
 //! claude process so it can `waitpid` to get the real exit code.
 
 use std::path::{Path, PathBuf};

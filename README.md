@@ -38,7 +38,7 @@ Phantom replaces branches with **changesets** — reorderable, atomic units of w
 
 ## Features
 
-- **Session-aware dispatch** — Each `phantom dispatch` launches a coding session (defaults to Claude Code) inside the overlay. Sessions are automatically captured and persisted, so re-dispatching the same agent resumes exactly where it left off.
+- **Session-aware tasking** — Each `phantom task` launches a coding session (defaults to Claude Code) inside the overlay. Sessions are automatically captured and persisted, so re-tasking the same agent resumes exactly where it left off.
 - **Semantic merging** — Conflict detection at the AST level via tree-sitter. Two agents adding different functions to the same file? No conflict.
 - **FUSE overlays** — Each agent gets an isolated copy-on-write filesystem. Reads fall through to trunk; writes are captured. No git branches, no rebasing.
 - **Event sourcing** — Every agent action is an immutable event in an append-only log. Full auditability, surgical rollback, and "what-if" replay.
@@ -55,13 +55,13 @@ cargo install --path crates/phantom-cli
 
 # Initialize in any git repository
 cd /path/to/your/repo
-phantom up
+phantom init
 
-# Dispatch an agent — opens an interactive Claude Code session
-phantom d agent-a
+# Task an agent — opens an interactive Claude Code session
+phantom t agent-a
 
-# Or dispatch in the background with a task description
-phantom d agent-b --background --task "add rate limiting"
+# Or task in the background with a task description
+phantom t agent-b --background --task "add rate limiting"
 
 # When done, submit and materialize
 phantom sub agent-a
@@ -73,7 +73,7 @@ phantom sub agent-b
 phantom mat agent-b
 
 # Or do it all in one shot — session exits, auto-submit and merge
-phantom d agent-c --auto-materialize
+phantom t agent-c --auto-materialize
 ```
 
 ## Installation
@@ -127,8 +127,8 @@ phantom --help
 
 | Command | Shortcut | Description |
 |---------|----------|-------------|
-| `phantom up` | | Initialize Phantom in the current git repository |
-| `phantom dispatch` | `phantom d` | Create an overlay, bind a coding session, and assign a task |
+| `phantom init` | | Initialize Phantom in the current git repository |
+| `phantom task` | `phantom t` | Create an overlay, bind a coding session, and assign a task |
 | `phantom submit` | `phantom sub` | Package an agent's changes into a changeset with semantic operations |
 | `phantom materialize` | `phantom mat` | Run semantic merge and commit a changeset to trunk |
 | `phantom status` | `phantom st` | Show active overlays, pending changesets, and trunk state |
@@ -136,40 +136,40 @@ phantom --help
 | `phantom log` | `phantom l` | Query the event log with filters |
 | `phantom destroy` | `phantom rm` | Tear down an agent's overlay and FUSE mount |
 
-### `phantom up`
+### `phantom init`
 
 Initialize Phantom in an existing git repository. Creates the `.phantom/` directory with an event store, overlay root, and configuration. Adds `.phantom/` to `.gitignore` automatically.
 
 ```bash
 cd /path/to/your/repo
-phantom up
+phantom init
 ```
 
-### `phantom dispatch` / `d`
+### `phantom task` / `t`
 
-Create an overlay and launch a coding session for an agent. Each dispatch binds a coding session to the overlay — if the agent already has an active overlay, the existing session is resumed instead of creating a new one.
+Create an overlay and launch a coding session for an agent. Each task binds a coding session to the overlay — if the agent already has an active overlay, the existing session is resumed instead of creating a new one.
 
 ```bash
 # Interactive — launches Claude Code inside the overlay (default)
-phantom d agent-a
+phantom t agent-a
 
 # Resume an existing agent's session (automatic if overlay exists)
-phantom d agent-a
+phantom t agent-a
 
 # Background — create overlay without launching a session (--task required)
-phantom d agent-b --background --task "implement caching layer"
+phantom t agent-b --background --task "implement caching layer"
 
 # Auto-submit when the session exits
-phantom d agent-a --auto-submit
+phantom t agent-a --auto-submit
 
 # Auto-submit AND auto-materialize when the session exits
-phantom d agent-a --auto-materialize
+phantom t agent-a --auto-materialize
 
 # Use a custom CLI instead of Claude Code
-phantom d agent-a --command aider
+phantom t agent-a --command aider
 
 # Skip FUSE mounting (agent works via upper layer only)
-phantom d agent-a --no-fuse
+phantom t agent-a --no-fuse
 ```
 
 **Flags:**
@@ -212,11 +212,11 @@ phantom mat agent-a -m "feat: add user authentication"
 
 **Possible outcomes:**
 - **Success** — Changes committed to trunk. Other agents' overlays are live-rebased if they touch the same files, and notified of trunk changes.
-- **Conflict** — Two agents modified the same symbol. The changeset is marked conflicted; re-dispatch the agent.
+- **Conflict** — Two agents modified the same symbol. The changeset is marked conflicted; re-task the agent.
 
 ### `phantom rollback` / `rb`
 
-Surgically remove a changeset. Phantom marks the changeset's events as dropped and creates a git revert commit. Identifies any downstream changesets that may need re-dispatch.
+Surgically remove a changeset. Phantom marks the changeset's events as dropped and creates a git revert commit. Identifies any downstream changesets that may need re-tasking.
 
 ```bash
 phantom rb cs-0001-123456
@@ -266,15 +266,15 @@ phantom rm agent-a
 
 ## Sessions
 
-Each dispatch binds a **coding session** to the agent's overlay. This is a core concept in Phantom — agents don't just get isolated filesystems, they get persistent, resumable coding contexts.
+Each task binds a **coding session** to the agent's overlay. This is a core concept in Phantom — agents don't just get isolated filesystems, they get persistent, resumable coding contexts.
 
 ### How sessions work
 
-1. **First dispatch** — `phantom d agent-a` creates the overlay, spawns a FUSE mount, and launches an interactive coding CLI (Claude Code by default) inside the overlay directory. The CLI process runs in a PTY so Phantom can capture its session ID from the terminal output.
+1. **First task** — `phantom t agent-a` creates the overlay, spawns a FUSE mount, and launches an interactive coding CLI (Claude Code by default) inside the overlay directory. The CLI process runs in a PTY so Phantom can capture its session ID from the terminal output.
 
 2. **Session capture** — When the coding CLI exits, Phantom extracts the session ID (e.g., Claude Code's `--resume` UUID) and persists it to `.phantom/overlays/<agent>/cli_session.json`.
 
-3. **Resume dispatch** — Running `phantom d agent-a` again detects the existing overlay, loads the saved session ID, and launches the CLI with `--resume <session-id>`. The agent picks up exactly where it left off — same conversation context, same file state.
+3. **Resume task** — Running `phantom t agent-a` again detects the existing overlay, loads the saved session ID, and launches the CLI with `--resume <session-id>`. The agent picks up exactly where it left off — same conversation context, same file state.
 
 4. **Session lifecycle** — The session persists as long as the overlay exists. Submitting or materializing the changeset ends the session. Destroying the overlay (`phantom rm agent-a`) clears the session data.
 
@@ -282,7 +282,7 @@ Each dispatch binds a **coding session** to the agent's overlay. This is a core 
 
 | CLI | Session Resume | How |
 |-----|---------------|-----|
-| Claude Code | Yes | Captures `--resume <UUID>` from output, passes it on next dispatch |
+| Claude Code | Yes | Captures `--resume <UUID>` from output, passes it on next task |
 | Custom (`--command`) | No | Generic adapter; no session extraction |
 
 ### Environment variables
@@ -329,7 +329,7 @@ Phantom sits between your AI agents and the Git repository. Each agent gets an i
                      ┌─────────────────┐
                      │  Orchestrator   │
                      └────────┬────────┘
-                          dispatch
+                            task
             ┌─────────────────┼─────────────────┐
             ▼                 ▼                 ▼
       ┌───────────┐    ┌───────────┐    ┌───────────┐
@@ -376,13 +376,13 @@ Phantom sits between your AI agents and the Git repository. Each agent gets an i
   CONFLICT — manual fix needed
 ```
 
-### Lifecycle of a dispatch
+### Lifecycle of a task
 
-1. **Dispatch** — `phantom d claude-a` creates a FUSE overlay, spawns the FUSE daemon in the background, and launches a Claude Code session inside the overlay mount point. The agent sees the full repository through the merged view (trunk + its own writes). A `.phantom-task.md` context file is written with agent metadata.
+1. **Task** — `phantom t claude-a` creates a FUSE overlay, spawns the FUSE daemon in the background, and launches a Claude Code session inside the overlay mount point. The agent sees the full repository through the merged view (trunk + its own writes). A `.phantom-task.md` context file is written with agent metadata.
 
 2. **Work** — The agent writes code inside the overlay. Reads fall through to trunk; writes are captured in the upper layer. Other agents can't see or interfere with its work. The session ID is captured from the CLI output for later resume.
 
-3. **Pause / Resume** — The agent can exit the session at any time. Running `phantom d claude-a` again resumes the same coding session with the same overlay state. No work is lost.
+3. **Pause / Resume** — The agent can exit the session at any time. Running `phantom t claude-a` again resumes the same coding session with the same overlay state. No work is lost.
 
 4. **Submit** — `phantom sub claude-a` parses the modified files with tree-sitter, extracts what changed at the symbol level (functions added, structs modified, imports changed), and records a changeset in the event log.
 
@@ -396,8 +396,8 @@ Phantom sits between your AI agents and the Git repository. Each agent gets an i
 |----------|--------|
 | Both agents add different symbols to the same file | Auto-merge |
 | Both agents add different fields to the same struct | Auto-merge |
-| Both agents modify the same function body | **Conflict** — re-dispatch |
-| One modifies, other deletes the same symbol | **Conflict** — re-dispatch |
+| Both agents modify the same function body | **Conflict** — re-task |
+| One modifies, other deletes the same symbol | **Conflict** — re-task |
 | Both add the same import | Auto-deduplicate |
 | Additive insertions to the same collection (routes, middleware) | Auto-merge |
 
@@ -448,7 +448,7 @@ cargo clippy -- -D warnings
 
 ### Running the integration tests
 
-The integration tests create temporary git repositories, dispatch simulated agents, and verify semantic merging behavior end-to-end:
+The integration tests create temporary git repositories, task simulated agents, and verify semantic merging behavior end-to-end:
 
 ```bash
 cargo test --test two_agents_disjoint       # Disjoint files auto-merge
@@ -479,11 +479,11 @@ Files in unsupported languages fall back to git's line-based merge.
 - [x] All CLI commands
 - [x] Semantic merging (4 languages)
 - [x] Integration test suite
-- [x] Session-aware dispatch with resume support
+- [x] Session-aware task with resume support
 - [x] Auto-submit and auto-materialize flags
 - [x] Live rebase on materialization
 - [x] PTY-based session capture (Claude Code)
-- [ ] Agent re-dispatch automation
+- [ ] Agent re-task automation
 - [ ] Incremental parsing for large codebases
 - [ ] Additional CLI adapters (Aider, Cursor, Codex)
 - [ ] macOS NFS overlay fallback

@@ -26,16 +26,18 @@ pub enum MergeCheckResult {
 /// The payload of an event — what happened.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
-    /// An agent overlay was created.
-    OverlayCreated {
+    /// A task was created (agent overlay provisioned).
+    #[serde(alias = "OverlayCreated")]
+    TaskCreated {
         /// The trunk commit the overlay is based on.
         base_commit: GitOid,
         /// Task description for the agent (empty for interactive sessions).
         #[serde(default)]
         task: String,
     },
-    /// An agent overlay was destroyed.
-    OverlayDestroyed,
+    /// A task was destroyed (agent overlay torn down).
+    #[serde(alias = "OverlayDestroyed")]
+    TaskDestroyed,
     /// An agent wrote a file inside its overlay.
     FileWritten {
         /// Path relative to the repo root.
@@ -141,7 +143,7 @@ mod tests {
             timestamp: Utc::now(),
             changeset_id: ChangesetId("cs-0001".into()),
             agent_id: AgentId("agent-a".into()),
-            kind: EventKind::OverlayCreated {
+            kind: EventKind::TaskCreated {
                 base_commit: GitOid::zero(),
                 task: String::new(),
             },
@@ -182,11 +184,11 @@ mod tests {
     #[test]
     fn serde_all_event_kinds() {
         let kinds = vec![
-            EventKind::OverlayCreated {
+            EventKind::TaskCreated {
                 base_commit: GitOid::zero(),
                 task: String::new(),
             },
-            EventKind::OverlayDestroyed,
+            EventKind::TaskDestroyed,
             EventKind::FileWritten {
                 path: PathBuf::from("src/main.rs"),
                 content_hash: ContentHash::from_bytes(b"test"),

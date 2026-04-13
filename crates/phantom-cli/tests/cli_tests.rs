@@ -44,8 +44,8 @@ fn phantom_help_lists_all_subcommands() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("up"))
-        .stdout(predicate::str::contains("dispatch"))
+        .stdout(predicate::str::contains("init"))
+        .stdout(predicate::str::contains("task"))
         .stdout(predicate::str::contains("submit"))
         .stdout(predicate::str::contains("status"))
         .stdout(predicate::str::contains("materialize"))
@@ -55,11 +55,11 @@ fn phantom_help_lists_all_subcommands() {
 }
 
 #[test]
-fn phantom_up_creates_directory_structure() {
+fn phantom_init_creates_directory_structure() {
     let dir = init_git_repo();
 
     phantom(dir.path())
-        .arg("up")
+        .arg("init")
         .assert()
         .success()
         .stdout(predicate::str::contains("Phantom initialized"));
@@ -74,37 +74,37 @@ fn phantom_up_creates_directory_structure() {
 }
 
 #[test]
-fn phantom_up_fails_outside_git_repo() {
+fn phantom_init_fails_outside_git_repo() {
     let dir = TempDir::new().unwrap();
 
     phantom(dir.path())
-        .arg("up")
+        .arg("init")
         .assert()
         .failure()
         .stderr(predicate::str::contains("not a git repository"));
 }
 
 #[test]
-fn phantom_up_fails_if_already_initialized() {
+fn phantom_init_fails_if_already_initialized() {
     let dir = init_git_repo();
 
-    phantom(dir.path()).arg("up").assert().success();
+    phantom(dir.path()).arg("init").assert().success();
 
     phantom(dir.path())
-        .arg("up")
+        .arg("init")
         .assert()
         .failure()
         .stderr(predicate::str::contains("already initialized"));
 }
 
 #[test]
-fn phantom_dispatch_background_and_status() {
+fn phantom_task_background_and_status() {
     let dir = init_git_repo();
-    phantom(dir.path()).arg("up").assert().success();
+    phantom(dir.path()).arg("init").assert().success();
 
     phantom(dir.path())
         .args([
-            "dispatch",
+            "task",
             "agent-a",
             "--background",
             "--task",
@@ -112,7 +112,7 @@ fn phantom_dispatch_background_and_status() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Agent 'agent-a' dispatched"))
+        .stdout(predicate::str::contains("Agent 'agent-a' tasked"))
         .stdout(predicate::str::contains("cs-0001"))
         .stdout(predicate::str::contains("add rate limiting"));
 
@@ -125,16 +125,16 @@ fn phantom_dispatch_background_and_status() {
 }
 
 #[test]
-fn phantom_dispatch_interactive_with_echo() {
+fn phantom_task_interactive_with_echo() {
     let dir = init_git_repo();
-    phantom(dir.path()).arg("up").assert().success();
+    phantom(dir.path()).arg("init").assert().success();
 
     // Use `echo` as a stand-in for claude — it exits immediately
     phantom(dir.path())
-        .args(["dispatch", "agent-b", "--command", "echo"])
+        .args(["task", "agent-b", "--command", "echo"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Agent 'agent-b' dispatched"))
+        .stdout(predicate::str::contains("Agent 'agent-b' tasked"))
         .stdout(predicate::str::contains("Interactive session ended"))
         .stdout(predicate::str::contains("No changes detected"));
 }
@@ -142,7 +142,7 @@ fn phantom_dispatch_interactive_with_echo() {
 #[test]
 fn phantom_log_empty() {
     let dir = init_git_repo();
-    phantom(dir.path()).arg("up").assert().success();
+    phantom(dir.path()).arg("init").assert().success();
 
     phantom(dir.path()).arg("log").assert().success().stdout(
         predicate::str::contains("event(s) shown").or(predicate::str::contains("No events")),
@@ -154,12 +154,12 @@ fn full_workflow_smoke_test() {
     let dir = init_git_repo();
 
     // 1. Initialize
-    phantom(dir.path()).arg("up").assert().success();
+    phantom(dir.path()).arg("init").assert().success();
 
     // 2. Dispatch in background mode
     phantom(dir.path())
         .args([
-            "dispatch",
+            "task",
             "agent-a",
             "--background",
             "--task",
@@ -170,7 +170,7 @@ fn full_workflow_smoke_test() {
 
     // 3. Simulate agent work by writing a file to the upper dir
     let upper_dir = dir.path().join(".phantom/overlays/agent-a/upper");
-    assert!(upper_dir.is_dir(), "upper dir should exist after dispatch");
+    assert!(upper_dir.is_dir(), "upper dir should exist after task");
 
     let src_dir = upper_dir.join("src");
     fs::create_dir_all(&src_dir).unwrap();
@@ -192,7 +192,7 @@ fn full_workflow_smoke_test() {
         .arg("log")
         .assert()
         .success()
-        .stdout(predicate::str::contains("OverlayCreated"))
+        .stdout(predicate::str::contains("TaskCreated"))
         .stdout(predicate::str::contains("ChangesetSubmitted"));
 
     // 6. Status should show the changeset
@@ -204,13 +204,13 @@ fn full_workflow_smoke_test() {
 }
 
 #[test]
-fn phantom_dispatch_background_conflicts_with_auto_submit() {
+fn phantom_task_background_conflicts_with_auto_submit() {
     let dir = init_git_repo();
-    phantom(dir.path()).arg("up").assert().success();
+    phantom(dir.path()).arg("init").assert().success();
 
     phantom(dir.path())
         .args([
-            "dispatch",
+            "task",
             "agent-a",
             "--background",
             "--task",
@@ -222,25 +222,25 @@ fn phantom_dispatch_background_conflicts_with_auto_submit() {
 }
 
 #[test]
-fn phantom_dispatch_background_requires_task() {
+fn phantom_task_background_requires_task() {
     let dir = init_git_repo();
-    phantom(dir.path()).arg("up").assert().success();
+    phantom(dir.path()).arg("init").assert().success();
 
     // --background without --task should fail
     phantom(dir.path())
-        .args(["dispatch", "agent-a", "--background"])
+        .args(["task", "agent-a", "--background"])
         .assert()
         .failure();
 }
 
 #[test]
-fn phantom_dispatch_interactive_auto_submit_with_no_changes() {
+fn phantom_task_interactive_auto_submit_with_no_changes() {
     let dir = init_git_repo();
-    phantom(dir.path()).arg("up").assert().success();
+    phantom(dir.path()).arg("init").assert().success();
 
     // echo exits immediately with no changes — auto-submit should report "no changes"
     phantom(dir.path())
-        .args(["dispatch", "agent-c", "--command", "echo", "--auto-submit"])
+        .args(["task", "agent-c", "--command", "echo", "--auto-submit"])
         .assert()
         .success()
         .stdout(predicate::str::contains("No changes detected"));

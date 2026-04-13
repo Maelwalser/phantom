@@ -36,7 +36,7 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
         .iter()
         .rev()
         .find_map(|e| {
-            if matches!(e.kind, EventKind::OverlayCreated { .. }) {
+            if matches!(e.kind, EventKind::TaskCreated { .. }) {
                 Some(e.changeset_id.clone())
             } else {
                 None
@@ -44,7 +44,7 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
         })
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no overlay found for agent '{}' — was it dispatched?",
+                "no overlay found for agent '{}' — was it tasked?",
                 args.agent
             )
         })?;
@@ -61,7 +61,7 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
         timestamp: Utc::now(),
         changeset_id,
         agent_id,
-        kind: EventKind::OverlayDestroyed,
+        kind: EventKind::TaskDestroyed,
     };
     events_store
         .append(event)

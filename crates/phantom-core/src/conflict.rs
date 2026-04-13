@@ -2,7 +2,7 @@
 //!
 //! When two changesets modify overlapping symbols, Phantom classifies the
 //! conflict and attaches enough context for the orchestrator to decide
-//! whether to re-dispatch an agent or escalate to a human.
+//! whether to re-task an agent or escalate to a human.
 
 use std::ops::Range;
 use std::path::PathBuf;

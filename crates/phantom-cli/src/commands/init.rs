@@ -1,4 +1,4 @@
-//! `phantom up` — initialize Phantom in an existing git repository.
+//! `phantom init` — initialize Phantom in an existing git repository.
 
 use std::fs;
 use std::path::Path;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sets up the demo: repo + phantom init + dispatched agents with staged work.
+# Sets up the demo: repo + phantom init + tasked agents with staged work.
 # Run BEFORE: vhs docs/assets/demo.tape
 set -euo pipefail
 export RUST_LOG=off
@@ -30,10 +30,10 @@ RUST
 git add .
 git commit -m "initial commit" --quiet
 
-# Initialize phantom and dispatch agents
-phantom up >/dev/null 2>&1
-phantom dispatch claude-a --background --task "add user registration" >/dev/null 2>&1
-phantom dispatch claude-b --background --task "add rate limiting" >/dev/null 2>&1
+# Initialize phantom and task agents
+phantom init >/dev/null 2>&1
+phantom task claude-a --background --task "add user registration" >/dev/null 2>&1
+phantom task claude-b --background --task "add rate limiting" >/dev/null 2>&1
 
 # Simulate agent work: write files into overlays
 # (In real usage, Claude/Cursor writes through the FUSE mount)
@@ -59,5 +59,5 @@ pub fn rate_limit(ip: &str, max_requests: u32) -> bool {
 }
 RUST
 
-echo "Demo ready: phantom initialized, agents dispatched, code staged."
+echo "Demo ready: phantom initialized, agents tasked, code staged."
 echo "Run: vhs docs/assets/demo.tape"

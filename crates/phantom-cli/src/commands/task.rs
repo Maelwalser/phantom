@@ -1,6 +1,6 @@
-//! `phantom dispatch` — create an agent overlay and launch a Claude Code session.
+//! `phantom task` — create an agent overlay and launch a Claude Code session.
 //!
-//! By default, dispatching opens an interactive Claude Code CLI inside the
+//! By default, tasking opens an interactive Claude Code CLI inside the
 //! overlay's FUSE mount point, which provides a merged view of trunk + agent
 //! writes. Use `--background` to create the overlay without launching a
 //! session (for scripted / headless agents).
@@ -22,7 +22,7 @@ use phantom_overlay::OverlayError;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
-pub struct DispatchArgs {
+pub struct TaskArgs {
     /// Agent identifier (e.g. "agent-a")
     pub agent: String,
     /// Task description for the agent (only available with --background)
@@ -45,7 +45,7 @@ pub struct DispatchArgs {
     pub no_fuse: bool,
 }
 
-pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
+pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let git = ctx.open_git()?;
     let events = ctx.open_events().await?;
@@ -68,7 +68,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
                     timestamp: Utc::now(),
                     changeset_id: cs_id.clone(),
                     agent_id: agent_id.clone(),
-                    kind: EventKind::OverlayCreated {
+                    kind: EventKind::TaskCreated {
                         base_commit: head,
                         task: args.task.clone().unwrap_or_default(),
                     },
@@ -122,7 +122,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
     };
 
     let base_short = base_commit.to_hex().chars().take(12).collect::<String>();
-    let verb = if is_new { "dispatched" } else { "resumed" };
+    let verb = if is_new { "tasked" } else { "resumed" };
 
     if args.background {
         let task = args.task.as_deref().unwrap_or("");
@@ -157,7 +157,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
             println!("  FUSE:      mounted");
         }
         println!();
-        println!("Run `phantom d {}` again to check progress.", args.agent);
+        println!("Run `phantom t {}` again to check progress.", args.agent);
     } else {
         // If a background agent is already running or has completed for this
         // overlay, show its status instead of opening an interactive session.
@@ -269,16 +269,16 @@ fn wait_for_mount(mount_point: &Path, timeout: Duration) -> anyhow::Result<()> {
 /// Generate a unique changeset ID.
 ///
 /// Uses a monotonic counter from the event store combined with a timestamp
-/// suffix to avoid collisions from concurrent dispatch calls.
+/// suffix to avoid collisions from concurrent task calls.
 async fn generate_changeset_id(events: &SqliteEventStore) -> anyhow::Result<ChangesetId> {
     let events = events.query_all().await?;
 
     let overlay_count = events
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::OverlayCreated { .. }))
+        .filter(|e| matches!(e.kind, EventKind::TaskCreated { .. }))
         .count();
 
-    // Append timestamp micros to avoid race condition when two dispatches
+    // Append timestamp micros to avoid race condition when two task calls
     // read the same count concurrently.
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -290,7 +290,7 @@ async fn generate_changeset_id(events: &SqliteEventStore) -> anyhow::Result<Chan
 }
 
 /// Recover the changeset ID and base commit for an existing agent overlay from
-/// the event log. Finds the most recent `OverlayCreated` event for this agent.
+/// the event log. Finds the most recent `TaskCreated` event for this agent.
 async fn recover_changeset_from_events(
     events: &SqliteEventStore,
     agent_id: &AgentId,
@@ -300,15 +300,15 @@ async fn recover_changeset_from_events(
         .await
         ?;
 
-    // Walk backwards to find the most recent OverlayCreated event.
+    // Walk backwards to find the most recent TaskCreated event.
     for event in events.iter().rev() {
-        if let EventKind::OverlayCreated { base_commit, .. } = &event.kind {
+        if let EventKind::TaskCreated { base_commit, .. } = &event.kind {
             return Ok((event.changeset_id.clone(), *base_commit));
         }
     }
 
     anyhow::bail!(
-        "overlay exists for agent '{}' but no OverlayCreated event found in the event log",
+        "overlay exists for agent '{}' but no TaskCreated event found in the event log",
         agent_id
     )
 }
@@ -328,13 +328,13 @@ async fn check_changeset_resumable(events: &SqliteEventStore, cs_id: &ChangesetI
             EventKind::ChangesetMaterialized { .. } => {
                 anyhow::bail!(
                     "changeset {cs_id} has already been materialized — \
-                     use `phantom dispatch <new-agent>` to start fresh"
+                     use `phantom task <new-agent>` to start fresh"
                 );
             }
             EventKind::ChangesetSubmitted { .. } => {
                 anyhow::bail!(
                     "changeset {cs_id} has already been submitted — \
-                     use `phantom dispatch <new-agent>` to start fresh"
+                     use `phantom task <new-agent>` to start fresh"
                 );
             }
             _ => {}

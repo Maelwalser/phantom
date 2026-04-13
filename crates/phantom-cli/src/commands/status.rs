@@ -85,13 +85,13 @@ async fn run_summary(
             let run_state = read_agent_run_state(phantom_dir, &agent.0);
             let state_str = format_run_state_short(&run_state);
 
-            // Find the task description from the most recent OverlayCreated event.
+            // Find the task description from the most recent TaskCreated event.
             let task = all_events
                 .iter()
                 .rev()
-                .find(|e| e.agent_id == *agent && matches!(e.kind, EventKind::OverlayCreated { .. }))
+                .find(|e| e.agent_id == *agent && matches!(e.kind, EventKind::TaskCreated { .. }))
                 .and_then(|e| match &e.kind {
-                    EventKind::OverlayCreated { task, .. } if !task.is_empty() => Some(task.as_str()),
+                    EventKind::TaskCreated { task, .. } if !task.is_empty() => Some(task.as_str()),
                     _ => None,
                 });
 
@@ -158,12 +158,12 @@ async fn run_detailed(
         anyhow::bail!("no events found for agent '{agent_name}'");
     }
 
-    // Find changeset ID and task from most recent OverlayCreated.
+    // Find changeset ID and task from most recent TaskCreated.
     let (changeset_id, task) = agent_events
         .iter()
         .rev()
         .find_map(|e| match &e.kind {
-            EventKind::OverlayCreated { task, .. } => {
+            EventKind::TaskCreated { task, .. } => {
                 Some((e.changeset_id.clone(), task.clone()))
             }
             _ => None,

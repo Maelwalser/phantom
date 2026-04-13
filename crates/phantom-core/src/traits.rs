@@ -84,7 +84,7 @@ pub trait SemanticAnalyzer: Send + Sync {
 pub enum MergeResult {
     /// The merge produced clean output.
     Clean(Vec<u8>),
-    /// The merge found conflicts that require re-dispatch.
+    /// The merge found conflicts that require re-tasking.
     Conflict(Vec<ConflictDetail>),
 }
 

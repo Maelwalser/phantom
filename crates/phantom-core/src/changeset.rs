@@ -24,7 +24,7 @@ pub enum ChangesetStatus {
     Merging,
     /// Successfully committed to trunk.
     Materialized,
-    /// Semantic conflict detected; needs re-dispatch.
+    /// Semantic conflict detected; needs re-task.
     Conflicted,
     /// Rolled back / removed via event log replay.
     Dropped,
@@ -121,7 +121,7 @@ pub struct TestResult {
 
 /// The atomic unit of work in Phantom.
 ///
-/// When an agent is dispatched a task it produces a changeset — not a branch.
+/// When an agent is assigned a task it produces a changeset — not a branch.
 /// Changesets whose symbol sets are disjoint can be materialized in any order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Changeset {

@@ -198,7 +198,7 @@ mod tests {
                 .append(make_event(
                     &format!("cs-{i}"),
                     "agent-a",
-                    EventKind::OverlayCreated {
+                    EventKind::TaskCreated {
                         base_commit: GitOid::zero(),
                         task: String::new(),
                     },
@@ -232,7 +232,7 @@ mod tests {
             .append(make_event(
                 "cs-1",
                 "agent-a",
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: String::new(),
                 },
@@ -245,7 +245,7 @@ mod tests {
             .append(make_event(
                 "cs-2",
                 "agent-a",
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: String::new(),
                 },
@@ -258,7 +258,7 @@ mod tests {
             .append(make_event(
                 "cs-1",
                 "agent-b",
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: String::new(),
                 },
@@ -294,7 +294,7 @@ mod tests {
             make_event(
                 cs_id,
                 agent,
-                EventKind::OverlayCreated {
+                EventKind::TaskCreated {
                     base_commit: GitOid::zero(),
                     task: String::new(),
                 },
@@ -368,7 +368,7 @@ mod tests {
                 .append(make_event(
                     cs,
                     "agent-a",
-                    EventKind::OverlayCreated {
+                    EventKind::TaskCreated {
                         base_commit: GitOid::zero(),
                         task: String::new(),
                     },

@@ -94,13 +94,13 @@ fn parse_duration_ago(s: &str) -> anyhow::Result<chrono::DateTime<Utc>> {
 fn format_event_kind(kind: &phantom_core::EventKind) -> String {
     use phantom_core::EventKind;
     match kind {
-        EventKind::OverlayCreated { base_commit, .. } => {
+        EventKind::TaskCreated { base_commit, .. } => {
             format!(
-                "OverlayCreated {{ base: {} }}",
+                "TaskCreated {{ base: {} }}",
                 short_hex(&base_commit.to_hex())
             )
         }
-        EventKind::OverlayDestroyed => "OverlayDestroyed".into(),
+        EventKind::TaskDestroyed => "TaskDestroyed".into(),
         EventKind::FileWritten { path, .. } => {
             format!("FileWritten {{ {} }}", path.display())
         }

@@ -7,6 +7,7 @@
 mod inner {
     use std::collections::{HashMap, HashSet};
     use std::ffi::OsStr;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -240,7 +241,7 @@ mod inner {
             ctime,
             crtime: UNIX_EPOCH,
             kind,
-            perm: 0o755,
+            perm: (meta.permissions().mode() as u16) & 0o7777,
             nlink: if meta.is_dir() { 2 } else { 1 },
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
@@ -550,7 +551,7 @@ mod inner {
             &self,
             _req: &Request,
             ino: INodeNo,
-            _mode: Option<u32>,
+            mode: Option<u32>,
             _uid: Option<u32>,
             _gid: Option<u32>,
             size: Option<u64>,
@@ -568,6 +569,16 @@ mod inner {
                 reply.error(Errno::ENOENT);
                 return;
             };
+
+            // Handle chmod.
+            if let Some(new_mode) = mode {
+                let mut layer = self.layer.lock().unwrap();
+                if let Err(e) = layer.set_permissions(&path, new_mode) {
+                    warn!(error = %e, "setattr chmod failed");
+                    reply.error(Errno::EIO);
+                    return;
+                }
+            }
 
             // Handle truncate (size = 0 or explicit size).
             if let Some(new_size) = size {

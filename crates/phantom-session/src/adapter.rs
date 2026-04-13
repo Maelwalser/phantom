@@ -2,7 +2,7 @@
 //!
 //! Each coding CLI (Claude Code, Aider, Codex, etc.) has its own mechanism for
 //! session resumption. This module provides a trait-based abstraction so that
-//! `phantom dispatch` can capture and replay session IDs regardless of which
+//! `phantom task` can capture and replay session IDs regardless of which
 //! CLI is being used.
 
 use std::path::Path;
@@ -44,7 +44,7 @@ pub fn load_session(phantom_dir: &Path, agent_id: &AgentId) -> Option<CliSession
     serde_json::from_str(&content).ok()
 }
 
-/// Persist a CLI session to disk so it can be resumed on the next dispatch.
+/// Persist a CLI session to disk so it can be resumed on the next task invocation.
 pub fn save_session(
     phantom_dir: &Path,
     agent_id: &AgentId,

@@ -81,7 +81,7 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     if downstream.is_empty() {
         println!("No downstream changesets affected.");
     } else {
-        println!("Downstream changesets requiring re-dispatch:");
+        println!("Downstream changesets requiring re-task:");
         for cs in &downstream {
             println!("  {cs}");
         }

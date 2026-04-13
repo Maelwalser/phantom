@@ -26,11 +26,11 @@ Phantom solves this by combining four architectural ideas into a single system:
 ```
 ┌─────────────────────────────────────────────────────┐
 │                    CLI: `phantom`                    │
-│  phantom up · phantom dispatch · phantom status      │
+│  phantom init · phantom task · phantom status      │
 │  phantom materialize · phantom rollback · phantom log│
 ├─────────────────────────────────────────────────────┤
 │                   Orchestrator                       │
-│  Task queue · changeset priority · dispatch loop     │
+│  Task queue · changeset priority · task loop     │
 │  Ripple checker (notify agents of trunk changes)     │
 ├─────────────────────────────────────────────────────┤
 │                 Semantic Index                        │
@@ -67,8 +67,8 @@ phantom/
 │   │       ├── main.rs
 │   │       └── commands/       # Subcommand modules
 │   │           ├── mod.rs
-│   │           ├── up.rs       # `phantom up` — initialize phantom in a git repo
-│   │           ├── dispatch.rs # `phantom dispatch` — assign task to agent overlay
+│   │           ├── init.rs     # `phantom init` — initialize phantom in a git repo
+│   │           ├── task.rs     # `phantom task` — assign task to agent overlay
 │   │           ├── status.rs   # `phantom status` — show overlays, locks, queue
 │   │           ├── materialize.rs  # `phantom materialize` — commit overlay to trunk
 │   │           ├── rollback.rs # `phantom rollback` — drop changeset, replay
@@ -121,7 +121,7 @@ phantom/
 │       ├── Cargo.toml
 │       └── src/
 │           ├── lib.rs
-│           ├── scheduler.rs    # Task queue, priority, dispatch
+│           ├── scheduler.rs    # Task queue, priority, scheduling
 │           ├── materializer.rs # Apply changeset to trunk atomically
 │           ├── ripple.rs       # Notify agents when trunk changes under them
 │           └── git.rs          # Git operations (commit, read tree, worktree mgmt)
@@ -147,7 +147,7 @@ phantom/
 
 ### 1. Changesets (replaces branches)
 
-A changeset is the atomic unit of work in Phantom. When an agent is dispatched a task, it produces a changeset — not a branch.
+A changeset is the atomic unit of work in Phantom. When an agent is assigned a task, it produces a changeset — not a branch.
 
 ```rust
 /// crates/phantom-core/src/changeset.rs
@@ -178,7 +178,7 @@ pub enum ChangesetStatus {
     Submitted,      // Agent finished, awaiting merge check
     Merging,        // Semantic merge in progress
     Materialized,   // Successfully committed to trunk
-    Conflicted,     // Semantic conflict detected, needs re-dispatch
+    Conflicted,     // Semantic conflict detected, needs re-task
     Dropped,        // Rolled back / removed from event log
 }
 
@@ -311,10 +311,10 @@ Conflict analysis:
 |----------|-----------|
 | Both add different symbols to same file | Auto-merge (no conflict) |
 | Both add different fields to same struct | Auto-merge (disjoint field changes) |
-| Both modify same function body | **CONFLICT** — re-dispatch agent |
-| One modifies, other deletes same symbol | **CONFLICT** — re-dispatch agent |
+| Both modify same function body | **CONFLICT** — re-task agent |
+| One modifies, other deletes same symbol | **CONFLICT** — re-task agent |
 | Both add same import | Auto-deduplicate |
-| Both modify same dependency version | **CONFLICT** — re-dispatch agent |
+| Both modify same dependency version | **CONFLICT** — re-task agent |
 | Additive insertions to same collection (routes, middleware, etc.) | Auto-merge |
 
 **Fallback:** For files the semantic layer can't parse (binary files, config formats without tree-sitter grammars, etc.), fall back to git's line-based three-way merge. If that also conflicts, mark as `RawDiff` conflict.
@@ -371,14 +371,14 @@ To roll back changeset cs-0040:
 2. Identify all changesets that materialized *after* cs-0040.
 3. Reset trunk to the commit *before* cs-0040's materialization.
 4. Replay remaining changesets in order, running semantic merge for each.
-5. Any changeset that depended on cs-0040's symbols and fails merge → re-dispatch.
+5. Any changeset that depended on cs-0040's symbols and fails merge → re-task.
 
 ```
 Event log replay without cs-0040:
   cs-0039: ✅ applies clean
   cs-0041: ✅ no dependency on cs-0040
   cs-0042: ✅ no dependency on cs-0040
-  cs-0045: ❌ depends on symbol from cs-0040 → re-dispatch
+  cs-0045: ❌ depends on symbol from cs-0040 → re-task
 ```
 
 **Query capabilities:**
@@ -390,11 +390,11 @@ Event log replay without cs-0040:
 
 ```bash
 # Initialize phantom in an existing git repo
-phantom up
+phantom init
 # Creates .phantom/ directory with config, event log DB, overlay root
 
 # Dispatch a task to a new agent overlay
-phantom dispatch --agent agent-a --task "add rate limiting to API"
+phantom task --agent agent-a --task "add rate limiting to API"
 # Creates FUSE overlay at .phantom/overlays/agent-a/
 # Agent sees a normal filesystem, writes go to upper layer
 
@@ -464,7 +464,7 @@ phantom destroy --agent agent-a
 - [ ] `phantom-events`: SQLite event store (append, query, basic replay)
 - [ ] `phantom-overlay`: FUSE overlay with copy-on-write (single overlay works)
 - [ ] `phantom-orchestrator`: Git operations (commit, read tree), basic materializer (git merge)
-- [ ] `phantom-cli`: `phantom up`, `phantom dispatch`, `phantom submit`, `phantom materialize`, `phantom status`
+- [ ] `phantom-cli`: `phantom init`, `phantom task`, `phantom submit`, `phantom materialize`, `phantom status`
 - [ ] Integration test: two agents, disjoint files, both materialize cleanly
 
 ### Phase 2: Semantic Merging
@@ -479,21 +479,21 @@ phantom destroy --agent agent-a
 - [ ] Conflict reporting with clear messages ("Agent A modified `get_user`, Agent B deleted `get_user`")
 - [ ] Integration test: two agents add different functions to same file → auto-merge
 
-### Phase 3: Ripple & Re-dispatch
+### Phase 3: Ripple & Re-task
 **Goal:** Running agents are automatically notified when trunk changes affect their in-progress work.
 
 - [ ] Ripple checker: after materialization, diff new trunk against each active overlay's base
 - [ ] Identify which active agent overlays touch symbols that just changed
 - [ ] Notification mechanism (file-based signal, Unix socket, or stdout message)
-- [ ] Re-dispatch protocol: agent wrapper detects notification, re-reads affected files
+- [ ] Re-task protocol: agent wrapper detects notification, re-reads affected files
 - [ ] Integration test: Agent A materializes, Agent B's overlay auto-updates, Agent B re-runs tests
 
 ### Phase 4: Rollback & Replay
-**Goal:** Any changeset can be surgically removed and downstream work is automatically identified for re-dispatch.
+**Goal:** Any changeset can be surgically removed and downstream work is automatically identified for re-task.
 
 - [ ] `phantom rollback`: mark events as dropped, reset trunk, replay
 - [ ] Dependency graph: track which changesets depend on which symbols
-- [ ] Selective replay: skip independent changesets, re-dispatch dependent ones
+- [ ] Selective replay: skip independent changesets, re-task dependent ones
 - [ ] Integration test: materialize 5 changesets, rollback #3, verify #4 and #5 replay correctly
 
 ### Phase 5: Multi-Language & Production Polish
@@ -555,7 +555,7 @@ Traditional VCS stores snapshots (commits) and computes diffs on demand. Event s
 - **Conflict tracing:** When a conflict occurs, trace exactly which events are incompatible.
 
 ### Why not file-level locks?
-Locks are pessimistic — they prevent parallelism when there *might* be a conflict. Semantic merging is optimistic — it allows full parallelism and only flags *actual* symbol-level conflicts after the fact. Since agents are cheap to re-dispatch, optimistic concurrency wins. Locking only makes sense when re-dispatch is expensive (human developers), not when it's cheap (AI agents).
+Locks are pessimistic — they prevent parallelism when there *might* be a conflict. Semantic merging is optimistic — it allows full parallelism and only flags *actual* symbol-level conflicts after the fact. Since agents are cheap to re-task, optimistic concurrency wins. Locking only makes sense when re-task is expensive (human developers), not when it's cheap (AI agents).
 
 ## Environment Setup
 
@@ -576,7 +576,7 @@ cargo install --path crates/phantom-cli
 
 # Initialize in a git repo
 cd /path/to/your/git/repo
-phantom up
+phantom init
 ```
 
 ## Glossary
