@@ -1,5 +1,6 @@
 pub mod agent_monitor;
 pub mod background;
+pub mod changes;
 pub mod destroy;
 pub mod task;
 pub mod down;

@@ -31,11 +31,12 @@ pub struct TaskArgs {
     /// Create the overlay without launching a CLI session (for scripted agents)
     #[arg(long, short = 'b', requires = "task")]
     pub background: bool,
-    /// Automatically submit the changeset when the interactive session exits
-    #[arg(long, conflicts_with = "background")]
+    /// Automatically submit the changeset when the session exits.
+    /// Always enabled for background agents.
+    #[arg(long)]
     pub auto_submit: bool,
     /// Automatically materialize after submitting (implies --auto-submit)
-    #[arg(long, conflicts_with = "background")]
+    #[arg(long)]
     pub auto_materialize: bool,
     /// Custom command to run instead of `claude` (e.g. for testing)
     #[arg(long, conflicts_with = "background")]
@@ -145,6 +146,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             &changeset_id,
             task,
             &work_dir,
+            args.auto_materialize,
         )?;
 
         println!("Agent '{}' {verb} (background).", args.agent);
@@ -354,13 +356,14 @@ fn spawn_agent_monitor(
     changeset_id: &ChangesetId,
     task: &str,
     work_dir: &Path,
+    auto_materialize: bool,
 ) -> anyhow::Result<()> {
     let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
     let overlay_root = phantom_dir.join("overlays").join(agent);
     let monitor_pid_file = overlay_root.join("monitor.pid");
 
-    let child = std::process::Command::new(&phantom_bin)
-        .arg("_agent-monitor")
+    let mut cmd = std::process::Command::new(&phantom_bin);
+    cmd.arg("_agent-monitor")
         .arg("--agent")
         .arg(agent)
         .arg("--changeset-id")
@@ -370,7 +373,13 @@ fn spawn_agent_monitor(
         .arg("--work-dir")
         .arg(work_dir.as_os_str())
         .arg("--repo-root")
-        .arg(repo_root)
+        .arg(repo_root);
+
+    if auto_materialize {
+        cmd.arg("--auto-materialize");
+    }
+
+    let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

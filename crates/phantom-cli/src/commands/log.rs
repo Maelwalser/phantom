@@ -40,6 +40,7 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
         symbol_id: args.symbol.map(SymbolId),
         since,
         limit: Some(args.limit),
+        kind_prefixes: Vec::new(),
     };
 
     let events = events_store

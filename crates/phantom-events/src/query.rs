@@ -24,6 +24,10 @@ pub struct EventQuery {
     pub since: Option<DateTime<Utc>>,
     /// Maximum number of events to return.
     pub limit: Option<u64>,
+    /// Filter by event kind — matches events whose JSON `kind` column starts
+    /// with any of these prefixes (e.g. `"ChangesetSubmitted"`,
+    /// `"ChangesetMaterialized"`). Empty means no kind filter.
+    pub kind_prefixes: Vec<String>,
 }
 
 impl SqliteEventStore {
@@ -53,6 +57,18 @@ impl SqliteEventStore {
         if let Some(ref since) = q.since {
             param_values.push(since.to_rfc3339());
             conditions.push(format!("timestamp >= ${}", param_values.len()));
+        }
+
+        if !q.kind_prefixes.is_empty() {
+            let or_parts: Vec<String> = q
+                .kind_prefixes
+                .iter()
+                .map(|prefix| {
+                    param_values.push(format!("{{\"{prefix}\""));
+                    format!("kind LIKE ${} || '%'", param_values.len())
+                })
+                .collect();
+            conditions.push(format!("({})", or_parts.join(" OR ")));
         }
 
         let where_clause = conditions.join(" AND ");

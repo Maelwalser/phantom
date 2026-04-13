@@ -205,6 +205,8 @@ fn full_workflow_smoke_test() {
 
 #[test]
 fn phantom_task_background_conflicts_with_auto_submit() {
+    // --auto-submit is now allowed with --background (background agents always
+    // auto-submit, so the flag is accepted but redundant).
     let dir = init_git_repo();
     phantom(dir.path()).arg("init").assert().success();
 
@@ -218,7 +220,7 @@ fn phantom_task_background_conflicts_with_auto_submit() {
             "--auto-submit",
         ])
         .assert()
-        .failure();
+        .success();
 }
 
 #[test]

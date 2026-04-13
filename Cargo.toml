@@ -49,3 +49,4 @@ tree-sitter-go = "0.25"
 diffy = "0.4"
 nix = { version = "0.30", features = ["term", "signal"] }
 regex = "1"
+dialoguer = "0.11"

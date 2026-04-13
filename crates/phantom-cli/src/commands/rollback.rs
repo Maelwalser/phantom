@@ -1,9 +1,18 @@
 //! `phantom rollback` — drop a changeset and revert its changes from trunk.
+//!
+//! When invoked without a changeset ID, presents an interactive menu of
+//! materialized changesets (newest first) and rolls back all changesets
+//! after the selected checkpoint.
 
 use anyhow::Context;
+use chrono::{DateTime, Utc};
+use dialoguer::Select;
+use phantom_core::changeset::Changeset;
 use phantom_core::event::EventKind;
 use phantom_core::id::{ChangesetId, GitOid};
 use phantom_core::traits::EventStore;
+use phantom_events::projection::Projection;
+use phantom_events::store::SqliteEventStore;
 use phantom_events::ReplayEngine;
 use phantom_orchestrator::git::GitOps;
 
@@ -11,21 +20,30 @@ use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
 pub struct RollbackArgs {
-    /// Changeset ID to roll back (e.g. "cs-0040")
-    pub changeset: String,
+    /// Changeset ID to roll back (e.g. "cs-0040"). Omit for interactive selection.
+    pub changeset: Option<String>,
 }
 
 pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
 
-    let changeset_id = ChangesetId(args.changeset.clone());
+    match args.changeset {
+        Some(id) => rollback_single(&ctx, &events, &ChangesetId(id)).await?,
+        None => run_interactive(&ctx, &events).await?,
+    }
 
-    // Find the commit OID from this changeset's materialization
-    let cs_events = events
-        .query_by_changeset(&changeset_id)
-        .await
-        ?;
+    Ok(())
+}
+
+/// Roll back a single changeset: mark events as dropped, revert the git commit,
+/// and report downstream changesets that may need re-dispatch.
+async fn rollback_single(
+    ctx: &PhantomContext,
+    events: &SqliteEventStore,
+    changeset_id: &ChangesetId,
+) -> anyhow::Result<()> {
+    let cs_events = events.query_by_changeset(changeset_id).await?;
 
     let materialized_commit: Option<GitOid> = cs_events.iter().find_map(|e| {
         if let EventKind::ChangesetMaterialized { new_commit } = &e.kind {
@@ -35,27 +53,19 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
         }
     });
 
-    // Mark events as dropped
-    let dropped = events
-        .mark_dropped(&changeset_id)
-        .await
-        ?;
+    let dropped = events.mark_dropped(changeset_id).await?;
 
-    println!(
-        "Dropped {dropped} event(s) for changeset {}.",
-        args.changeset
-    );
+    println!("Dropped {dropped} event(s) for changeset {changeset_id}.");
 
     match materialized_commit {
         None => {
             println!("Changeset was not materialized — no git changes to revert.");
         }
         Some(commit_oid) => {
-            // Actually revert the git commit
             let git =
                 GitOps::open(&ctx.repo_root).context("failed to open git repo for rollback")?;
 
-            let message = format!("phantom: rollback {}", args.changeset);
+            let message = format!("phantom: rollback {changeset_id}");
             match git.revert_commit_oid(&commit_oid, &message) {
                 Ok(revert_oid) => {
                     let short = revert_oid.to_hex();
@@ -71,12 +81,8 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
         }
     }
 
-    // Find downstream changesets that were materialized after this one
-    let replay = ReplayEngine::new(&events);
-    let downstream = replay
-        .changesets_after(&changeset_id)
-        .await
-        ?;
+    let replay = ReplayEngine::new(events);
+    let downstream = replay.changesets_after(changeset_id).await?;
 
     if downstream.is_empty() {
         println!("No downstream changesets affected.");
@@ -88,4 +94,87 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Present an interactive menu of materialized changesets and roll back
+/// everything after the selected checkpoint.
+async fn run_interactive(
+    ctx: &PhantomContext,
+    events: &SqliteEventStore,
+) -> anyhow::Result<()> {
+    let replay = ReplayEngine::new(events);
+    let materialized = replay.materialized_changesets().await?;
+
+    if materialized.is_empty() {
+        println!("No materialized changesets to roll back.");
+        return Ok(());
+    }
+
+    // Build projection for display metadata (task, agent, timestamp).
+    let all_events = events.query_all().await?;
+    let projection = Projection::from_events(&all_events);
+
+    // Reverse to newest-first for the menu.
+    let materialized_rev: Vec<&ChangesetId> = materialized.iter().rev().collect();
+
+    let display_items: Vec<String> = materialized_rev
+        .iter()
+        .map(|id| match projection.changeset(id) {
+            Some(cs) => format_menu_item(id, cs),
+            None => format!("{}", id),
+        })
+        .collect();
+
+    let selection = Select::new()
+        .with_prompt("Select a checkpoint to restore (all newer changesets will be rolled back)")
+        .items(&display_items)
+        .default(0)
+        .interact_opt()?;
+
+    let Some(idx) = selection else {
+        println!("Cancelled.");
+        return Ok(());
+    };
+
+    if idx == 0 {
+        println!("This is already the latest state. Nothing to roll back.");
+        return Ok(());
+    }
+
+    // Roll back changesets at indices 0..idx (newest first).
+    let to_rollback = &materialized_rev[..idx];
+    println!("Rolling back {} changeset(s)...\n", to_rollback.len());
+
+    for cs_id in to_rollback {
+        rollback_single(ctx, events, cs_id).await?;
+        println!();
+    }
+
+    println!("Rolled back to checkpoint: {}", materialized_rev[idx]);
+
+    Ok(())
+}
+
+fn format_menu_item(id: &ChangesetId, cs: &Changeset) -> String {
+    let task_display = if cs.task.len() > 50 {
+        format!("{}...", &cs.task[..47])
+    } else {
+        cs.task.clone()
+    };
+    let age = format_relative_time(cs.created_at);
+    format!(
+        "{:<10}  {:<14}  {:50}  ({})",
+        id.0, cs.agent_id.0, task_display, age
+    )
+}
+
+fn format_relative_time(ts: DateTime<Utc>) -> String {
+    let elapsed = Utc::now() - ts;
+    if elapsed.num_days() > 0 {
+        format!("{}d ago", elapsed.num_days())
+    } else if elapsed.num_hours() > 0 {
+        format!("{}h ago", elapsed.num_hours())
+    } else {
+        format!("{}m ago", elapsed.num_minutes().max(1))
+    }
 }

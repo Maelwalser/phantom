@@ -35,6 +35,9 @@ pub struct AgentMonitorArgs {
     /// Repository root
     #[arg(long)]
     pub repo_root: String,
+    /// Automatically materialize after submitting
+    #[arg(long)]
+    pub auto_materialize: bool,
 }
 
 /// Completion status written to `.phantom/overlays/<agent>/agent.status`.
@@ -103,8 +106,14 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         .await
         ?;
 
-    // Run post-completion flow.
-    let result = run_post_completion(&agent_id, &changeset_id, exit_code).await;
+    // Run post-completion flow: always auto-submit on success, optionally auto-materialize.
+    let result = run_post_completion(
+        &agent_id,
+        &changeset_id,
+        exit_code,
+        args.auto_materialize,
+    )
+    .await;
 
     // Write status file regardless of success/failure.
     let status = match &result {
@@ -189,16 +198,20 @@ fn spawn_and_wait_claude(
     Ok((claude_pid, exit_code))
 }
 
-/// Run the post-completion flow: clean up and record completion.
-/// Returns Ok(true) if the agent exited successfully, Ok(false) otherwise.
+/// Run the post-completion flow: record completion, then auto-submit (and
+/// optionally auto-materialize) on success.
+///
+/// Returns `Ok(true)` if the changeset was materialized, `Ok(false)` if it was
+/// only submitted (or the agent had no changes).
 async fn run_post_completion(
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
     exit_code: Option<i32>,
+    auto_materialize: bool,
 ) -> anyhow::Result<bool> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
-    let overlays = ctx.open_overlays();
+    let mut overlays = ctx.open_overlays_restored()?;
 
     // Clean up the context file.
     let upper_dir = overlays
@@ -209,8 +222,7 @@ async fn run_post_completion(
 
     let success = exit_code == Some(0);
 
-    // Record completion -- the user must explicitly `phantom submit` and
-    // `phantom materialize` when they are ready.
+    // Record completion event.
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
@@ -235,5 +247,18 @@ async fn run_post_completion(
         );
     }
 
-    Ok(success)
+    // Background agents always auto-submit on success.
+    phantom_session::post_session::post_session_flow(
+        &ctx.phantom_dir,
+        &ctx.repo_root,
+        &events,
+        &mut overlays,
+        agent_id,
+        changeset_id,
+        true, // auto_submit — always true for background agents
+        auto_materialize,
+    )
+    .await?;
+
+    Ok(auto_materialize)
 }

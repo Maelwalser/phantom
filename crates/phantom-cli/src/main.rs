@@ -57,6 +57,9 @@ enum Commands {
     /// Query the event log
     #[command(visible_alias = "l")]
     Log(commands::log::LogArgs),
+    /// Show recent submits and materializations
+    #[command(visible_alias = "c")]
+    Changes(commands::changes::ChangesArgs),
     /// Destroy an agent's overlay
     #[command(visible_alias = "rm")]
     Destroy(commands::destroy::DestroyArgs),
@@ -96,6 +99,7 @@ async fn main() {
         Some(Commands::Materialize(args)) => commands::materialize::run(args).await,
         Some(Commands::Rollback(args)) => commands::rollback::run(args).await,
         Some(Commands::Log(args)) => commands::log::run(args).await,
+        Some(Commands::Changes(args)) => commands::changes::run(args).await,
         Some(Commands::Destroy(args)) => commands::destroy::run(args).await,
         Some(Commands::Background(args)) => commands::background::run(args).await,
         Some(Commands::Down(args)) => commands::down::run(args).await,
