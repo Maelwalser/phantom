@@ -45,7 +45,6 @@ fn phantom_help_lists_all_subcommands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("init"))
-        .stdout(predicate::str::contains("task"))
         .stdout(predicate::str::contains("submit"))
         .stdout(predicate::str::contains("status"))
         .stdout(predicate::str::contains("materialize"))
@@ -104,7 +103,6 @@ fn phantom_task_background_and_status() {
 
     phantom(dir.path())
         .args([
-            "task",
             "agent-a",
             "--background",
             "--task",
@@ -131,7 +129,7 @@ fn phantom_task_interactive_with_echo() {
 
     // Use `echo` as a stand-in for claude — it exits immediately
     phantom(dir.path())
-        .args(["task", "agent-b", "--command", "echo"])
+        .args(["agent-b", "--command", "echo"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Agent 'agent-b' tasked"))
@@ -159,7 +157,6 @@ fn full_workflow_smoke_test() {
     // 2. Dispatch in background mode
     phantom(dir.path())
         .args([
-            "task",
             "agent-a",
             "--background",
             "--task",
@@ -212,7 +209,6 @@ fn phantom_task_background_conflicts_with_auto_submit() {
 
     phantom(dir.path())
         .args([
-            "task",
             "agent-a",
             "--background",
             "--task",
@@ -230,7 +226,7 @@ fn phantom_task_background_requires_task() {
 
     // --background without --task should fail
     phantom(dir.path())
-        .args(["task", "agent-a", "--background"])
+        .args(["agent-a", "--background"])
         .assert()
         .failure();
 }
@@ -242,7 +238,7 @@ fn phantom_task_interactive_auto_submit_with_no_changes() {
 
     // echo exits immediately with no changes — auto-submit should report "no changes"
     phantom(dir.path())
-        .args(["task", "agent-c", "--command", "echo", "--auto-submit"])
+        .args(["agent-c", "--command", "echo", "--auto-submit"])
         .assert()
         .success()
         .stdout(predicate::str::contains("No changes detected"));

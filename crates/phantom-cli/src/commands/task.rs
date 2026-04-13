@@ -1,4 +1,4 @@
-//! `phantom task` — create an agent overlay and launch a Claude Code session.
+//! `phantom <agent>` — create an agent overlay and launch a Claude Code session.
 //!
 //! By default, tasking opens an interactive Claude Code CLI inside the
 //! overlay's FUSE mount point, which provides a merged view of trunk + agent
@@ -190,7 +190,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             println!("  FUSE:      mounted");
         }
         println!();
-        println!("Run `phantom t {}` again to check progress.", args.agent);
+        println!("Run `phantom {}` again to check progress.", args.agent);
     } else {
         // If a background agent is already running or has completed for this
         // overlay, show its status instead of opening an interactive session.
@@ -205,14 +205,18 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             return Ok(());
         }
 
-        println!("Agent '{}' {verb}.", args.agent);
-        println!("  Changeset: {changeset_id}");
-        println!("  Overlay:   {}", work_dir.display());
-        println!("  Base:      {base_short}");
-        if fuse_mounted {
-            println!("  FUSE:      mounted");
+        if is_new {
+            println!("Agent '{}' tasked.", args.agent);
+            println!("  Changeset: {changeset_id}");
+            println!("  Overlay:   {}", work_dir.display());
+            println!("  Base:      {base_short}");
+            if fuse_mounted {
+                println!("  FUSE:      mounted");
+            }
+            println!();
+        } else {
+            println!("Task '{}' resumed.", args.agent);
         }
-        println!();
         super::interactive::run_interactive_session(
             &ctx,
             &agent_id,
@@ -377,7 +381,7 @@ async fn check_changeset_resumable(events: &SqliteEventStore, cs_id: &ChangesetI
             EventKind::TaskDestroyed => {
                 anyhow::bail!(
                     "task for changeset {cs_id} has been destroyed — \
-                     use `phantom task <new-agent>` to start fresh"
+                     use `phantom <new-agent>` to start fresh"
                 );
             }
             EventKind::ChangesetMaterialized { .. } => {

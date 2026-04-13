@@ -7,7 +7,8 @@
 mod inner {
     use std::collections::{HashMap, HashSet};
     use std::ffi::OsStr;
-    use std::os::unix::fs::PermissionsExt;
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::{FileExt, PermissionsExt};
     use std::path::PathBuf;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +23,15 @@ mod inner {
     use tracing::{debug, warn};
 
     use crate::layer::OverlayLayer;
+
+    /// An open file descriptor tracked by the FUSE filesystem.
+    ///
+    /// Created on `open()` or `create()`, used for `pread`/`pwrite` during
+    /// `read()`/`write()`, and dropped on `release()`.
+    struct OpenFile {
+        file: std::fs::File,
+        writable: bool,
+    }
 
     /// TTL for attribute and entry caching (1 second).
     const TTL: Duration = Duration::from_secs(1);
@@ -203,6 +213,11 @@ mod inner {
         layer: Mutex<OverlayLayer>,
         agent_id: AgentId,
         inodes: InodeTable,
+        /// Counter for allocating unique file handles.
+        next_fh: AtomicU64,
+        /// Open file descriptor table. Keyed by the file handle returned to
+        /// the kernel via `open()` / `create()`.
+        open_files: Mutex<HashMap<u64, OpenFile>>,
     }
 
     impl PhantomFs {
@@ -212,6 +227,8 @@ mod inner {
                 layer: Mutex::new(layer),
                 agent_id,
                 inodes: InodeTable::new(),
+                next_fh: AtomicU64::new(1),
+                open_files: Mutex::new(HashMap::new()),
             }
         }
 
@@ -390,50 +407,101 @@ mod inner {
             reply.ok();
         }
 
-        fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
-            if self.inodes.get_path(ino.0).is_some() {
-                reply.opened(FileHandle(0), FopenFlags::empty());
-            } else {
+        fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+            let Some(path) = self.inodes.get_path(ino.0) else {
                 reply.error(Errno::ENOENT);
+                return;
+            };
+
+            let raw = flags.0;
+            let writable = (raw & libc::O_WRONLY != 0) || (raw & libc::O_RDWR != 0);
+            let truncate = raw & libc::O_TRUNC != 0;
+
+            let real_path = {
+                let mut layer = self.layer.lock().unwrap();
+                if writable {
+                    match layer.ensure_upper_copy(&path) {
+                        Ok(p) => p,
+                        Err(_) => {
+                            reply.error(Errno::ENOENT);
+                            return;
+                        }
+                    }
+                } else {
+                    match layer.resolve_path(&path) {
+                        Ok(p) => p,
+                        Err(_) => {
+                            reply.error(Errno::ENOENT);
+                            return;
+                        }
+                    }
+                }
+            };
+
+            let file = if writable {
+                OpenOptions::new().read(true).write(true).open(&real_path)
+            } else {
+                OpenOptions::new().read(true).open(&real_path)
+            };
+
+            let file = match file {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!(error = %e, "open: failed to open backing file");
+                    reply.error(Errno::EIO);
+                    return;
+                }
+            };
+
+            if truncate {
+                if let Err(e) = file.set_len(0) {
+                    warn!(error = %e, "open: truncate failed");
+                    reply.error(Errno::EIO);
+                    return;
+                }
             }
+
+            let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+            self.open_files
+                .lock()
+                .unwrap()
+                .insert(fh, OpenFile { file, writable });
+            reply.opened(FileHandle(fh), FopenFlags::empty());
         }
 
         fn read(
             &self,
             _req: &Request,
-            ino: INodeNo,
-            _fh: FileHandle,
+            _ino: INodeNo,
+            fh: FileHandle,
             offset: u64,
             size: u32,
             _flags: OpenFlags,
             _lock_owner: Option<LockOwner>,
             reply: ReplyData,
         ) {
-            let Some(path) = self.inodes.get_path(ino.0) else {
-                reply.error(Errno::ENOENT);
+            let open_files = self.open_files.lock().unwrap();
+            let Some(open_file) = open_files.get(&fh.0) else {
+                reply.error(Errno::EBADF);
                 return;
             };
 
-            let layer = self.layer.lock().unwrap();
-            match layer.read_file(&path) {
-                Ok(data) => {
-                    let start = offset as usize;
-                    if start >= data.len() {
-                        reply.data(&[]);
-                    } else {
-                        let end = (start + size as usize).min(data.len());
-                        reply.data(&data[start..end]);
-                    }
+            let mut buf = vec![0u8; size as usize];
+            match open_file.file.read_at(&mut buf, offset) {
+                Ok(0) => reply.data(&[]),
+                Ok(n) => reply.data(&buf[..n]),
+                Err(e) => {
+                    warn!(error = %e, "read: pread failed");
+                    reply.error(Errno::EIO);
                 }
-                Err(_) => reply.error(Errno::ENOENT),
             }
         }
 
         fn write(
             &self,
             _req: &Request,
-            ino: INodeNo,
-            _fh: FileHandle,
+            _ino: INodeNo,
+            fh: FileHandle,
             offset: u64,
             data: &[u8],
             _write_flags: WriteFlags,
@@ -441,34 +509,33 @@ mod inner {
             _lock_owner: Option<LockOwner>,
             reply: ReplyWrite,
         ) {
-            let Some(path) = self.inodes.get_path(ino.0) else {
-                reply.error(Errno::ENOENT);
+            let open_files = self.open_files.lock().unwrap();
+            let Some(open_file) = open_files.get(&fh.0) else {
+                reply.error(Errno::EBADF);
                 return;
             };
 
-            let mut layer = self.layer.lock().unwrap();
-
-            // Read existing content (may not exist yet).
-            let mut content = layer.read_file(&path).unwrap_or_default();
-
-            // Splice in new data at offset.
-            let start = offset as usize;
-            if start > content.len() {
-                content.resize(start, 0);
+            if !open_file.writable {
+                reply.error(Errno::EBADF);
+                return;
             }
-            let end = start + data.len();
-            if end > content.len() {
-                content.resize(end, 0);
-            }
-            content[start..end].copy_from_slice(data);
 
-            match layer.write_file(&path, &content) {
-                Ok(()) => {
-                    layer.remove_whiteout(&path);
-                    reply.written(data.len() as u32);
+            // Extend file if writing past current end (creates a sparse hole).
+            let write_end = offset + data.len() as u64;
+            if let Ok(meta) = open_file.file.metadata() {
+                if write_end > meta.len() {
+                    if let Err(e) = open_file.file.set_len(write_end) {
+                        warn!(error = %e, "write: set_len failed");
+                        reply.error(Errno::EIO);
+                        return;
+                    }
                 }
+            }
+
+            match open_file.file.write_at(data, offset) {
+                Ok(n) => reply.written(n as u32),
                 Err(e) => {
-                    warn!(error = %e, "write failed");
+                    warn!(error = %e, "write: pwrite failed");
                     reply.error(Errno::EIO);
                 }
             }
@@ -495,6 +562,33 @@ mod inner {
             match layer.write_file(&child_path, &[]) {
                 Ok(()) => {
                     layer.remove_whiteout(&child_path);
+
+                    // Open a real file handle so subsequent writes use pwrite.
+                    let real_path = match layer.resolve_path(&child_path) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!(error = %e, "create: resolve after write failed");
+                            reply.error(Errno::EIO);
+                            return;
+                        }
+                    };
+                    drop(layer);
+
+                    let file = match OpenOptions::new().read(true).write(true).open(&real_path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            warn!(error = %e, "create: open backing file failed");
+                            reply.error(Errno::EIO);
+                            return;
+                        }
+                    };
+
+                    let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+                    self.open_files
+                        .lock()
+                        .unwrap()
+                        .insert(fh, OpenFile { file, writable: true });
+
                     let ino = self.inodes.get_or_create_inode(&child_path);
                     let now = SystemTime::now();
                     let attr = FileAttr {
@@ -518,7 +612,7 @@ mod inner {
                         &TTL,
                         &attr,
                         Generation(0),
-                        FileHandle(0),
+                        FileHandle(fh),
                         FopenFlags::empty(),
                     );
                 }
@@ -738,6 +832,20 @@ mod inner {
             } else {
                 reply.error(Errno::ENOENT);
             }
+        }
+
+        fn release(
+            &self,
+            _req: &Request,
+            _ino: INodeNo,
+            fh: FileHandle,
+            _flags: OpenFlags,
+            _lock_owner: Option<LockOwner>,
+            _flush: bool,
+            reply: ReplyEmpty,
+        ) {
+            self.open_files.lock().unwrap().remove(&fh.0);
+            reply.ok();
         }
     }
 }

@@ -117,7 +117,7 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     all_agents.dedup();
 
     if all_agents.is_empty() {
-        writeln!(out, "\x1b[2m  No agents found. Use `phantom task --background` to start one.\x1b[0m")?;
+        writeln!(out, "\x1b[2m  No agents found. Use `phantom <agent> --background` to start one.\x1b[0m")?;
         return Ok(());
     }
 

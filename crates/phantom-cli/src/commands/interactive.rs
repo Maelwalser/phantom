@@ -1,4 +1,4 @@
-//! Interactive session launcher for `phantom task`.
+//! Interactive session launcher for `phantom <agent>`.
 //!
 //! Thin wrapper around `phantom_session` that integrates with the CLI's
 //! `PhantomContext` and `TaskArgs`.

@@ -1,3 +1,5 @@
+use std::ffi::OsString;
+
 use clap::{CommandFactory, Parser};
 use tracing::error;
 
@@ -24,6 +26,14 @@ fn print_banner() {
     );
 }
 
+/// Create or resume an agent task overlay.
+#[derive(Parser)]
+#[command(name = "phantom", about = "Create or resume an agent task overlay")]
+struct TaskWrapper {
+    #[command(flatten)]
+    args: commands::task::TaskArgs,
+}
+
 #[derive(Parser)]
 #[command(
     name = "phantom",
@@ -39,9 +49,6 @@ struct Cli {
 enum Commands {
     /// Initialize Phantom in an existing git repository
     Init,
-    /// Assign a task to a new agent overlay
-    #[command(visible_alias = "t")]
-    Task(commands::task::TaskArgs),
     /// Submit an agent's work as a changeset
     #[command(visible_alias = "sub")]
     Submit(commands::submit::SubmitArgs),
@@ -76,6 +83,10 @@ enum Commands {
     /// Internal: monitor a background agent process (not for direct use)
     #[command(name = "_agent-monitor", hide = true)]
     AgentMonitor(commands::agent_monitor::AgentMonitorArgs),
+
+    /// Catch-all: treat unrecognized subcommands as agent names for task creation
+    #[command(external_subcommand)]
+    ExternalTask(Vec<OsString>),
 }
 
 #[tokio::main]
@@ -93,7 +104,6 @@ async fn main() {
             Ok(())
         }
         Some(Commands::Init) => commands::init::run().await,
-        Some(Commands::Task(args)) => commands::task::run(args).await,
         Some(Commands::Submit(args)) => commands::submit::run(args).await,
         Some(Commands::Status(args)) => commands::status::run(args).await,
         Some(Commands::Materialize(args)) => commands::materialize::run(args).await,
@@ -105,6 +115,19 @@ async fn main() {
         Some(Commands::Down(args)) => commands::down::run(args).await,
         Some(Commands::FuseMount(args)) => commands::fuse_mount::run(args),
         Some(Commands::AgentMonitor(args)) => commands::agent_monitor::run(args).await,
+        Some(Commands::ExternalTask(ext_args)) => {
+            // Parse external subcommand args as TaskArgs.
+            // ext_args[0] is the agent name, rest are flags like --background.
+            let mut argv: Vec<OsString> = vec!["phantom".into()];
+            argv.extend(ext_args);
+            match TaskWrapper::try_parse_from(argv) {
+                Ok(w) => commands::task::run(w.args).await,
+                Err(e) => {
+                    // Let clap handle --help and --version display cleanly.
+                    e.exit();
+                }
+            }
+        }
     };
 
     if let Err(e) = result {

@@ -2,7 +2,7 @@
 //!
 //! Each coding CLI (Claude Code, Aider, Codex, etc.) has its own mechanism for
 //! session resumption. This module provides a trait-based abstraction so that
-//! `phantom task` can capture and replay session IDs regardless of which
+//! `phantom <agent>` can capture and replay session IDs regardless of which
 //! CLI is being used.
 
 use std::path::Path;

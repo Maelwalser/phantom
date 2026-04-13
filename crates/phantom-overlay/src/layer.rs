@@ -482,6 +482,101 @@ impl OverlayLayer {
         }
     }
 
+    /// Resolve a relative path to its absolute on-disk location.
+    ///
+    /// Performs the same hidden/passthrough/whiteout/upper-vs-lower resolution
+    /// as [`read_file`](Self::read_file), but returns the filesystem path
+    /// instead of reading content. Used by the FUSE layer to open real file
+    /// descriptors.
+    pub fn resolve_path(&self, rel_path: &Path) -> Result<PathBuf, OverlayError> {
+        if is_hidden(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        if is_passthrough(rel_path) {
+            let lower_path = self.lower.join(rel_path);
+            if lower_path.exists() {
+                return Ok(lower_path);
+            }
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        if self.whiteouts.contains(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        let upper_path = self.upper.join(rel_path);
+        if upper_path.exists() {
+            return Ok(upper_path);
+        }
+
+        let lower_path = self.lower.join(rel_path);
+        if lower_path.exists() {
+            return Ok(lower_path);
+        }
+
+        Err(OverlayError::PathNotFound(rel_path.to_path_buf()))
+    }
+
+    /// Ensure a file exists in the upper layer, performing a streaming COW copy
+    /// from the lower layer if necessary.
+    ///
+    /// Returns the absolute path to the file in the upper layer. For passthrough
+    /// paths, returns the lower-layer path directly (writes go there).
+    ///
+    /// Used by the FUSE layer on writable `open()` so that subsequent
+    /// `pwrite(2)` calls can operate directly on the upper-layer file.
+    pub fn ensure_upper_copy(&mut self, rel_path: &Path) -> Result<PathBuf, OverlayError> {
+        if is_hidden(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        if is_passthrough(rel_path) {
+            let lower_path = self.lower.join(rel_path);
+            if lower_path.exists() {
+                return Ok(lower_path);
+            }
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        let upper_path = self.upper.join(rel_path);
+
+        if upper_path.exists() {
+            // Already in the upper layer.
+            if self.whiteouts.remove(rel_path) {
+                let _ = self.persist_whiteouts();
+            }
+            return Ok(upper_path);
+        }
+
+        // Not in upper — check lower for COW copy.
+        let lower_path = self.lower.join(rel_path);
+        if !lower_path.exists() && !self.whiteouts.contains(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        if let Some(parent) = upper_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if lower_path.exists() {
+            // Streaming COW copy — never loads entire file into memory.
+            let mut src = fs::File::open(&lower_path)?;
+            let mut dst = fs::File::create(&upper_path)?;
+            std::io::copy(&mut src, &mut dst)?;
+            trace!(path = %rel_path.display(), "COW copy to upper layer");
+        } else {
+            // Whiteout'd file being re-opened for write — create empty.
+            fs::File::create(&upper_path)?;
+        }
+
+        if self.whiteouts.remove(rel_path) {
+            let _ = self.persist_whiteouts();
+        }
+
+        Ok(upper_path)
+    }
+
     /// Return a reference to the upper directory path.
     #[must_use]
     pub fn upper_dir(&self) -> &Path {
