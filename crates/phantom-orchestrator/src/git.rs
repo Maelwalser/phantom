@@ -138,7 +138,15 @@ impl GitOps {
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(&src, &dst)?;
+
+            let src_meta = std::fs::symlink_metadata(&src)?;
+            if src_meta.is_symlink() {
+                let target = std::fs::read_link(&src)?;
+                let _ = std::fs::remove_file(&dst);
+                std::os::unix::fs::symlink(&target, &dst)?;
+            } else {
+                std::fs::copy(&src, &dst)?;
+            }
             debug!(path = %rel_path.display(), "copied overlay file to trunk");
         }
 
@@ -366,6 +374,15 @@ fn collect_files_inner(
             collect_files_inner(&entry.path(), &rel, out)?;
         } else if ft.is_file() {
             out.push(rel);
+        } else if ft.is_symlink() {
+            match entry.path().metadata() {
+                Ok(meta) if meta.is_dir() => {
+                    collect_files_inner(&entry.path(), &rel, out)?;
+                }
+                _ => {
+                    out.push(rel);
+                }
+            }
         }
     }
     Ok(())
