@@ -27,6 +27,7 @@ pub async fn run() -> anyhow::Result<()> {
         .context("failed to create .phantom/overlays/")?;
 
     SqliteEventStore::open(&phantom_dir.join("events.db"))
+        .await
         .context("failed to create event store")?;
 
     let config = format!(

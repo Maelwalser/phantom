@@ -52,7 +52,7 @@ async fn run_loop(stdout: &mut io::Stdout, interval: Duration) -> anyhow::Result
         }
 
         let mut buf = Vec::new();
-        if let Err(e) = render_frame(&mut buf) {
+        if let Err(e) = render_frame(&mut buf).await {
             writeln!(buf, "\x1b[31mError: {e:#}\x1b[0m")?;
         }
 
@@ -87,9 +87,9 @@ async fn run_loop(stdout: &mut io::Stdout, interval: Duration) -> anyhow::Result
     }
 }
 
-fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
-    let ctx = PhantomContext::load()?;
-    let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
+    let ctx = PhantomContext::load().await?;
+    let all_events = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let projection = Projection::from_events(&all_events);
 
     let head = ctx.git.head_oid().map_err(|e| anyhow::anyhow!("{e}"))?;

@@ -22,7 +22,7 @@ pub struct LogArgs {
 }
 
 pub async fn run(args: LogArgs) -> anyhow::Result<()> {
-    let ctx = PhantomContext::load()?;
+    let ctx = PhantomContext::load().await?;
 
     let since = args.since.as_deref().map(parse_duration_ago).transpose()?;
 
@@ -44,6 +44,7 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
     let events = ctx
         .events
         .query(&query)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if events.is_empty() {

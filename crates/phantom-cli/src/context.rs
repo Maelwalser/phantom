@@ -26,7 +26,7 @@ pub struct PhantomContext {
 
 impl PhantomContext {
     /// Find `.phantom/` by walking up from the current directory. Open all subsystems.
-    pub fn load() -> anyhow::Result<Self> {
+    pub async fn load() -> anyhow::Result<Self> {
         let cwd = std::env::current_dir().context("failed to determine current directory")?;
         let phantom_dir = find_phantom_dir(&cwd)?;
         let repo_root = phantom_dir
@@ -37,7 +37,9 @@ impl PhantomContext {
         let git = GitOps::open(&repo_root).context("failed to open git repository")?;
 
         let events_path = phantom_dir.join("events.db");
-        let events = SqliteEventStore::open(&events_path).context("failed to open event store")?;
+        let events = SqliteEventStore::open(&events_path)
+            .await
+            .context("failed to open event store")?;
 
         let mut overlays = OverlayManager::new(phantom_dir.clone());
         let semantic = SemanticMerger::new();

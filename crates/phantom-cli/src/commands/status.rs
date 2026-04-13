@@ -46,20 +46,20 @@ pub enum AgentRunState {
 }
 
 pub async fn run(args: StatusArgs) -> anyhow::Result<()> {
-    let ctx = PhantomContext::load()?;
+    let ctx = PhantomContext::load().await?;
 
     if let Some(agent_name) = &args.agent {
-        run_detailed(&ctx, agent_name)
+        run_detailed(&ctx, agent_name).await
     } else {
-        run_summary(&ctx)
+        run_summary(&ctx).await
     }
 }
 
 /// Summary view: show all active agents and pending changesets.
-fn run_summary(ctx: &PhantomContext) -> anyhow::Result<()> {
+async fn run_summary(ctx: &PhantomContext) -> anyhow::Result<()> {
     let head = ctx.git.head_oid().map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let all_events = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let projection = Projection::from_events(&all_events);
 
     // Header
@@ -130,10 +130,10 @@ fn run_summary(ctx: &PhantomContext) -> anyhow::Result<()> {
 }
 
 /// Detailed view for a specific agent.
-fn run_detailed(ctx: &PhantomContext, agent_name: &str) -> anyhow::Result<()> {
+async fn run_detailed(ctx: &PhantomContext, agent_name: &str) -> anyhow::Result<()> {
     let agent_id = AgentId(agent_name.to_string());
 
-    let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let all_events = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let projection = Projection::from_events(&all_events);
 
     // Find the changeset for this agent.

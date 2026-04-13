@@ -7,7 +7,8 @@ description = "SQLite-backed append-only event store for Phantom"
 
 [dependencies]
 phantom-core = { workspace = true }
-rusqlite = { workspace = true }
+sqlx = { workspace = true }
+async-trait = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
@@ -16,3 +17,4 @@ serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }

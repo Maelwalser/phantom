@@ -19,22 +19,23 @@ use crate::symbol::SymbolEntry;
 
 /// Append-only event store interface.
 ///
-/// Implemented by `phantom-events` (backed by SQLite in WAL mode).
+/// Implemented by `phantom-events` (backed by SQLite in WAL mode via sqlx).
+#[async_trait::async_trait]
 pub trait EventStore: Send + Sync {
     /// Append a new event and return its auto-assigned ID.
-    fn append(&self, event: Event) -> Result<EventId, CoreError>;
+    async fn append(&self, event: Event) -> Result<EventId, CoreError>;
 
     /// Return all events belonging to the given changeset.
-    fn query_by_changeset(&self, id: &ChangesetId) -> Result<Vec<Event>, CoreError>;
+    async fn query_by_changeset(&self, id: &ChangesetId) -> Result<Vec<Event>, CoreError>;
 
     /// Return all events produced by the given agent.
-    fn query_by_agent(&self, id: &AgentId) -> Result<Vec<Event>, CoreError>;
+    async fn query_by_agent(&self, id: &AgentId) -> Result<Vec<Event>, CoreError>;
 
     /// Return every event in insertion order.
-    fn query_all(&self) -> Result<Vec<Event>, CoreError>;
+    async fn query_all(&self) -> Result<Vec<Event>, CoreError>;
 
     /// Return events whose timestamp is at or after `since`.
-    fn query_since(&self, since: DateTime<Utc>) -> Result<Vec<Event>, CoreError>;
+    async fn query_since(&self, since: DateTime<Utc>) -> Result<Vec<Event>, CoreError>;
 }
 
 /// Live symbol index over the current trunk state.

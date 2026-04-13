@@ -4,13 +4,10 @@
 //! for agent, changeset, symbol, timestamp, and result limit.
 
 use chrono::{DateTime, Utc};
-use rusqlite::params_from_iter;
-use serde::de::Error as _;
-
 use phantom_core::id::{AgentId, ChangesetId, SymbolId};
 
 use crate::error::EventStoreError;
-use crate::store::SqliteEventStore;
+use crate::store::{row_to_event, SqliteEventStore};
 
 /// A flexible query filter for events.
 ///
@@ -31,28 +28,31 @@ pub struct EventQuery {
 
 impl SqliteEventStore {
     /// Execute a flexible query against the event store.
-    pub fn query(&self, q: &EventQuery) -> Result<Vec<phantom_core::Event>, EventStoreError> {
+    pub async fn query(
+        &self,
+        q: &EventQuery,
+    ) -> Result<Vec<phantom_core::Event>, EventStoreError> {
         let mut conditions = vec!["dropped = 0".to_string()];
         let mut param_values: Vec<String> = Vec::new();
 
         if let Some(ref agent) = q.agent_id {
             param_values.push(agent.0.clone());
-            conditions.push(format!("agent_id = ?{}", param_values.len()));
+            conditions.push(format!("agent_id = ${}", param_values.len()));
         }
 
         if let Some(ref cs) = q.changeset_id {
             param_values.push(cs.0.clone());
-            conditions.push(format!("changeset_id = ?{}", param_values.len()));
+            conditions.push(format!("changeset_id = ${}", param_values.len()));
         }
 
         if let Some(ref sym) = q.symbol_id {
             param_values.push(sym.0.clone());
-            conditions.push(format!("kind LIKE '%' || ?{} || '%'", param_values.len()));
+            conditions.push(format!("kind LIKE '%' || ${} || '%'", param_values.len()));
         }
 
         if let Some(ref since) = q.since {
             param_values.push(since.to_rfc3339());
-            conditions.push(format!("timestamp >= ?{}", param_values.len()));
+            conditions.push(format!("timestamp >= ${}", param_values.len()));
         }
 
         let where_clause = conditions.join(" AND ");
@@ -65,48 +65,24 @@ impl SqliteEventStore {
              ORDER BY id DESC{limit_clause}"
         );
 
-        let conn = self.conn.lock().expect("lock poisoned");
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(param_values.iter()), |row| {
-            let id: u64 = row.get::<_, i64>(0)? as u64;
-            let ts_str: String = row.get(1)?;
-            let changeset_id: String = row.get(2)?;
-            let agent_id: String = row.get(3)?;
-            let kind_json: String = row.get(4)?;
-            Ok((id, ts_str, changeset_id, agent_id, kind_json))
-        })?;
-
-        let mut events = Vec::new();
-        for row in rows {
-            let (id, ts_str, changeset_id, agent_id, kind_json) = row?;
-            let timestamp = DateTime::parse_from_rfc3339(&ts_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| {
-                    EventStoreError::Serialization(serde_json::Error::custom(format!(
-                        "invalid timestamp: {e}"
-                    )))
-                })?;
-            let kind: phantom_core::EventKind = serde_json::from_str(&kind_json)?;
-            events.push(phantom_core::Event {
-                id: phantom_core::id::EventId(id),
-                timestamp,
-                changeset_id: phantom_core::id::ChangesetId(changeset_id),
-                agent_id: phantom_core::id::AgentId(agent_id),
-                kind,
-            });
+        let mut query = sqlx::query(&sql);
+        for param in &param_values {
+            query = query.bind(param);
         }
-        Ok(events)
+
+        let rows = query.fetch_all(&self.pool).await?;
+        rows.iter().map(row_to_event).collect()
     }
 
     /// Mark all events belonging to a changeset as dropped.
     ///
     /// Returns the number of rows affected.
-    pub fn mark_dropped(&self, changeset_id: &ChangesetId) -> Result<u64, EventStoreError> {
-        let conn = self.conn.lock().expect("lock poisoned");
-        let affected = conn.execute(
-            "UPDATE events SET dropped = 1 WHERE changeset_id = ?1",
-            [&changeset_id.0],
-        )?;
-        Ok(affected as u64)
+    pub async fn mark_dropped(&self, changeset_id: &ChangesetId) -> Result<u64, EventStoreError> {
+        let result =
+            sqlx::query("UPDATE events SET dropped = 1 WHERE changeset_id = $1")
+                .bind(&changeset_id.0)
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected())
     }
 }

@@ -63,7 +63,7 @@ impl Materializer {
     /// files. The materializer reads agent changes from there, runs semantic
     /// merge checks if trunk has advanced, and either commits the result or
     /// reports conflicts.
-    pub fn materialize(
+    pub async fn materialize(
         &self,
         changeset: &Changeset,
         upper_dir: &Path,
@@ -82,7 +82,9 @@ impl Materializer {
             .to_path_buf();
 
         if head == changeset.base_commit {
-            return self.direct_apply(changeset, upper_dir, &trunk_path, message, event_store);
+            return self
+                .direct_apply(changeset, upper_dir, &trunk_path, message, event_store)
+                .await;
         }
 
         let ctx = MergeContext {
@@ -93,11 +95,11 @@ impl Materializer {
             event_store,
             analyzer,
         };
-        self.merge_apply(changeset, &ctx)
+        self.merge_apply(changeset, &ctx).await
     }
 
     /// Fast path: trunk hasn't moved, apply overlay directly.
-    fn direct_apply(
+    async fn direct_apply(
         &self,
         changeset: &Changeset,
         upper_dir: &Path,
@@ -114,13 +116,14 @@ impl Materializer {
             &changeset.agent_id.0,
         )?;
 
-        self.append_materialized_event(changeset, &new_commit, event_store)?;
+        self.append_materialized_event(changeset, &new_commit, event_store)
+            .await?;
 
         Ok(MaterializeResult::Success { new_commit })
     }
 
     /// Slow path: trunk advanced, run three-way semantic merge per file.
-    fn merge_apply(
+    async fn merge_apply(
         &self,
         changeset: &Changeset,
         ctx: &MergeContext<'_>,
@@ -281,7 +284,8 @@ impl Materializer {
         }
 
         if !all_conflicts.is_empty() {
-            self.append_conflicted_event(changeset, &all_conflicts, ctx.event_store)?;
+            self.append_conflicted_event(changeset, &all_conflicts, ctx.event_store)
+                .await?;
             return Ok(MaterializeResult::Conflict {
                 details: all_conflicts,
             });
@@ -301,7 +305,8 @@ impl Materializer {
         let new_commit =
             self.commit_merged_files(&file_paths, ctx.head, ctx.message, &changeset.agent_id.0)?;
 
-        self.append_materialized_event(changeset, &new_commit, ctx.event_store)?;
+        self.append_materialized_event(changeset, &new_commit, ctx.event_store)
+            .await?;
 
         Ok(MaterializeResult::Success { new_commit })
     }
@@ -371,7 +376,7 @@ impl Materializer {
     }
 
     /// Append a `ChangesetMaterialized` event to the store.
-    fn append_materialized_event(
+    async fn append_materialized_event(
         &self,
         changeset: &Changeset,
         new_commit: &GitOid,
@@ -388,12 +393,13 @@ impl Materializer {
         };
         event_store
             .append(event)
+            .await
             .map_err(|e| OrchestratorError::EventStore(e.to_string()))?;
         Ok(())
     }
 
     /// Append a `ChangesetConflicted` event to the store.
-    fn append_conflicted_event(
+    async fn append_conflicted_event(
         &self,
         changeset: &Changeset,
         conflicts: &[ConflictDetail],
@@ -410,6 +416,7 @@ impl Materializer {
         };
         event_store
             .append(event)
+            .await
             .map_err(|e| OrchestratorError::EventStore(e.to_string()))?;
         Ok(())
     }
@@ -477,27 +484,28 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl EventStore for MockEventStore {
-        fn append(&self, event: Event) -> Result<EventId, CoreError> {
+        async fn append(&self, event: Event) -> Result<EventId, CoreError> {
             let mut events = self.events.write().unwrap();
             let id = EventId(events.len() as u64 + 1);
             events.push(Event { id, ..event });
             Ok(id)
         }
 
-        fn query_by_changeset(&self, _id: &ChangesetId) -> Result<Vec<Event>, CoreError> {
+        async fn query_by_changeset(&self, _id: &ChangesetId) -> Result<Vec<Event>, CoreError> {
             Ok(vec![])
         }
 
-        fn query_by_agent(&self, _id: &AgentId) -> Result<Vec<Event>, CoreError> {
+        async fn query_by_agent(&self, _id: &AgentId) -> Result<Vec<Event>, CoreError> {
             Ok(vec![])
         }
 
-        fn query_all(&self) -> Result<Vec<Event>, CoreError> {
+        async fn query_all(&self) -> Result<Vec<Event>, CoreError> {
             Ok(self.events.read().unwrap().clone())
         }
 
-        fn query_since(&self, _since: DateTime<Utc>) -> Result<Vec<Event>, CoreError> {
+        async fn query_since(&self, _since: DateTime<Utc>) -> Result<Vec<Event>, CoreError> {
             Ok(vec![])
         }
     }
@@ -633,8 +641,8 @@ mod tests {
     // Tests
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn direct_apply_trunk_not_advanced() {
+    #[tokio::test]
+    async fn direct_apply_trunk_not_advanced() {
         let (_dir, git) = init_repo(&[("src/main.rs", b"fn main() {}")]);
         let base = git.head_oid().unwrap();
         let upper = make_upper(&[("src/main.rs", b"fn main() { println!(\"hi\"); }")]);
@@ -646,6 +654,7 @@ mod tests {
         let materializer = Materializer::new(git);
         let result = materializer
             .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .await
             .unwrap();
 
         match result {
@@ -664,8 +673,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn clean_merge_trunk_advanced() {
+    #[tokio::test]
+    async fn clean_merge_trunk_advanced() {
         let (_dir, git) =
             init_repo(&[("src/api.rs", b"fn api() {}"), ("src/db.rs", b"fn db() {}")]);
         let base = git.head_oid().unwrap();
@@ -681,6 +690,7 @@ mod tests {
         let materializer = Materializer::new(git);
         let result = materializer
             .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .await
             .unwrap();
 
         match result {

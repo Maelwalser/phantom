@@ -16,7 +16,7 @@ pub struct RollbackArgs {
 }
 
 pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
-    let ctx = PhantomContext::load()?;
+    let ctx = PhantomContext::load().await?;
 
     let changeset_id = ChangesetId(args.changeset.clone());
 
@@ -24,6 +24,7 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     let cs_events = ctx
         .events
         .query_by_changeset(&changeset_id)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let materialized_commit: Option<GitOid> = cs_events.iter().find_map(|e| {
@@ -38,6 +39,7 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     let dropped = ctx
         .events
         .mark_dropped(&changeset_id)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!(
@@ -74,6 +76,7 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     let replay = ReplayEngine::new(&ctx.events);
     let downstream = replay
         .changesets_after(&changeset_id)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if downstream.is_empty() {

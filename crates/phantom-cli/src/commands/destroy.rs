@@ -20,7 +20,7 @@ pub struct DestroyArgs {
 }
 
 pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
-    let mut ctx = PhantomContext::load()?;
+    let mut ctx = PhantomContext::load().await?;
 
     let agent_id = AgentId(args.agent.clone());
 
@@ -28,6 +28,7 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
     let events = ctx
         .events
         .query_by_agent(&agent_id)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let changeset_id = events
@@ -63,6 +64,7 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
     };
     ctx.events
         .append(event)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!("Agent '{}' overlay destroyed.", args.agent);

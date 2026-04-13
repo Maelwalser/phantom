@@ -20,10 +20,10 @@ pub struct SubmitArgs {
 }
 
 pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
-    let ctx = PhantomContext::load()?;
+    let ctx = PhantomContext::load().await?;
     let agent_id = AgentId(args.agent.clone());
 
-    match submit_agent(&ctx, &agent_id)? {
+    match submit_agent(&ctx, &agent_id).await? {
         Some(changeset_id) => {
             println!("Changeset {changeset_id} submitted.");
         }
@@ -39,7 +39,7 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
 ///
 /// Returns `Some(changeset_id)` if changes were found and submitted,
 /// or `None` if the overlay has no modifications.
-pub fn submit_agent(
+pub async fn submit_agent(
     ctx: &PhantomContext,
     agent_id: &AgentId,
 ) -> anyhow::Result<Option<ChangesetId>> {
@@ -58,6 +58,7 @@ pub fn submit_agent(
     let events = ctx
         .events
         .query_by_agent(agent_id)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let (changeset_id, base_commit) = events
@@ -160,6 +161,7 @@ pub fn submit_agent(
     };
     ctx.events
         .append(event)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Record the merge pre-check result.
@@ -174,6 +176,7 @@ pub fn submit_agent(
     };
     ctx.events
         .append(check_event)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Remove stale trunk notification — the agent is submitting, so any prior

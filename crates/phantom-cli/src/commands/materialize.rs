@@ -26,7 +26,7 @@ pub struct MaterializeArgs {
 }
 
 pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
-    let mut ctx = PhantomContext::load()?;
+    let mut ctx = PhantomContext::load().await?;
 
     // Resolve the target changeset: if it looks like a changeset ID use it
     // directly, otherwise treat it as an agent name and find their latest
@@ -37,7 +37,7 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
         let agent_name = &args.target;
         let agent_id = AgentId(agent_name.clone());
 
-        let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let all_events = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
         let projection = Projection::from_events(&all_events);
 
         let cs = projection
@@ -53,7 +53,7 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
     let commit_message = if let Some(msg) = args.message {
         msg
     } else {
-        let all = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let all = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
         let proj = Projection::from_events(&all);
         let cs = proj
             .changeset(&changeset_id)
@@ -61,7 +61,7 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
         cs.agent_id.0.clone()
     };
 
-    let result = materialize_changeset(&mut ctx, &changeset_id, &commit_message)?;
+    let result = materialize_changeset(&mut ctx, &changeset_id, &commit_message).await?;
 
     match result {
         MaterializeResult::Success { new_commit } => {
@@ -129,12 +129,12 @@ fn format_conflict_location(detail: &phantom_core::ConflictDetail) -> String {
 ///
 /// Runs the semantic merge, commits to git, and checks for ripple effects on
 /// other active agents. Returns the [`MaterializeResult`].
-pub fn materialize_changeset(
+pub async fn materialize_changeset(
     ctx: &mut PhantomContext,
     changeset_id: &ChangesetId,
     message: &str,
 ) -> anyhow::Result<MaterializeResult> {
-    let all_events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let all_events = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let projection = Projection::from_events(&all_events);
 
     let changeset = projection
@@ -155,6 +155,7 @@ pub fn materialize_changeset(
 
     let result = materializer
         .materialize(&changeset, &upper_dir, &ctx.events, &ctx.semantic, message)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Clear the agent's upper layer so reads fall through to the updated trunk.
@@ -283,7 +284,7 @@ pub fn materialize_changeset(
                                     .collect(),
                             },
                         };
-                        if let Err(e) = ctx.events.append(event) {
+                        if let Err(e) = ctx.events.append(event).await {
                             eprintln!("warning: failed to record live rebase event for {agent_id}: {e}");
                         }
 

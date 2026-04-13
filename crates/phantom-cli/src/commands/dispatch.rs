@@ -45,7 +45,7 @@ pub struct DispatchArgs {
 }
 
 pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
-    let mut ctx = PhantomContext::load()?;
+    let mut ctx = PhantomContext::load().await?;
 
     let agent_id = AgentId(args.agent.clone());
     let head = ctx.git.head_oid().context("failed to read HEAD")?;
@@ -57,7 +57,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
                 let mount_point = handle.mount_point.clone();
                 let upper_dir = handle.upper_dir.clone();
 
-                let cs_id = generate_changeset_id(&ctx)?;
+                let cs_id = generate_changeset_id(&ctx).await?;
 
                 let event = Event {
                     id: EventId(0),
@@ -71,6 +71,7 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
                 };
                 ctx.events
                     .append(event)
+                    .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
 
                 phantom_orchestrator::live_rebase::write_current_base(
@@ -83,8 +84,8 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
                 (cs_id, head, true, mount_point, upper_dir)
             }
             Err(OverlayError::AlreadyExists(_)) => {
-                let (cs_id, base) = recover_changeset_from_events(&ctx, &agent_id)?;
-                check_changeset_resumable(&ctx, &cs_id)?;
+                let (cs_id, base) = recover_changeset_from_events(&ctx, &agent_id).await?;
+                check_changeset_resumable(&ctx, &cs_id).await?;
 
                 let upper_dir = ctx
                     .overlays
@@ -182,7 +183,8 @@ pub async fn run(args: DispatchArgs) -> anyhow::Result<()> {
             &base_commit,
             &work_dir,
             &args,
-        )?;
+        )
+        .await?;
     }
 
     Ok(())
@@ -264,8 +266,8 @@ fn wait_for_mount(mount_point: &Path, timeout: Duration) -> anyhow::Result<()> {
 ///
 /// Uses a monotonic counter from the event store combined with a timestamp
 /// suffix to avoid collisions from concurrent dispatch calls.
-fn generate_changeset_id(ctx: &PhantomContext) -> anyhow::Result<ChangesetId> {
-    let events = ctx.events.query_all().map_err(|e| anyhow::anyhow!("{e}"))?;
+async fn generate_changeset_id(ctx: &PhantomContext) -> anyhow::Result<ChangesetId> {
+    let events = ctx.events.query_all().await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let overlay_count = events
         .iter()
@@ -285,13 +287,14 @@ fn generate_changeset_id(ctx: &PhantomContext) -> anyhow::Result<ChangesetId> {
 
 /// Recover the changeset ID and base commit for an existing agent overlay from
 /// the event log. Finds the most recent `OverlayCreated` event for this agent.
-fn recover_changeset_from_events(
+async fn recover_changeset_from_events(
     ctx: &PhantomContext,
     agent_id: &AgentId,
 ) -> anyhow::Result<(ChangesetId, GitOid)> {
     let events = ctx
         .events
         .query_by_agent(agent_id)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Walk backwards to find the most recent OverlayCreated event.
@@ -311,10 +314,11 @@ fn recover_changeset_from_events(
 ///
 /// Blocks resume if the changeset has already been submitted or materialized,
 /// since the upper layer may have been cleared.
-fn check_changeset_resumable(ctx: &PhantomContext, cs_id: &ChangesetId) -> anyhow::Result<()> {
+async fn check_changeset_resumable(ctx: &PhantomContext, cs_id: &ChangesetId) -> anyhow::Result<()> {
     let events = ctx
         .events
         .query_by_changeset(cs_id)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     for event in &events {

@@ -4,12 +4,15 @@
 //! have been materialized and their relative ordering, enabling surgical
 //! rollback and selective replay.
 
-use phantom_core::event::EventKind;
 use phantom_core::id::ChangesetId;
-use phantom_core::traits::EventStore;
+use sqlx::Row;
 
 use crate::error::EventStoreError;
 use crate::store::SqliteEventStore;
+
+/// JSON pattern that identifies `ChangesetMaterialized` events in the `kind`
+/// column. The serialized form always starts with `{"ChangesetMaterialized"`.
+const MATERIALIZED_KIND_PREFIX: &str = r#"{"ChangesetMaterialized"%"#;
 
 /// Replay engine for querying materialization history.
 pub struct ReplayEngine<'a> {
@@ -23,42 +26,58 @@ impl<'a> ReplayEngine<'a> {
     }
 
     /// Return the changeset IDs of all materialized changesets, in order.
-    pub fn materialized_changesets(&self) -> Result<Vec<ChangesetId>, EventStoreError> {
-        let events = self.store.query_all()?;
-        let ids: Vec<ChangesetId> = events
-            .into_iter()
-            .filter(|e| matches!(e.kind, EventKind::ChangesetMaterialized { .. }))
-            .map(|e| e.changeset_id)
-            .collect();
-        Ok(ids)
+    pub async fn materialized_changesets(&self) -> Result<Vec<ChangesetId>, EventStoreError> {
+        let rows = sqlx::query(
+            "SELECT changeset_id FROM events
+             WHERE dropped = 0 AND kind LIKE $1
+             ORDER BY id ASC",
+        )
+        .bind(MATERIALIZED_KIND_PREFIX)
+        .fetch_all(&self.store.pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| ChangesetId(r.get("changeset_id")))
+            .collect())
     }
 
     /// Return all materialized changeset IDs that were materialized *after*
     /// the given changeset.
-    pub fn changesets_after(&self, id: &ChangesetId) -> Result<Vec<ChangesetId>, EventStoreError> {
-        let events = self.store.query_all()?;
+    pub async fn changesets_after(
+        &self,
+        id: &ChangesetId,
+    ) -> Result<Vec<ChangesetId>, EventStoreError> {
+        // Find the event ID of the target changeset's materialization.
+        let target_row = sqlx::query(
+            "SELECT id FROM events
+             WHERE dropped = 0 AND changeset_id = $1 AND kind LIKE $2
+             LIMIT 1",
+        )
+        .bind(&id.0)
+        .bind(MATERIALIZED_KIND_PREFIX)
+        .fetch_optional(&self.store.pool)
+        .await?;
 
-        // Find the materialization event for the target changeset.
-        let target_event_id = events
-            .iter()
-            .find(|e| {
-                e.changeset_id == *id && matches!(e.kind, EventKind::ChangesetMaterialized { .. })
-            })
-            .map(|e| e.id);
-
-        let Some(target_id) = target_event_id else {
+        let Some(target_row) = target_row else {
             return Ok(Vec::new());
         };
+        let target_id: i64 = target_row.get("id");
 
         // Collect all materialized changesets with higher event IDs.
-        let after: Vec<ChangesetId> = events
-            .into_iter()
-            .filter(|e| {
-                e.id.0 > target_id.0 && matches!(e.kind, EventKind::ChangesetMaterialized { .. })
-            })
-            .map(|e| e.changeset_id)
-            .collect();
+        let rows = sqlx::query(
+            "SELECT changeset_id FROM events
+             WHERE dropped = 0 AND id > $1 AND kind LIKE $2
+             ORDER BY id ASC",
+        )
+        .bind(target_id)
+        .bind(MATERIALIZED_KIND_PREFIX)
+        .fetch_all(&self.store.pool)
+        .await?;
 
-        Ok(after)
+        Ok(rows
+            .iter()
+            .map(|r| ChangesetId(r.get("changeset_id")))
+            .collect())
     }
 }

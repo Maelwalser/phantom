@@ -50,7 +50,7 @@ const OUTPUT_TAIL_CAP: usize = 8192;
 ///
 /// Blocks until the spawned process exits, then optionally auto-submits and
 /// auto-materializes the changeset.
-pub fn run_interactive_session(
+pub async fn run_interactive_session(
     ctx: &mut PhantomContext,
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
@@ -139,6 +139,7 @@ pub fn run_interactive_session(
         auto_submit,
         args.auto_materialize,
     )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -543,7 +544,7 @@ fn cleanup_context_file(upper_dir: &Path) {
 // ---------------------------------------------------------------------------
 
 /// Handle post-session submit and materialize automation.
-fn post_session_flow(
+async fn post_session_flow(
     ctx: &mut PhantomContext,
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
@@ -573,13 +574,13 @@ fn post_session_flow(
 
     // Auto-submit
     println!("Auto-submitting changeset...");
-    match super::submit::submit_agent(ctx, agent_id)? {
+    match super::submit::submit_agent(ctx, agent_id).await? {
         Some(cs_id) => {
             println!("Changeset {cs_id} submitted.");
 
             if auto_materialize {
                 println!("Auto-materializing...");
-                match super::materialize::materialize_changeset(ctx, &cs_id, &agent_id.0)? {
+                match super::materialize::materialize_changeset(ctx, &cs_id, &agent_id.0).await? {
                     MaterializeResult::Success { new_commit } => {
                         let hex = new_commit.to_hex();
                         let short = &hex[..12.min(hex.len())];

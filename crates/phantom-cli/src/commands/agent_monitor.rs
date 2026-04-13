@@ -76,7 +76,7 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         libc::setsid();
     }
 
-    let ctx = PhantomContext::load()?;
+    let ctx = PhantomContext::load().await?;
     let agent_id = AgentId(args.agent.clone());
     let changeset_id = ChangesetId(args.changeset_id.clone());
     let work_dir = PathBuf::from(&args.work_dir);
@@ -98,10 +98,11 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     };
     ctx.events
         .append(launch_event)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Run post-completion flow.
-    let result = run_post_completion(&agent_id, &changeset_id, exit_code);
+    let result = run_post_completion(&agent_id, &changeset_id, exit_code).await;
 
     // Write status file regardless of success/failure.
     let status = match &result {
@@ -188,12 +189,12 @@ fn spawn_and_wait_claude(
 
 /// Run the post-completion flow: clean up and record completion.
 /// Returns Ok(true) if the agent exited successfully, Ok(false) otherwise.
-fn run_post_completion(
+async fn run_post_completion(
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
     exit_code: Option<i32>,
 ) -> anyhow::Result<bool> {
-    let ctx = PhantomContext::load()?;
+    let ctx = PhantomContext::load().await?;
 
     // Clean up the context file.
     let upper_dir = ctx
@@ -219,6 +220,7 @@ fn run_post_completion(
     };
     ctx.events
         .append(event)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if !success {
