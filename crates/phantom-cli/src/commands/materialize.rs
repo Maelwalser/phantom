@@ -149,7 +149,7 @@ fn format_conflict_location(detail: &phantom_core::ConflictDetail) -> String {
 pub async fn materialize_changeset(
     ctx: &PhantomContext,
     events: &dyn EventStore,
-    overlays: &mut phantom_overlay::OverlayManager,
+    overlays: &phantom_overlay::OverlayManager,
     changeset_id: &ChangesetId,
     message: &str,
 ) -> anyhow::Result<MaterializeOutput> {
@@ -198,14 +198,6 @@ pub async fn materialize_changeset(
         })
         .collect();
 
-    // Prepare the overlay-clear callback.
-    let agent_id_for_clear = changeset.agent_id.clone();
-    let mut clear_fn = || {
-        overlays
-            .clear_overlay(&agent_id_for_clear)
-            .map_err(|e| e.to_string())
-    };
-
     let output = materialization_service::materialize_and_ripple(
         &changeset,
         &upper_dir,
@@ -215,7 +207,6 @@ pub async fn materialize_changeset(
         &ctx.phantom_dir,
         &active_overlays,
         message,
-        &mut clear_fn,
     )
     .await?;
 

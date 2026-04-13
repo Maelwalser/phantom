@@ -89,8 +89,8 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
                 (cs_id, head, true, mount_point, upper_dir)
             }
             Err(OverlayError::AlreadyExists(_)) => {
-                let (cs_id, base) = recover_changeset_from_events(&events, &agent_id).await?;
-                check_changeset_resumable(&events, &cs_id).await?;
+                let (old_cs_id, old_base) = recover_changeset_from_events(&events, &agent_id).await?;
+                let resume_status = check_changeset_resumable(&events, &old_cs_id).await?;
 
                 let upper_dir = overlays
                     .upper_dir(&agent_id)
@@ -101,6 +101,37 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
                     .join("overlays")
                     .join(&agent_id.0)
                     .join("mount");
+
+                // If the previous changeset was materialized, start a new one
+                // so the agent can continue working on the same overlay.
+                let (cs_id, base) = match resume_status {
+                    ResumeStatus::Materialized => {
+                        let new_cs_id = generate_changeset_id(&events).await?;
+                        let event = Event {
+                            id: EventId(0),
+                            timestamp: Utc::now(),
+                            changeset_id: new_cs_id.clone(),
+                            agent_id: agent_id.clone(),
+                            kind: EventKind::TaskCreated {
+                                base_commit: head,
+                                task: args.task.clone().unwrap_or_default(),
+                            },
+                        };
+                        events.append(event).await?;
+
+                        phantom_orchestrator::live_rebase::write_current_base(
+                            &ctx.phantom_dir,
+                            &agent_id,
+                            &head,
+                        )
+                        .context("failed to write current_base for new changeset")?;
+
+                        (new_cs_id, head)
+                    }
+                    ResumeStatus::Submitted | ResumeStatus::InProgress => {
+                        (old_cs_id, old_base)
+                    }
+                };
 
                 (cs_id, base, false, mount_point, upper_dir)
             }
@@ -315,35 +346,57 @@ async fn recover_changeset_from_events(
     )
 }
 
-/// Check that a changeset is still in-progress and can be resumed.
+/// Status of a changeset when attempting to resume a session.
+enum ResumeStatus {
+    /// The changeset is still in-progress — resume normally.
+    InProgress,
+    /// The changeset was submitted but not yet materialized — resume with the
+    /// same changeset (agent can continue editing and re-submit).
+    Submitted,
+    /// The changeset was materialized — a new changeset should be created for
+    /// continued work on this overlay.
+    Materialized,
+}
+
+/// Check the resume status of a changeset.
 ///
-/// Blocks resume if the changeset has already been submitted or materialized,
-/// since the upper layer may have been cleared.
-async fn check_changeset_resumable(events: &SqliteEventStore, cs_id: &ChangesetId) -> anyhow::Result<()> {
+/// Blocks resume only if the task has been explicitly destroyed. Otherwise
+/// returns the changeset status so the caller can decide whether to reuse the
+/// changeset or create a new one.
+async fn check_changeset_resumable(events: &SqliteEventStore, cs_id: &ChangesetId) -> anyhow::Result<ResumeStatus> {
     let events = events
         .query_by_changeset(cs_id)
         .await
         ?;
 
+    let mut materialized = false;
+    let mut submitted = false;
+
     for event in &events {
         match &event.kind {
-            EventKind::ChangesetMaterialized { .. } => {
+            EventKind::TaskDestroyed => {
                 anyhow::bail!(
-                    "changeset {cs_id} has already been materialized — \
+                    "task for changeset {cs_id} has been destroyed — \
                      use `phantom task <new-agent>` to start fresh"
                 );
             }
+            EventKind::ChangesetMaterialized { .. } => {
+                materialized = true;
+            }
             EventKind::ChangesetSubmitted { .. } => {
-                anyhow::bail!(
-                    "changeset {cs_id} has already been submitted — \
-                     use `phantom task <new-agent>` to start fresh"
-                );
+                submitted = true;
             }
             _ => {}
         }
     }
 
-    Ok(())
+    if materialized {
+        Ok(ResumeStatus::Materialized)
+    } else if submitted {
+        Ok(ResumeStatus::Submitted)
+    } else {
+        Ok(ResumeStatus::InProgress)
+    }
 }
 
 /// Spawn the `phantom _agent-monitor` process which will in turn spawn and

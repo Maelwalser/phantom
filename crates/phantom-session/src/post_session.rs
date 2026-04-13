@@ -165,7 +165,7 @@ async fn materialize_changeset(
     phantom_dir: &Path,
     repo_root: &Path,
     events: &dyn EventStore,
-    overlays: &mut OverlayManager,
+    overlays: &OverlayManager,
     changeset_id: &ChangesetId,
     message: &str,
 ) -> anyhow::Result<phantom_orchestrator::materialization_service::MaterializeOutput> {
@@ -219,14 +219,6 @@ async fn materialize_changeset(
         })
         .collect();
 
-    // Prepare the overlay-clear callback.
-    let agent_id_for_clear = changeset.agent_id.clone();
-    let mut clear_fn = || {
-        overlays
-            .clear_overlay(&agent_id_for_clear)
-            .map_err(|e| e.to_string())
-    };
-
     let output = materialization_service::materialize_and_ripple(
         &changeset,
         &upper_dir,
@@ -236,7 +228,6 @@ async fn materialize_changeset(
         phantom_dir,
         &active_overlays,
         message,
-        &mut clear_fn,
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;

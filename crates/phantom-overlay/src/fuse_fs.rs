@@ -26,53 +26,59 @@ mod inner {
     /// TTL for attribute and entry caching (1 second).
     const TTL: Duration = Duration::from_secs(1);
 
-    /// Bidirectional map between inode numbers and filesystem paths.
-    ///
-    /// Tracks kernel lookup counts so that inodes can be evicted via the
-    /// FUSE `forget` callback, preventing unbounded growth when large
-    /// directory trees are traversed.
-    struct InodeTable {
-        next_ino: AtomicU64,
-        ino_to_path: Mutex<HashMap<u64, PathBuf>>,
-        path_to_ino: Mutex<HashMap<PathBuf, u64>>,
+    /// All mutable inode state protected by a single lock to prevent
+    /// lock-ordering deadlocks between concurrent FUSE operations.
+    struct InodeTableInner {
+        ino_to_path: HashMap<u64, PathBuf>,
+        path_to_ino: HashMap<PathBuf, u64>,
         /// Kernel-side lookup reference count per inode.  Incremented on
         /// every `lookup`, `create`, `mkdir`, and `readdir` reply that
         /// hands an inode to the kernel; decremented by `forget`.
-        lookup_count: Mutex<HashMap<u64, u64>>,
+        lookup_count: HashMap<u64, u64>,
         /// Inodes that have been unlinked from the directory tree but still
         /// have a non-zero kernel lookup count.  The `ino_to_path` entry is
         /// kept alive so that open file descriptors can still resolve the
         /// inode.  `forget()` performs final cleanup when the count drops
         /// to zero.
-        unlinked: Mutex<HashSet<u64>>,
+        unlinked: HashSet<u64>,
+    }
+
+    /// Bidirectional map between inode numbers and filesystem paths.
+    ///
+    /// Tracks kernel lookup counts so that inodes can be evicted via the
+    /// FUSE `forget` callback, preventing unbounded growth when large
+    /// directory trees are traversed.
+    ///
+    /// All mutable state lives behind a single `Mutex` to avoid
+    /// lock-ordering issues — FUSE dispatches operations like `rename`
+    /// and `forget` concurrently, and using separate locks per map
+    /// risks deadlock when acquisition orders differ.
+    struct InodeTable {
+        next_ino: AtomicU64,
+        inner: Mutex<InodeTableInner>,
     }
 
     impl InodeTable {
         fn new() -> Self {
-            let table = Self {
+            let mut ino_to_path = HashMap::new();
+            let mut path_to_ino = HashMap::new();
+            ino_to_path.insert(1, PathBuf::from(""));
+            path_to_ino.insert(PathBuf::from(""), 1);
+
+            Self {
                 // inode 1 is the root directory.
                 next_ino: AtomicU64::new(2),
-                ino_to_path: Mutex::new(HashMap::new()),
-                path_to_ino: Mutex::new(HashMap::new()),
-                lookup_count: Mutex::new(HashMap::new()),
-                unlinked: Mutex::new(HashSet::new()),
-            };
-            // Root directory is inode 1.
-            table
-                .ino_to_path
-                .lock()
-                .unwrap()
-                .insert(1, PathBuf::from(""));
-            table
-                .path_to_ino
-                .lock()
-                .unwrap()
-                .insert(PathBuf::from(""), 1);
-            table
+                inner: Mutex::new(InodeTableInner {
+                    ino_to_path,
+                    path_to_ino,
+                    lookup_count: HashMap::new(),
+                    unlinked: HashSet::new(),
+                }),
+            }
         }
 
         fn get_path(&self, ino: u64) -> Option<PathBuf> {
-            self.ino_to_path.lock().unwrap().get(&ino).cloned()
+            self.inner.lock().unwrap().ino_to_path.get(&ino).cloned()
         }
 
         /// Return the inode for `path`, creating a new one if necessary.
@@ -82,15 +88,15 @@ mod inner {
         /// inode is actually being handed to the kernel (lookup reply,
         /// create reply, readdir entry, etc.).
         fn get_or_create_inode(&self, path: &PathBuf) -> u64 {
-            let mut p2i = self.path_to_ino.lock().unwrap();
-            if let Some(&ino) = p2i.get(path) {
-                *self.lookup_count.lock().unwrap().entry(ino).or_insert(0) += 1;
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(&ino) = inner.path_to_ino.get(path) {
+                *inner.lookup_count.entry(ino).or_insert(0) += 1;
                 return ino;
             }
             let ino = self.next_ino.fetch_add(1, Ordering::Relaxed);
-            p2i.insert(path.clone(), ino);
-            self.ino_to_path.lock().unwrap().insert(ino, path.clone());
-            *self.lookup_count.lock().unwrap().entry(ino).or_insert(0) += 1;
+            inner.path_to_ino.insert(path.clone(), ino);
+            inner.ino_to_path.insert(ino, path.clone());
+            *inner.lookup_count.entry(ino).or_insert(0) += 1;
             ino
         }
 
@@ -102,16 +108,16 @@ mod inner {
         /// storage path.  The inode is marked as unlinked; `forget()` will
         /// perform final cleanup when the kernel drops all references.
         fn unlink(&self, path: &PathBuf) {
-            let mut p2i = self.path_to_ino.lock().unwrap();
-            if let Some(ino) = p2i.remove(path) {
-                self.unlinked.lock().unwrap().insert(ino);
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(ino) = inner.path_to_ino.remove(path) {
+                inner.unlinked.insert(ino);
             }
         }
 
         /// Returns `true` if the inode has been unlinked from the directory
         /// tree but still has outstanding kernel references.
         fn is_unlinked(&self, ino: u64) -> bool {
-            self.unlinked.lock().unwrap().contains(&ino)
+            self.inner.lock().unwrap().unlinked.contains(&ino)
         }
 
         /// Re-key an inode (and all child inodes for directory renames) from
@@ -121,20 +127,19 @@ mod inner {
         /// (the old destination is being overwritten by POSIX rename
         /// semantics).
         fn rename(&self, old_path: &PathBuf, new_path: &PathBuf) {
-            let mut p2i = self.path_to_ino.lock().unwrap();
-            let mut i2p = self.ino_to_path.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap();
 
             // The destination is being overwritten (POSIX rename semantics).
             // Remove from path_to_ino so lookup no longer finds it, but
             // keep ino_to_path alive for any open file descriptors.
-            if let Some(dest_ino) = p2i.remove(new_path) {
-                self.unlinked.lock().unwrap().insert(dest_ino);
+            if let Some(dest_ino) = inner.path_to_ino.remove(new_path) {
+                inner.unlinked.insert(dest_ino);
             }
 
             // Re-key the source itself.
-            if let Some(ino) = p2i.remove(old_path) {
-                p2i.insert(new_path.clone(), ino);
-                i2p.insert(ino, new_path.clone());
+            if let Some(ino) = inner.path_to_ino.remove(old_path) {
+                inner.path_to_ino.insert(new_path.clone(), ino);
+                inner.ino_to_path.insert(ino, new_path.clone());
             }
 
             // Re-key child paths (directory rename).
@@ -143,7 +148,8 @@ mod inner {
                 p.push("");
                 p
             };
-            let children: Vec<(PathBuf, u64)> = p2i
+            let children: Vec<(PathBuf, u64)> = inner
+                .path_to_ino
                 .iter()
                 .filter(|(path, _)| path.starts_with(&old_prefix))
                 .map(|(path, &ino)| (path.clone(), ino))
@@ -151,9 +157,9 @@ mod inner {
             for (child_path, ino) in children {
                 if let Ok(suffix) = child_path.strip_prefix(old_path) {
                     let new_child = new_path.join(suffix);
-                    p2i.remove(&child_path);
-                    p2i.insert(new_child.clone(), ino);
-                    i2p.insert(ino, new_child);
+                    inner.path_to_ino.remove(&child_path);
+                    inner.path_to_ino.insert(new_child.clone(), ino);
+                    inner.ino_to_path.insert(ino, new_child);
                 }
             }
         }
@@ -172,21 +178,19 @@ mod inner {
                 return;
             }
 
-            let mut counts = self.lookup_count.lock().unwrap();
-            if let Some(count) = counts.get_mut(&ino) {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(count) = inner.lookup_count.get_mut(&ino) {
                 *count = count.saturating_sub(nlookup);
                 if *count == 0 {
-                    counts.remove(&ino);
-                    let mut unlinked = self.unlinked.lock().unwrap();
-                    if unlinked.remove(&ino) {
+                    inner.lookup_count.remove(&ino);
+                    if inner.unlinked.remove(&ino) {
                         // Was unlinked — path_to_ino entry already removed;
                         // only ino_to_path remains.
-                        self.ino_to_path.lock().unwrap().remove(&ino);
+                        inner.ino_to_path.remove(&ino);
                     } else {
                         // Normal forget — clean up both maps.
-                        let mut i2p = self.ino_to_path.lock().unwrap();
-                        if let Some(path) = i2p.remove(&ino) {
-                            self.path_to_ino.lock().unwrap().remove(&path);
+                        if let Some(path) = inner.ino_to_path.remove(&ino) {
+                            inner.path_to_ino.remove(&path);
                         }
                     }
                 }

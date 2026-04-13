@@ -57,11 +57,12 @@ pub struct ActiveOverlay {
 /// Orchestrate the full materialize-and-ripple pipeline.
 ///
 /// 1. Calls [`Materializer::materialize`] to commit the changeset to trunk.
-/// 2. On success, clears the agent's overlay upper directory via the provided
-///    callback.
-/// 3. Runs ripple checking against all active agent overlays.
-/// 4. For each affected agent, classifies trunk changes, attempts live rebase
+/// 2. Runs ripple checking against all active agent overlays.
+/// 3. For each affected agent, classifies trunk changes, attempts live rebase
 ///    on shadowed files, writes enriched notifications, and emits audit events.
+///
+/// The agent's overlay is intentionally preserved after materialization so the
+/// session can be resumed. The overlay is only destroyed by `phantom destroy`.
 ///
 /// Returns a [`MaterializeOutput`] containing the materialization result and
 /// any ripple effects.
@@ -75,21 +76,10 @@ pub async fn materialize_and_ripple(
     phantom_dir: &Path,
     active_overlays: &[ActiveOverlay],
     message: &str,
-    clear_overlay: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<MaterializeOutput, OrchestratorError> {
     let result = materializer
         .materialize(changeset, upper_dir, events, analyzer, message)
         .await?;
-
-    // Clear the agent's upper layer so reads fall through to the updated trunk.
-    if let MaterializeResult::Success { .. } = &result
-        && let Err(e) = clear_overlay()
-    {
-        eprintln!(
-            "warning: failed to clear upper layer for {}: {e}",
-            changeset.agent_id
-        );
-    }
 
     let mut ripple_effects = Vec::new();
 
