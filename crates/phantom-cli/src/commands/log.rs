@@ -19,6 +19,9 @@ pub struct LogArgs {
     /// Maximum number of events to show
     #[arg(long, default_value = "50")]
     pub limit: u64,
+    /// Show full event details (agent, event kind, payload)
+    #[arg(short, long)]
+    pub verbose: bool,
 }
 
 pub async fn run(args: LogArgs) -> anyhow::Result<()> {
@@ -55,11 +58,16 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
 
     for event in &events {
         let ts = event.timestamp.format("%Y-%m-%d %H:%M:%S");
-        let kind_summary = format_event_kind(&event.kind);
-        println!(
-            "[{ts}] {} {} {kind_summary}",
-            event.changeset_id, event.agent_id
-        );
+        if args.verbose {
+            let kind_summary = format_event_kind(&event.kind);
+            println!(
+                "[{ts}] {} {} {kind_summary}",
+                event.changeset_id, event.agent_id
+            );
+        } else {
+            let label = event_kind_label(&event.kind);
+            println!("[{ts}] {} {label}", event.changeset_id);
+        }
     }
 
     println!("\n{} event(s) shown.", events.len());
@@ -183,6 +191,30 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
             format!("AgentCompleted {{ exit: {code}, materialized: {materialized} }}")
         }
         EventKind::Unknown => "Unknown".into(),
+    }
+}
+
+/// Short human-readable label for the default (non-verbose) output.
+fn event_kind_label(kind: &phantom_core::EventKind) -> &'static str {
+    use phantom_core::EventKind;
+    match kind {
+        EventKind::TaskCreated { .. } => "task created",
+        EventKind::TaskDestroyed => "task destroyed",
+        EventKind::FileWritten { .. } => "file written",
+        EventKind::FileDeleted { .. } => "file deleted",
+        EventKind::ChangesetSubmitted { .. } => "submitted",
+        EventKind::ChangesetMergeChecked { .. } => "merge checked",
+        EventKind::ChangesetMaterialized { .. } => "materialized",
+        EventKind::ChangesetConflicted { .. } => "conflicted",
+        EventKind::ChangesetDropped { .. } => "dropped",
+        EventKind::TrunkAdvanced { .. } => "trunk advanced",
+        EventKind::AgentNotified { .. } => "agent notified",
+        EventKind::TestsRun(_) => "tests run",
+        EventKind::LiveRebased { .. } => "live rebased",
+        EventKind::ConflictResolutionStarted { .. } => "conflict resolution",
+        EventKind::AgentLaunched { .. } => "agent launched",
+        EventKind::AgentCompleted { .. } => "agent completed",
+        EventKind::Unknown => "unknown",
     }
 }
 
