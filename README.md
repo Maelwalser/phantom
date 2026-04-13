@@ -8,7 +8,7 @@
 </div>
 
 **A version control designed for AI coding tools**<br/>
-Phantom is an extension for Git designed for simultaneous multi-agent collaboration. It binds stateful coding sessions to lightweight FUSE virtual filesystems, so feature-specific contexts can be paused, resumed, and re-entered at will.
+Phantom is a proof of concept for a version control for AI coding and currently a Git extension. It binds stateful coding sessions to lightweight FUSE virtual filesystems, so feature specific contexts can be paused, resumed, and re-entered at will.
 
 <p align="center">
   <img src="docs/assets/demo.gif" alt="Phantom CLI demo" width="800" />
