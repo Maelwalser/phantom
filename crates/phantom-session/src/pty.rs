@@ -48,7 +48,10 @@ impl TermiosGuard {
     pub fn save(raw_fd: BorrowedFd<'_>) -> anyhow::Result<Self> {
         let owned = nix::unistd::dup(raw_fd).context("failed to dup fd for termios guard")?;
         let original = termios::tcgetattr(&owned).context("failed to get terminal attributes")?;
-        Ok(Self { fd: owned, original })
+        Ok(Self {
+            fd: owned,
+            original,
+        })
     }
 }
 
@@ -96,8 +99,8 @@ pub fn spawn_with_pty(
     let stdin_borrowed = unsafe { BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
     let guard = TermiosGuard::save(stdin_borrowed)?;
 
-    let mut raw = termios::tcgetattr(stdin_borrowed)
-        .context("failed to get terminal attributes")?;
+    let mut raw =
+        termios::tcgetattr(stdin_borrowed).context("failed to get terminal attributes")?;
     termios::cfmakeraw(&mut raw);
     termios::tcsetattr(stdin_borrowed, SetArg::TCSANOW, &raw)
         .context("failed to set raw terminal mode")?;
@@ -139,8 +142,8 @@ pub fn spawn_with_pty(
 
     // Create a pipe used to signal both threads to stop when the child exits.
     // When we close `shutdown_write`, poll() on the read ends returns POLLHUP.
-    let (shutdown_read, shutdown_write) = nix::unistd::pipe()
-        .context("failed to create shutdown pipe")?;
+    let (shutdown_read, shutdown_write) =
+        nix::unistd::pipe().context("failed to create shutdown pipe")?;
     let capture_shutdown_read: OwnedFd =
         nix::unistd::dup(&shutdown_read).context("failed to dup shutdown pipe for capture")?;
 
@@ -185,9 +188,7 @@ pub fn spawn_with_pty(
             if let Some(revents) = fds[0].revents() {
                 if revents.intersects(PollFlags::POLLIN) {
                     // SAFETY: stdin_raw is STDIN_FILENO, valid and open.
-                    let n = unsafe {
-                        libc::read(stdin_raw, buf.as_mut_ptr().cast(), buf.len())
-                    };
+                    let n = unsafe { libc::read(stdin_raw, buf.as_mut_ptr().cast(), buf.len()) };
                     if n < 0 {
                         let err = io::Error::last_os_error();
                         if err.kind() == io::ErrorKind::Interrupted {
@@ -253,9 +254,7 @@ pub fn spawn_with_pty(
             if let Some(revents) = fds[0].revents() {
                 if revents.intersects(PollFlags::POLLIN) {
                     // SAFETY: master_raw is a valid open fd owned by master_read_fd.
-                    let n = unsafe {
-                        libc::read(master_raw, buf.as_mut_ptr().cast(), buf.len())
-                    };
+                    let n = unsafe { libc::read(master_raw, buf.as_mut_ptr().cast(), buf.len()) };
                     if n < 0 {
                         let err = io::Error::last_os_error();
                         if err.kind() == io::ErrorKind::Interrupted {
@@ -291,7 +290,9 @@ pub fn spawn_with_pty(
     });
 
     // 6. Wait for the child to exit.
-    let exit_status = child.wait().context("failed to wait for interactive session")?;
+    let exit_status = child
+        .wait()
+        .context("failed to wait for interactive session")?;
 
     // Block SIGINT during cleanup to ensure terminal restoration completes.
     // Our custom handler already prevents termination, but masking ensures
@@ -366,7 +367,9 @@ pub fn spawn_direct(
         )
     })?;
 
-    let exit_status = child.wait().context("failed to wait for interactive session")?;
+    let exit_status = child
+        .wait()
+        .context("failed to wait for interactive session")?;
 
     // No output capture possible without PTY -- session ID not available.
     Ok((exit_status, None))

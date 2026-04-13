@@ -83,6 +83,16 @@ impl fmt::Display for ContentHash {
     }
 }
 
+/// Unique identifier for a plan (e.g. `"plan-20260413-143022"`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PlanId(pub String);
+
+impl fmt::Display for PlanId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(&self.0)
+    }
+}
+
 /// Plain 20-byte Git object identifier.
 ///
 /// Stored as raw bytes so that `phantom-core` does **not** depend on `git2`.

@@ -218,12 +218,7 @@ mod inner {
             let stale: Vec<u64> = inner
                 .unlinked
                 .iter()
-                .filter(|&&ino| {
-                    inner
-                        .lookup_count
-                        .get(&ino)
-                        .is_none_or(|&count| count == 0)
-                })
+                .filter(|&&ino| inner.lookup_count.get(&ino).is_none_or(|&count| count == 0))
                 .copied()
                 .collect();
             let purged = stale.len();
@@ -529,9 +524,7 @@ mod inner {
                 }
             };
 
-            if truncate
-                && let Err(e) = file.set_len(0)
-            {
+            if truncate && let Err(e) = file.set_len(0) {
                 warn!(error = %e, "open: truncate failed");
                 reply.error(Errno::EIO);
                 return;
@@ -659,10 +652,13 @@ mod inner {
                     };
 
                     let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
-                    self.open_files
-                        .write()
-                        .unwrap()
-                        .insert(fh, OpenFile { file, writable: true });
+                    self.open_files.write().unwrap().insert(
+                        fh,
+                        OpenFile {
+                            file,
+                            writable: true,
+                        },
+                    );
 
                     let ino = self.inodes.get_or_create_inode(&child_path);
                     let now = SystemTime::now();

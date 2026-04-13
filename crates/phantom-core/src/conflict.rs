@@ -76,11 +76,7 @@ impl ConflictSpan {
             .count()
             + 1;
         let end_byte = byte_range.end.min(src.len());
-        let end_line = src[..end_byte]
-            .iter()
-            .filter(|&&b| b == b'\n')
-            .count()
-            + 1;
+        let end_line = src[..end_byte].iter().filter(|&&b| b == b'\n').count() + 1;
         Self {
             byte_range,
             start_line,

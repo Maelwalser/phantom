@@ -87,9 +87,7 @@ impl SemanticOperation {
             Self::AddSymbol { file, .. }
             | Self::ModifySymbol { file, .. }
             | Self::DeleteSymbol { file, .. } => file,
-            Self::AddFile { path }
-            | Self::DeleteFile { path }
-            | Self::RawDiff { path, .. } => path,
+            Self::AddFile { path } | Self::DeleteFile { path } | Self::RawDiff { path, .. } => path,
         }
     }
 

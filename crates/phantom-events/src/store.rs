@@ -7,8 +7,8 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::Row;
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
 use tracing::debug;
 
 use phantom_core::error::CoreError;
@@ -196,12 +196,10 @@ impl SqliteEventStore {
             sqlx::query_as("SELECT value FROM schema_meta WHERE key = 'schema_version'")
                 .fetch_one(&self.pool)
                 .await?;
-        row.0
-            .parse()
-            .map_err(|_| EventStoreError::SchemaMismatch {
-                expected: CURRENT_SCHEMA_VERSION,
-                found: 0,
-            })
+        row.0.parse().map_err(|_| EventStoreError::SchemaMismatch {
+            expected: CURRENT_SCHEMA_VERSION,
+            found: 0,
+        })
     }
 
     /// Run forward migrations up to [`CURRENT_SCHEMA_VERSION`].
@@ -291,9 +289,12 @@ impl EventStore for SqliteEventStore {
     }
 
     async fn query_by_changeset(&self, id: &ChangesetId) -> Result<Vec<Event>, CoreError> {
-        self.query_events("changeset_id = $1 AND dropped = 0", std::slice::from_ref(&id.0))
-            .await
-            .map_err(Into::into)
+        self.query_events(
+            "changeset_id = $1 AND dropped = 0",
+            std::slice::from_ref(&id.0),
+        )
+        .await
+        .map_err(Into::into)
     }
 
     async fn query_by_agent(&self, id: &AgentId) -> Result<Vec<Event>, CoreError> {

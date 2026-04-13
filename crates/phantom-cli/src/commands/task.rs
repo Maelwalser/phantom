@@ -56,94 +56,93 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
     let head = git.head_oid().context("failed to read HEAD")?;
 
     // Try to create a new overlay. If one already exists, switch to resume mode.
-    let (changeset_id, base_commit, is_new, mount_point, upper_dir) =
-        match overlays.create_overlay(agent_id.clone(), &ctx.repo_root) {
-            Ok(handle) => {
-                let mount_point = handle.mount_point.clone();
-                let upper_dir = handle.upper_dir.clone();
+    let (changeset_id, base_commit, is_new, mount_point, upper_dir) = match overlays
+        .create_overlay(agent_id.clone(), &ctx.repo_root)
+    {
+        Ok(handle) => {
+            let mount_point = handle.mount_point.clone();
+            let upper_dir = handle.upper_dir.clone();
 
-                let cs_id = generate_changeset_id(&events).await?;
+            let cs_id = generate_changeset_id(&events).await?;
 
-                let event = Event {
-                    id: EventId(0),
-                    timestamp: Utc::now(),
-                    changeset_id: cs_id.clone(),
-                    agent_id: agent_id.clone(),
-                    kind: EventKind::TaskCreated {
-                        base_commit: head,
-                        task: args.task.clone().unwrap_or_default(),
-                    },
-                };
-                events
-                    .append(event)
-                    .await
-                    ?;
+            let event = Event {
+                id: EventId(0),
+                timestamp: Utc::now(),
+                changeset_id: cs_id.clone(),
+                agent_id: agent_id.clone(),
+                kind: EventKind::TaskCreated {
+                    base_commit: head,
+                    task: args.task.clone().unwrap_or_default(),
+                },
+            };
+            events.append(event).await?;
 
-                phantom_orchestrator::live_rebase::write_current_base(
-                    &ctx.phantom_dir,
-                    &agent_id,
-                    &head,
-                )
-                .context("failed to write initial current_base")?;
+            phantom_orchestrator::live_rebase::write_current_base(
+                &ctx.phantom_dir,
+                &agent_id,
+                &head,
+            )
+            .context("failed to write initial current_base")?;
 
-                (cs_id, head, true, mount_point, upper_dir)
-            }
-            Err(OverlayError::AlreadyExists(_)) => {
-                let (old_cs_id, old_base) = recover_changeset_from_events(&events, &agent_id).await?;
-                let resume_status = check_changeset_resumable(&events, &old_cs_id).await?;
+            (cs_id, head, true, mount_point, upper_dir)
+        }
+        Err(OverlayError::AlreadyExists(_)) => {
+            let (old_cs_id, old_base) = recover_changeset_from_events(&events, &agent_id).await?;
+            let resume_status = check_changeset_resumable(&events, &old_cs_id).await?;
 
-                let upper_dir = overlays
-                    .upper_dir(&agent_id)
-                    ?
-                    .to_path_buf();
-                let mount_point = ctx
-                    .phantom_dir
-                    .join("overlays")
-                    .join(&agent_id.0)
-                    .join("mount");
+            let upper_dir = overlays.upper_dir(&agent_id)?.to_path_buf();
+            let mount_point = ctx
+                .phantom_dir
+                .join("overlays")
+                .join(&agent_id.0)
+                .join("mount");
 
-                // If the previous changeset was materialized, start a new one
-                // so the agent can continue working on the same overlay.
-                let (cs_id, base) = match resume_status {
-                    ResumeStatus::Materialized => {
-                        let new_cs_id = generate_changeset_id(&events).await?;
-                        let event = Event {
-                            id: EventId(0),
-                            timestamp: Utc::now(),
-                            changeset_id: new_cs_id.clone(),
-                            agent_id: agent_id.clone(),
-                            kind: EventKind::TaskCreated {
-                                base_commit: head,
-                                task: args.task.clone().unwrap_or_default(),
-                            },
-                        };
-                        events.append(event).await?;
+            // If the previous changeset was materialized, start a new one
+            // so the agent can continue working on the same overlay.
+            let (cs_id, base) = match resume_status {
+                ResumeStatus::Materialized => {
+                    let new_cs_id = generate_changeset_id(&events).await?;
+                    let event = Event {
+                        id: EventId(0),
+                        timestamp: Utc::now(),
+                        changeset_id: new_cs_id.clone(),
+                        agent_id: agent_id.clone(),
+                        kind: EventKind::TaskCreated {
+                            base_commit: head,
+                            task: args.task.clone().unwrap_or_default(),
+                        },
+                    };
+                    events.append(event).await?;
 
-                        phantom_orchestrator::live_rebase::write_current_base(
-                            &ctx.phantom_dir,
-                            &agent_id,
-                            &head,
-                        )
-                        .context("failed to write current_base for new changeset")?;
+                    phantom_orchestrator::live_rebase::write_current_base(
+                        &ctx.phantom_dir,
+                        &agent_id,
+                        &head,
+                    )
+                    .context("failed to write current_base for new changeset")?;
 
-                        (new_cs_id, head)
-                    }
-                    ResumeStatus::Submitted | ResumeStatus::InProgress => {
-                        (old_cs_id, old_base)
-                    }
-                };
+                    (new_cs_id, head)
+                }
+                ResumeStatus::Submitted | ResumeStatus::InProgress => (old_cs_id, old_base),
+            };
 
-                (cs_id, base, false, mount_point, upper_dir)
-            }
-            Err(e) => return Err(e.into()),
-        };
+            (cs_id, base, false, mount_point, upper_dir)
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     // Spawn FUSE daemon unless --no-fuse or already mounted.
     let already_mounted = is_fuse_mounted(&mount_point);
     let fuse_mounted = if args.no_fuse || already_mounted {
         already_mounted
     } else {
-        spawn_fuse_daemon(&ctx.phantom_dir, &ctx.repo_root, &args.agent, &mount_point, &upper_dir)?
+        spawn_fuse_daemon(
+            &ctx.phantom_dir,
+            &ctx.repo_root,
+            &args.agent,
+            &mount_point,
+            &upper_dir,
+        )?
     };
 
     // The agent's working directory: FUSE mount (merged view) or upper dir (writes only).
@@ -169,7 +168,11 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
 
         // Spawn the monitor process, which in turn spawns claude as its child.
         // This ensures the monitor can waitpid for the real exit code.
-        let log_file = ctx.phantom_dir.join("overlays").join(&args.agent).join("agent.log");
+        let log_file = ctx
+            .phantom_dir
+            .join("overlays")
+            .join(&args.agent)
+            .join("agent.log");
         spawn_agent_monitor(
             &ctx.phantom_dir,
             &ctx.repo_root,
@@ -178,6 +181,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             task,
             &work_dir,
             args.auto_materialize,
+            None,
         )?;
 
         println!("Agent '{}' {verb} (background).", args.agent);
@@ -265,8 +269,7 @@ fn spawn_fuse_daemon(
         .spawn()
         .context("failed to spawn FUSE daemon")?;
 
-    std::fs::write(&pid_file, child.id().to_string())
-        .context("failed to write FUSE PID file")?;
+    std::fs::write(&pid_file, child.id().to_string()).context("failed to write FUSE PID file")?;
 
     wait_for_mount(mount_point, Duration::from_secs(5)).with_context(|| {
         format!(
@@ -292,9 +295,10 @@ fn wait_for_mount(mount_point: &Path, timeout: Duration) -> anyhow::Result<()> {
 
     loop {
         if let (Ok(m), Ok(p)) = (std::fs::metadata(mount_point), std::fs::metadata(parent))
-            && m.dev() != p.dev() {
-                return Ok(());
-            }
+            && m.dev() != p.dev()
+        {
+            return Ok(());
+        }
 
         if start.elapsed() > timeout {
             anyhow::bail!("timed out after {}s", timeout.as_secs());
@@ -307,7 +311,9 @@ fn wait_for_mount(mount_point: &Path, timeout: Duration) -> anyhow::Result<()> {
 ///
 /// Uses a monotonic counter from the event store combined with a timestamp
 /// suffix to avoid collisions from concurrent task calls.
-async fn generate_changeset_id(events: &SqliteEventStore) -> anyhow::Result<ChangesetId> {
+pub(crate) async fn generate_changeset_id(
+    events: &SqliteEventStore,
+) -> anyhow::Result<ChangesetId> {
     let events = events.query_all().await?;
 
     let overlay_count = events
@@ -332,10 +338,7 @@ async fn recover_changeset_from_events(
     events: &SqliteEventStore,
     agent_id: &AgentId,
 ) -> anyhow::Result<(ChangesetId, GitOid)> {
-    let events = events
-        .query_by_agent(agent_id)
-        .await
-        ?;
+    let events = events.query_by_agent(agent_id).await?;
 
     // Walk backwards to find the most recent TaskCreated event.
     for event in events.iter().rev() {
@@ -367,11 +370,11 @@ enum ResumeStatus {
 /// Blocks resume only if the task has been explicitly destroyed. Otherwise
 /// returns the changeset status so the caller can decide whether to reuse the
 /// changeset or create a new one.
-async fn check_changeset_resumable(events: &SqliteEventStore, cs_id: &ChangesetId) -> anyhow::Result<ResumeStatus> {
-    let events = events
-        .query_by_changeset(cs_id)
-        .await
-        ?;
+async fn check_changeset_resumable(
+    events: &SqliteEventStore,
+    cs_id: &ChangesetId,
+) -> anyhow::Result<ResumeStatus> {
+    let events = events.query_by_changeset(cs_id).await?;
 
     let mut materialized = false;
     let mut submitted = false;
@@ -406,6 +409,7 @@ async fn check_changeset_resumable(events: &SqliteEventStore, cs_id: &ChangesetI
 /// Spawn the `phantom _agent-monitor` process which will in turn spawn and
 /// monitor the claude process. This ensures the monitor is the parent of
 /// claude and can `waitpid` to get the real exit code.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_agent_monitor(
     phantom_dir: &Path,
     repo_root: &Path,
@@ -414,6 +418,7 @@ pub(crate) fn spawn_agent_monitor(
     task: &str,
     work_dir: &Path,
     auto_materialize: bool,
+    system_prompt_file: Option<&Path>,
 ) -> anyhow::Result<()> {
     let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
     let overlay_root = phantom_dir.join("overlays").join(agent);
@@ -434,6 +439,10 @@ pub(crate) fn spawn_agent_monitor(
 
     if auto_materialize {
         cmd.arg("--auto-materialize");
+    }
+
+    if let Some(path) = system_prompt_file {
+        cmd.arg("--system-prompt-file").arg(path);
     }
 
     let child = cmd

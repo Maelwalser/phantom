@@ -88,16 +88,13 @@ pub async fn submit_overlay(
     let mut deletions = 0u32;
 
     for file in &modified {
-        let agent_content = std::fs::read(upper_dir.join(file))
-            .map_err(OrchestratorError::Io)?;
+        let agent_content = std::fs::read(upper_dir.join(file)).map_err(OrchestratorError::Io)?;
 
         let base_content = git.read_file_at_commit(&base_commit, file);
 
         let ops = match base_content {
             Ok(base) => {
-                let base_symbols = analyzer
-                    .extract_symbols(file, &base)
-                    .unwrap_or_default();
+                let base_symbols = analyzer.extract_symbols(file, &base).unwrap_or_default();
                 let current_symbols = analyzer
                     .extract_symbols(file, &agent_content)
                     .unwrap_or_default();
@@ -232,12 +229,8 @@ fn precheck_conflicts(
             continue;
         }
 
-        let base_symbols = analyzer
-            .extract_symbols(file, &base)
-            .unwrap_or_default();
-        let trunk_symbols = analyzer
-            .extract_symbols(file, &trunk)
-            .unwrap_or_default();
+        let base_symbols = analyzer.extract_symbols(file, &base).unwrap_or_default();
+        let trunk_symbols = analyzer.extract_symbols(file, &trunk).unwrap_or_default();
         let trunk_ops = analyzer.diff_symbols(&base_symbols, &trunk_symbols);
         let trunk_names: HashSet<String> = trunk_ops
             .iter()
@@ -252,10 +245,7 @@ fn precheck_conflicts(
                     symbol_id: Some(SymbolId(agent_sym.clone())),
                     ours_changeset: ChangesetId("trunk".into()),
                     theirs_changeset: changeset_id.clone(),
-                    description: format!(
-                        "symbol '{}' modified by both trunk and agent",
-                        agent_sym
-                    ),
+                    description: format!("symbol '{}' modified by both trunk and agent", agent_sym),
                     ours_span: None,
                     theirs_span: None,
                     base_span: None,

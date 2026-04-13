@@ -102,12 +102,7 @@ fn phantom_task_background_and_status() {
     phantom(dir.path()).arg("init").assert().success();
 
     phantom(dir.path())
-        .args([
-            "agent-a",
-            "--background",
-            "--task",
-            "add rate limiting",
-        ])
+        .args(["agent-a", "--background", "--task", "add rate limiting"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Agent 'agent-a' tasked"))
@@ -156,12 +151,7 @@ fn full_workflow_smoke_test() {
 
     // 2. Dispatch in background mode
     phantom(dir.path())
-        .args([
-            "agent-a",
-            "--background",
-            "--task",
-            "add feature X",
-        ])
+        .args(["agent-a", "--background", "--task", "add feature X"])
         .assert()
         .success();
 
@@ -208,13 +198,7 @@ fn phantom_task_background_conflicts_with_auto_submit() {
     phantom(dir.path()).arg("init").assert().success();
 
     phantom(dir.path())
-        .args([
-            "agent-a",
-            "--background",
-            "--task",
-            "test",
-            "--auto-submit",
-        ])
+        .args(["agent-a", "--background", "--task", "test", "--auto-submit"])
         .assert()
         .success();
 }

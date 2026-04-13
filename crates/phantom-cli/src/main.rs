@@ -6,11 +6,6 @@ use tracing::error;
 mod commands;
 mod context;
 
-
-
-
-
-
 fn print_banner() {
     println!(
         r#"
@@ -55,6 +50,8 @@ enum Commands {
     /// Show status of overlays and changesets
     #[command(visible_alias = "st")]
     Status(commands::status::StatusArgs),
+    /// Decompose a feature into parallel agent tasks
+    Plan(commands::plan::PlanArgs),
     /// Materialize a changeset to trunk
     #[command(visible_alias = "mat")]
     Materialize(commands::materialize::MaterializeArgs),
@@ -107,6 +104,7 @@ async fn main() {
             Ok(())
         }
         Some(Commands::Init) => commands::init::run().await,
+        Some(Commands::Plan(args)) => commands::plan::run(args).await,
         Some(Commands::Submit(args)) => commands::submit::run(args).await,
         Some(Commands::Status(args)) => commands::status::run(args).await,
         Some(Commands::Materialize(args)) => commands::materialize::run(args).await,

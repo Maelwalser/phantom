@@ -51,8 +51,7 @@ pub fn save_session(
     session: &CliSession,
 ) -> anyhow::Result<()> {
     let path = session_path(phantom_dir, agent_id);
-    let json = serde_json::to_string_pretty(session)
-        .context("failed to serialize CLI session")?;
+    let json = serde_json::to_string_pretty(session).context("failed to serialize CLI session")?;
     std::fs::write(&path, json)
         .with_context(|| format!("failed to write CLI session to {}", path.display()))?;
     Ok(())
@@ -84,11 +83,15 @@ pub trait CliAdapter {
     ///
     /// Returns `Some(Command)` if the CLI supports headless mode, `None` otherwise.
     /// For Claude Code this uses `-p` (prompt mode) instead of interactive mode.
+    ///
+    /// When `system_prompt_file` is `Some`, the CLI should append the file's
+    /// contents to its system prompt (e.g. `--append-system-prompt-file`).
     fn build_headless_command(
         &self,
         _work_dir: &Path,
         _task: &str,
         _env_vars: &[(&str, &str)],
+        _system_prompt_file: Option<&Path>,
     ) -> Option<Command> {
         None
     }
@@ -143,6 +146,7 @@ impl CliAdapter for ClaudeAdapter {
         work_dir: &Path,
         task: &str,
         env_vars: &[(&str, &str)],
+        system_prompt_file: Option<&Path>,
     ) -> Option<Command> {
         let mut cmd = Command::new("claude");
         cmd.current_dir(work_dir);
@@ -159,13 +163,22 @@ impl CliAdapter for ClaudeAdapter {
             cmd.args(["--add-dir", dir_str]);
         }
 
+        // Inject custom instructions while preserving built-in capabilities.
+        if let Some(path) = system_prompt_file
+            && let Some(path_str) = path.to_str()
+        {
+            cmd.args(["--append-system-prompt-file", path_str]);
+        }
+
         Some(cmd)
     }
 
     fn extract_session_id(&self, output_tail: &str) -> Option<String> {
         // Claude Code prints: "claude --resume <UUID>" near the end of output.
-        let re = Regex::new(r"claude --resume ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
-            .ok()?;
+        let re = Regex::new(
+            r"claude --resume ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        )
+        .ok()?;
         re.captures(output_tail)
             .and_then(|caps| caps.get(1))
             .map(|m| m.as_str().to_string())

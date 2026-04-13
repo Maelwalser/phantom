@@ -194,7 +194,10 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
             if let Ok(json) = serde_json::to_string_pretty(&status) {
                 let _ = std::fs::write(&status_file, json);
             }
-            warn!(agent = agent_name, pid, "detected dead agent process without status");
+            warn!(
+                agent = agent_name,
+                pid, "detected dead agent process without status"
+            );
         }
         // Clean up PID files.
         let _ = std::fs::remove_file(&pid_file);

@@ -88,8 +88,7 @@ pub fn write_trunk_notification(
         .join("overlays")
         .join(&agent_id.0)
         .join("trunk-updated.json");
-    let json = serde_json::to_string_pretty(notification)
-        .map_err(std::io::Error::other)?;
+    let json = serde_json::to_string_pretty(notification).map_err(std::io::Error::other)?;
     std::fs::write(path, json)
 }
 

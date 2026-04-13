@@ -38,6 +38,9 @@ pub struct AgentMonitorArgs {
     /// Automatically materialize after submitting
     #[arg(long)]
     pub auto_materialize: bool,
+    /// Path to a system prompt file to append to the claude invocation
+    #[arg(long)]
+    pub system_prompt_file: Option<String>,
 }
 
 /// Completion status written to `.phantom/overlays/<agent>/agent.status`.
@@ -55,7 +58,10 @@ pub struct AgentStatus {
 
 /// Path to the agent status file.
 pub fn status_path(phantom_dir: &std::path::Path, agent: &str) -> PathBuf {
-    phantom_dir.join("overlays").join(agent).join("agent.status")
+    phantom_dir
+        .join("overlays")
+        .join(agent)
+        .join("agent.status")
 }
 
 /// Path to the agent PID file.
@@ -87,8 +93,15 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     let work_dir = PathBuf::from(&args.work_dir);
 
     // Spawn the claude process as our child so we can waitpid for it.
-    let (claude_pid, exit_code) =
-        spawn_and_wait_claude(&ctx.phantom_dir, &args.agent, &work_dir, &args.task, &args.repo_root)?;
+    let system_prompt_file = args.system_prompt_file.as_deref().map(PathBuf::from);
+    let (claude_pid, exit_code) = spawn_and_wait_claude(
+        &ctx.phantom_dir,
+        &args.agent,
+        &work_dir,
+        &args.task,
+        &args.repo_root,
+        system_prompt_file.as_deref(),
+    )?;
 
     // Emit AgentLaunched event now that we have the real PID.
     let launch_event = Event {
@@ -101,19 +114,11 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
             task: args.task.clone(),
         },
     };
-    events
-        .append(launch_event)
-        .await
-        ?;
+    events.append(launch_event).await?;
 
     // Run post-completion flow: always auto-submit on success, optionally auto-materialize.
-    let result = run_post_completion(
-        &agent_id,
-        &changeset_id,
-        exit_code,
-        args.auto_materialize,
-    )
-    .await;
+    let result =
+        run_post_completion(&agent_id, &changeset_id, exit_code, args.auto_materialize).await;
 
     // Write status file regardless of success/failure.
     let status = match &result {
@@ -150,6 +155,7 @@ fn spawn_and_wait_claude(
     work_dir: &Path,
     task: &str,
     repo_root: &str,
+    system_prompt_file: Option<&Path>,
 ) -> anyhow::Result<(u32, Option<i32>)> {
     let overlay_root = phantom_dir.join("overlays").join(agent);
     let log_file = overlay_root.join("agent.log");
@@ -171,22 +177,21 @@ fn spawn_and_wait_claude(
     ];
 
     let mut cmd = cli_adapter
-        .build_headless_command(work_dir, task, &env_vars)
+        .build_headless_command(work_dir, task, &env_vars, system_prompt_file)
         .context("CLI adapter does not support headless mode")?;
 
     cmd.stdin(std::process::Stdio::null())
         .stdout(log_handle)
         .stderr(log_stderr);
 
-    let mut child = cmd.spawn().with_context(|| {
-        "failed to spawn background agent -- is 'claude' installed and on PATH?"
-    })?;
+    let mut child = cmd.spawn().with_context(
+        || "failed to spawn background agent -- is 'claude' installed and on PATH?",
+    )?;
 
     let claude_pid = child.id();
 
     // Write PID file so status can find it.
-    std::fs::write(&pid_file, claude_pid.to_string())
-        .context("failed to write agent PID file")?;
+    std::fs::write(&pid_file, claude_pid.to_string()).context("failed to write agent PID file")?;
 
     // Wait for the child -- this is our direct child, so waitpid works.
     let status = child
@@ -214,9 +219,7 @@ async fn run_post_completion(
     let mut overlays = ctx.open_overlays_restored()?;
 
     // Clean up the context file.
-    let upper_dir = overlays
-        .upper_dir(agent_id)
-        ?;
+    let upper_dir = overlays.upper_dir(agent_id)?;
     let context_path = upper_dir.join(context_file::CONTEXT_FILE);
     let _ = std::fs::remove_file(&context_path);
 
@@ -233,10 +236,7 @@ async fn run_post_completion(
             materialized: false,
         },
     };
-    events
-        .append(event)
-        .await
-        ?;
+    events.append(event).await?;
 
     if !success {
         anyhow::bail!(

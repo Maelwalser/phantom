@@ -236,10 +236,7 @@ fn three_way_merge(
     theirs: &[u8],
 ) -> Result<MergeResult, OrchestratorError> {
     // Reject binary or non-UTF-8 content to prevent silent data corruption.
-    if is_binary_or_non_utf8(base)
-        || is_binary_or_non_utf8(ours)
-        || is_binary_or_non_utf8(theirs)
-    {
+    if is_binary_or_non_utf8(base) || is_binary_or_non_utf8(ours) || is_binary_or_non_utf8(theirs) {
         let detail = ConflictDetail {
             kind: ConflictKind::BinaryFile,
             file: PathBuf::from("<text-merge>"),
@@ -773,16 +770,19 @@ mod tests {
             "overlay copy failed, trunk restored to original state: disk full".into(),
         );
         let ok_msg = ok_err.to_string();
-        assert!(!ok_msg.contains("RECOVERY ALSO FAILED"), "error was: {ok_msg}");
-        assert!(ok_msg.contains("restored to original state"), "error was: {ok_msg}");
+        assert!(
+            !ok_msg.contains("RECOVERY ALSO FAILED"),
+            "error was: {ok_msg}"
+        );
+        assert!(
+            ok_msg.contains("restored to original state"),
+            "error was: {ok_msg}"
+        );
     }
 
     #[test]
     fn test_build_tree_with_blobs_root_files() {
-        let (dir, _ops) = init_repo_with_commit(
-            &[("a.txt", b"aaa"), ("b.txt", b"bbb")],
-            "init",
-        );
+        let (dir, _ops) = init_repo_with_commit(&[("a.txt", b"aaa"), ("b.txt", b"bbb")], "init");
         let repo = git2::Repository::open(dir.path()).unwrap();
         let head = repo.head().unwrap().peel_to_commit().unwrap();
         let base_tree = head.tree().unwrap();
@@ -814,7 +814,10 @@ mod tests {
     #[test]
     fn test_build_tree_with_blobs_nested_paths() {
         let (dir, _ops) = init_repo_with_commit(
-            &[("src/main.rs", b"fn main() {}"), ("src/lib.rs", b"pub mod lib;")],
+            &[
+                ("src/main.rs", b"fn main() {}"),
+                ("src/lib.rs", b"pub mod lib;"),
+            ],
             "init",
         );
         let repo = git2::Repository::open(dir.path()).unwrap();
@@ -823,7 +826,10 @@ mod tests {
 
         let files = vec![
             (PathBuf::from("src/main.rs"), b"fn main() { new }".to_vec()),
-            (PathBuf::from("src/utils/helper.rs"), b"pub fn help() {}".to_vec()),
+            (
+                PathBuf::from("src/utils/helper.rs"),
+                b"pub fn help() {}".to_vec(),
+            ),
         ];
 
         let new_tree_oid = build_tree_with_blobs(&repo, &base_tree, &files).unwrap();

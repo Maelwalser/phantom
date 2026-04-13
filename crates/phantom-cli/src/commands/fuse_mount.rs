@@ -94,8 +94,8 @@ pub fn run(args: FuseMountArgs) -> anyhow::Result<()> {
             "starting FUSE mount"
         );
 
-        let session = fuser::spawn_mount2(fs, &args.mount_point, &config)
-            .context("FUSE mount failed")?;
+        let session =
+            fuser::spawn_mount2(fs, &args.mount_point, &config).context("FUSE mount failed")?;
 
         // Wait for SIGTERM. The background thread runs the FUSE event loop;
         // we just need to watch for the termination signal.

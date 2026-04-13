@@ -305,12 +305,8 @@ impl Materializer {
         // object from blobs without writing to the working directory first,
         // eliminating the TOCTOU window between writing files to disk and
         // staging them via index.add_path().
-        let new_commit = self.commit_from_content(
-            &merged_files,
-            ctx.head,
-            ctx.message,
-            &changeset.agent_id.0,
-        )?;
+        let new_commit =
+            self.commit_from_content(&merged_files, ctx.head, ctx.message, &changeset.agent_id.0)?;
 
         // Update working tree to match the new commit (best-effort
         // convenience). The commit is already correct regardless.
@@ -665,7 +661,13 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .materialize(
+                &changeset,
+                upper.path(),
+                &event_store,
+                &analyzer,
+                "test commit",
+            )
             .await
             .unwrap();
 
@@ -701,7 +703,13 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .materialize(
+                &changeset,
+                upper.path(),
+                &event_store,
+                &analyzer,
+                "test commit",
+            )
             .await
             .unwrap();
 
@@ -749,7 +757,14 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit").await
+            .materialize(
+                &changeset,
+                upper.path(),
+                &event_store,
+                &analyzer,
+                "test commit",
+            )
+            .await
             .unwrap();
 
         match result {
@@ -785,7 +800,14 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit").await
+            .materialize(
+                &changeset,
+                upper.path(),
+                &event_store,
+                &analyzer,
+                "test commit",
+            )
+            .await
             .unwrap();
 
         match result {
@@ -861,7 +883,14 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit").await
+            .materialize(
+                &changeset,
+                upper.path(),
+                &event_store,
+                &analyzer,
+                "test commit",
+            )
+            .await
             .unwrap();
 
         match result {
@@ -893,7 +922,14 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit").await
+            .materialize(
+                &changeset,
+                upper.path(),
+                &event_store,
+                &analyzer,
+                "test commit",
+            )
+            .await
             .unwrap();
 
         match result {
@@ -923,7 +959,13 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .materialize(
+                &changeset,
+                upper.path(),
+                &event_store,
+                &analyzer,
+                "test commit",
+            )
             .await;
 
         assert!(result.is_err());
@@ -946,7 +988,13 @@ mod tests {
 
         let materializer = Materializer::new(git);
         let result = materializer
-            .materialize(&changeset, upper.path(), &event_store, &analyzer, "test commit")
+            .materialize(
+                &changeset,
+                upper.path(),
+                &event_store,
+                &analyzer,
+                "test commit",
+            )
             .await;
 
         assert!(result.is_err());

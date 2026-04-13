@@ -30,8 +30,7 @@ pub async fn post_session_flow(
     auto_submit: bool,
     auto_materialize: bool,
 ) -> anyhow::Result<()> {
-    let layer = overlays
-        .get_layer(agent_id)?;
+    let layer = overlays.get_layer(agent_id)?;
 
     let modified = layer.modified_files()?;
 
@@ -58,8 +57,14 @@ pub async fn post_session_flow(
             if auto_materialize {
                 println!("Auto-materializing...");
                 let output = materialize_changeset(
-                    phantom_dir, repo_root, events, overlays, &cs_id, &agent_id.0,
-                ).await?;
+                    phantom_dir,
+                    repo_root,
+                    events,
+                    overlays,
+                    &cs_id,
+                    &agent_id.0,
+                )
+                .await?;
                 match output.result {
                     MaterializeResult::Success { new_commit } => {
                         let hex = new_commit.to_hex();
@@ -92,11 +97,7 @@ pub async fn post_session_flow(
 }
 
 /// Clean up context files from both the work directory and the upper directory.
-pub fn cleanup_context_files(
-    work_dir: &Path,
-    overlays: &OverlayManager,
-    agent_id: &AgentId,
-) {
+pub fn cleanup_context_files(work_dir: &Path, overlays: &OverlayManager, agent_id: &AgentId) {
     context_file::cleanup_context_file(work_dir);
     if let Ok(upper_dir) = overlays.upper_dir(agent_id) {
         context_file::cleanup_context_file(upper_dir);
@@ -182,9 +183,7 @@ async fn materialize_changeset(
         .ok_or_else(|| anyhow::anyhow!("changeset '{changeset_id}' not found"))?
         .clone();
 
-    let upper_dir = overlays
-        .upper_dir(&changeset.agent_id)?
-        .to_path_buf();
+    let upper_dir = overlays.upper_dir(&changeset.agent_id)?.to_path_buf();
 
     let materializer = Materializer::new(
         phantom_orchestrator::git::GitOps::open(repo_root)
@@ -198,15 +197,15 @@ async fn materialize_changeset(
         .into_iter()
         .filter(|a| *a != changeset.agent_id)
         .filter_map(|a| {
-            let agent_cs = all_events
-                .iter()
-                .filter(|e| e.agent_id == a)
-                .find_map(|e| match &e.kind {
-                    EventKind::TaskCreated { .. } => Some(e.changeset_id.clone()),
-                    _ => None,
-                });
-            let cs_data = agent_cs
-                .and_then(|cs_id| projection.changeset(&cs_id).cloned());
+            let agent_cs =
+                all_events
+                    .iter()
+                    .filter(|e| e.agent_id == a)
+                    .find_map(|e| match &e.kind {
+                        EventKind::TaskCreated { .. } => Some(e.changeset_id.clone()),
+                        _ => None,
+                    });
+            let cs_data = agent_cs.and_then(|cs_id| projection.changeset(&cs_id).cloned());
             let agent_upper = overlays.upper_dir(&a).ok().map(|p| p.to_path_buf());
             match (cs_data, agent_upper) {
                 (Some(cs), Some(upper)) => Some(ActiveOverlay {
