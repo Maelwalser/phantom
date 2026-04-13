@@ -469,11 +469,19 @@ mod inner {
             let start_idx = if offset == 0 {
                 0
             } else {
-                all_entries
+                match all_entries
                     .iter()
                     .position(|(_, _, name)| dir_entry_cookie(name) == offset)
-                    .map(|pos| pos + 1)
-                    .unwrap_or(0)
+                {
+                    Some(pos) => pos + 1,
+                    None => {
+                        // The entry for this cookie was deleted between paginated
+                        // readdir calls.  Signal end-of-directory rather than
+                        // restarting from index 0 (which would cause an infinite loop).
+                        reply.ok();
+                        return;
+                    }
+                }
             };
 
             for (_, (child_ino, ft, name)) in all_entries.iter().enumerate().skip(start_idx) {

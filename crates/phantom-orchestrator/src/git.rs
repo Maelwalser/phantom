@@ -467,9 +467,7 @@ pub(crate) fn create_blobs_from_overlay(
     let paths = collect_files_recursive(upper_dir)?;
     let mut file_oids = Vec::with_capacity(paths.len());
     for rel_path in paths {
-        let content = std::fs::read(upper_dir.join(&rel_path))?;
-        let blob_oid = repo.blob(&content)?;
-        // `content` is dropped here — only one file buffered at a time.
+        let blob_oid = repo.blob_path(&upper_dir.join(&rel_path))?;
         file_oids.push((rel_path, blob_oid));
     }
     Ok(file_oids)
