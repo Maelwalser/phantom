@@ -34,9 +34,7 @@ pub enum AgentRunState {
         elapsed: Duration,
     },
     /// Agent process finished successfully.
-    Finished {
-        status: agent_monitor::AgentStatus,
-    },
+    Finished,
     /// Agent process failed or crashed.
     Failed {
         status: Option<agent_monitor::AgentStatus>,
@@ -228,7 +226,7 @@ pub fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
     if let Ok(content) = std::fs::read_to_string(&status_file) {
         if let Ok(status) = serde_json::from_str::<agent_monitor::AgentStatus>(&content) {
             return if status.exit_code == Some(0) && status.error.is_none() {
-                AgentRunState::Finished { status }
+                AgentRunState::Finished
             } else {
                 AgentRunState::Failed {
                     status: Some(status),
@@ -267,7 +265,7 @@ pub fn format_run_state_short(state: &AgentRunState) -> String {
         AgentRunState::Running { pid, elapsed } => {
             format!("running {}  pid {pid}", format_duration(elapsed))
         }
-        AgentRunState::Finished { status: _ } => "finished".into(),
+        AgentRunState::Finished => "finished".into(),
         AgentRunState::Failed { status } => {
             if let Some(s) = status {
                 let code = s
@@ -292,7 +290,7 @@ fn format_run_state_long(state: &AgentRunState) -> String {
                 format_duration(elapsed)
             )
         }
-        AgentRunState::Finished { status: _ } => "Finished".into(),
+        AgentRunState::Finished => "Finished".into(),
         AgentRunState::Failed { status } => {
             if let Some(s) = status {
                 let code = s

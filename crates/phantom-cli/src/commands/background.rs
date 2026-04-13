@@ -138,7 +138,7 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
 
         match &run_state {
             AgentRunState::Running { .. } => running += 1,
-            AgentRunState::Finished { .. } => finished += 1,
+            AgentRunState::Finished => finished += 1,
             AgentRunState::Failed { .. } => failed += 1,
             AgentRunState::Idle => idle += 1,
         }
@@ -198,7 +198,7 @@ fn format_state_columns(state: &AgentRunState) -> (&'static str, String, String)
             "running".into(),
             status::format_duration(elapsed),
         ),
-        AgentRunState::Finished { status: _ } => {
+        AgentRunState::Finished => {
             ("\x1b[32m✓ ", "finished".into(), String::new())
         }
         AgentRunState::Failed { status: s } => {
