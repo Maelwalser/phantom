@@ -9,11 +9,14 @@ pub mod fuse_fs;
 pub mod layer;
 pub mod manager;
 pub mod trunk_view;
+pub mod types;
+mod whiteout;
 
 pub use error::OverlayError;
-pub use layer::{DirEntry, FileType, OverlayLayer};
+pub use layer::OverlayLayer;
 pub use manager::{MountHandle, OverlayManager};
 pub use trunk_view::TrunkView;
+pub use types::{DirEntry, FileType};
 
 #[cfg(feature = "fuse")]
 pub use fuse_fs::PhantomFs;

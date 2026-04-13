@@ -392,9 +392,9 @@ mod inner {
                 let child_path = path.join(&entry.name);
                 let child_ino = self.inodes.get_or_create_inode(&child_path);
                 let ft = match entry.file_type {
-                    crate::layer::FileType::File => FileType::RegularFile,
-                    crate::layer::FileType::Directory => FileType::Directory,
-                    crate::layer::FileType::Symlink => FileType::Symlink,
+                    crate::types::FileType::File => FileType::RegularFile,
+                    crate::types::FileType::Directory => FileType::Directory,
+                    crate::types::FileType::Symlink => FileType::Symlink,
                 };
                 all_entries.push((child_ino, ft, entry.name.to_string_lossy().into_owned()));
             }

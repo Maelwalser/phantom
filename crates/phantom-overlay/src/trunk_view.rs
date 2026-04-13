@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::OverlayError;
-use crate::layer::DirEntry;
+use crate::types::DirEntry;
 
 /// Read-only view into the trunk working tree.
 pub struct TrunkView {
@@ -74,11 +74,11 @@ pub(crate) fn read_dir_entries(abs_path: &Path) -> Result<Vec<DirEntry>, Overlay
         let entry = entry?;
         let ft = entry.file_type()?;
         let file_type = if ft.is_dir() {
-            crate::layer::FileType::Directory
+            crate::types::FileType::Directory
         } else if ft.is_symlink() {
-            crate::layer::FileType::Symlink
+            crate::types::FileType::Symlink
         } else {
-            crate::layer::FileType::File
+            crate::types::FileType::File
         };
         entries.push(DirEntry {
             name: entry.file_name(),
