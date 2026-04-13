@@ -114,8 +114,9 @@ impl Materializer {
     ) -> Result<MaterializeResult, OrchestratorError> {
         debug!(changeset = %changeset.id, "direct apply — trunk has not advanced");
 
-        let files = git::read_overlay_files(upper_dir)?;
-        let new_commit = self.commit_from_content(&files, head, message, &changeset.agent_id.0)?;
+        let file_oids = git::create_blobs_from_overlay(self.git.repo(), upper_dir)?;
+        let new_commit =
+            self.commit_from_oids(&file_oids, head, message, &changeset.agent_id.0)?;
 
         // Update working tree to match the new commit (best-effort).
         if let Err(e) = self
@@ -305,8 +306,9 @@ impl Materializer {
         // object from blobs without writing to the working directory first,
         // eliminating the TOCTOU window between writing files to disk and
         // staging them via index.add_path().
+        let merged_oids = git::create_blobs_from_content(self.git.repo(), &merged_files)?;
         let new_commit =
-            self.commit_from_content(&merged_files, ctx.head, ctx.message, &changeset.agent_id.0)?;
+            self.commit_from_oids(&merged_oids, ctx.head, ctx.message, &changeset.agent_id.0)?;
 
         // Update working tree to match the new commit (best-effort
         // convenience). The commit is already correct regardless.
@@ -356,15 +358,14 @@ impl Materializer {
         Ok(())
     }
 
-    /// Build a commit from in-memory file contents without touching the
+    /// Build a commit from pre-created blob OIDs without touching the
     /// working tree.
     ///
-    /// Creates blob objects directly from `files` content, builds a tree that
-    /// layers those blobs on top of `parent_oid`'s tree, and creates a commit.
-    /// This avoids TOCTOU races between writing files and staging them.
-    fn commit_from_content(
+    /// Memory-efficient counterpart to [`commit_from_content`]: blobs are
+    /// already created, so this only builds the tree and commit objects.
+    fn commit_from_oids(
         &self,
-        files: &[(PathBuf, Vec<u8>)],
+        file_oids: &[(PathBuf, git2::Oid)],
         parent_oid: &GitOid,
         message: &str,
         author: &str,
@@ -374,7 +375,7 @@ impl Materializer {
         let parent = repo.find_commit(git2_parent_oid)?;
         let base_tree = parent.tree()?;
 
-        let new_tree_oid = git::build_tree_with_blobs(repo, &base_tree, files)?;
+        let new_tree_oid = git::build_tree_from_oids(repo, &base_tree, file_oids)?;
         let new_tree = repo.find_tree(new_tree_oid)?;
 
         let sig = git2::Signature::now(author, &format!("{author}@phantom"))?;

@@ -237,14 +237,20 @@ mod inner {
     /// chunked directory listings.  Using a hash of the entry name (instead of
     /// a volatile array index) keeps the cookie valid even when other entries
     /// are added or removed between calls.
-    fn dir_entry_cookie(name: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        name.hash(&mut hasher);
-        let h = hasher.finish();
+    ///
+    /// Uses FNV-1a (deterministic across process restarts, unlike
+    /// `DefaultHasher` which is randomly seeded per process).
+    pub(crate) fn dir_entry_cookie(name: &str) -> u64 {
+        const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x00000100000001B3;
+        let mut hash = FNV_OFFSET_BASIS;
+        for byte in name.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
         // Ensure non-zero (offset 0 means "start from beginning" in FUSE)
         // and positive (avoid i64 sign issues in some FUSE implementations).
-        (h | 1) & 0x7FFF_FFFF_FFFF_FFFF
+        (hash | 1) & 0x7FFF_FFFF_FFFF_FFFF
     }
 
     /// FUSE filesystem backed by an [`OverlayLayer`].
@@ -932,3 +938,49 @@ mod inner {
 
 #[cfg(target_os = "linux")]
 pub use inner::PhantomFs;
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod tests {
+    use super::inner::dir_entry_cookie;
+
+    #[test]
+    fn dir_entry_cookie_is_deterministic() {
+        let cookie1 = dir_entry_cookie("hello.txt");
+        let cookie2 = dir_entry_cookie("hello.txt");
+        assert_eq!(cookie1, cookie2);
+
+        let cookie3 = dir_entry_cookie("world.txt");
+        assert_ne!(cookie1, cookie3);
+    }
+
+    #[test]
+    fn dir_entry_cookie_nonzero_and_positive() {
+        for name in &[".", "..", "a", "hello.txt", "Cargo.toml"] {
+            let cookie = dir_entry_cookie(name);
+            assert_ne!(cookie, 0, "cookie for {name:?} must be non-zero");
+            assert_eq!(
+                cookie & 0x8000_0000_0000_0000,
+                0,
+                "cookie for {name:?} must be positive (top bit clear)"
+            );
+        }
+    }
+
+    #[test]
+    fn dir_entry_cookie_dot_entries_differ() {
+        let dot = dir_entry_cookie(".");
+        let dotdot = dir_entry_cookie("..");
+        assert_ne!(dot, dotdot);
+    }
+
+    #[test]
+    fn dir_entry_cookie_known_value() {
+        // Pin a known value to catch accidental algorithm changes.
+        // FNV-1a of "test": 0xcbf29ce484222325 ^ 't' * prime ^ 'e' * prime ^ 's' * prime ^ 't' * prime
+        let cookie = dir_entry_cookie("test");
+        assert_eq!(cookie, dir_entry_cookie("test"));
+        // Verify it's stable across runs by checking a hardcoded value.
+        assert_eq!(cookie, 8783962037831871269);
+    }
+}
