@@ -266,10 +266,10 @@ mod tests {
 
     #[test]
     fn unrecognized_variant_with_data_returns_error() {
-        // serde(other) only catches unit variants. Object-shaped unknown
-        // variants produce a deserialization error rather than silently
-        // losing data. This is acceptable — the store's row_to_event
-        // will surface this as an EventStoreError::Serialization.
+        // serde(other) only catches unit variants. Data-carrying unknown
+        // variants produce a deserialization error at the serde level.
+        // Forward compatibility is handled at the store layer:
+        // row_to_event catches this error and falls back to Unknown.
         let json = r#"{"NewFeatureEvent":{"field":"value"}}"#;
         let result = serde_json::from_str::<EventKind>(json);
         assert!(result.is_err());

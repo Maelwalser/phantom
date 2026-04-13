@@ -44,8 +44,10 @@ impl Default for EventStoreConfig {
 /// Parse a single SQLite row into an [`Event`].
 ///
 /// Expects columns: `id`, `timestamp`, `changeset_id`, `agent_id`, `kind`.
-/// Unrecognized `EventKind` variants deserialize as [`EventKind::Unknown`]
-/// instead of returning an error, ensuring forward compatibility.
+/// Unrecognized `EventKind` variants — whether unit variants (caught by
+/// `#[serde(other)]`) or data-carrying variants from newer schema versions
+/// (caught by the fallback match) — are returned as [`EventKind::Unknown`]
+/// instead of propagating an error, ensuring forward compatibility.
 pub(crate) fn row_to_event(row: &SqliteRow) -> Result<Event, EventStoreError> {
     let id: i64 = row.get("id");
     let ts_str: String = row.get("timestamp");
@@ -56,11 +58,18 @@ pub(crate) fn row_to_event(row: &SqliteRow) -> Result<Event, EventStoreError> {
     let timestamp = DateTime::parse_from_rfc3339(&ts_str)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| EventStoreError::InvalidTimestamp(ts_str, e.to_string()))?;
-    let kind: EventKind = serde_json::from_str(&kind_json)?;
-
-    if kind == EventKind::Unknown {
-        tracing::warn!(event_id = id, kind_json, "deserialized unrecognized EventKind as Unknown");
-    }
+    let kind: EventKind = match serde_json::from_str(&kind_json) {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::warn!(
+                event_id = id,
+                kind_json,
+                error = %e,
+                "unrecognized EventKind, falling back to Unknown"
+            );
+            EventKind::Unknown
+        }
+    };
 
     Ok(Event {
         id: EventId(id as u64),

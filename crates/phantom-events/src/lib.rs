@@ -550,4 +550,31 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, EventKind::Unknown);
     }
+
+    // ── Test 13: Data-carrying unknown variants fall back to Unknown ──
+
+    #[tokio::test]
+    async fn test_unknown_data_variant_survives_store_roundtrip() {
+        let store = SqliteEventStore::in_memory().await.unwrap();
+
+        // Insert an event with a data-carrying variant that this binary
+        // doesn't recognize. serde(other) cannot catch these — the store's
+        // fallback match handles them.
+        sqlx::query(
+            "INSERT INTO events (timestamp, changeset_id, agent_id, kind, kind_version)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind("cs-future")
+        .bind("agent-x")
+        .bind(r#"{"AgentReassigned":{"id":"123"}}"#)
+        .bind(99i32)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let events = store.query_all().await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, EventKind::Unknown);
+    }
 }
