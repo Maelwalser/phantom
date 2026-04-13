@@ -147,6 +147,19 @@ impl Projection {
             .max_by_key(|cs| cs.created_at)
     }
 
+    /// Find the most recently conflicted changeset for a given agent.
+    ///
+    /// Returns the changeset with `Conflicted` status whose `created_at` is
+    /// latest among all conflicted changesets belonging to `agent_id`.
+    /// Returns `None` if no conflicted changeset exists for that agent.
+    #[must_use]
+    pub fn latest_conflicted_changeset(&self, agent_id: &AgentId) -> Option<&Changeset> {
+        self.changesets
+            .values()
+            .filter(|cs| cs.agent_id == *agent_id && cs.status == ChangesetStatus::Conflicted)
+            .max_by_key(|cs| cs.created_at)
+    }
+
     /// Return changesets with `Submitted` status.
     #[must_use]
     pub fn pending_changesets(&self) -> Vec<&Changeset> {

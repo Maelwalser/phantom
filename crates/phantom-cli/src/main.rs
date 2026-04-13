@@ -58,6 +58,9 @@ enum Commands {
     /// Materialize a changeset to trunk
     #[command(visible_alias = "mat")]
     Materialize(commands::materialize::MaterializeArgs),
+    /// Auto-resolve merge conflicts by launching an AI agent
+    #[command(visible_alias = "res")]
+    Resolve(commands::resolve::ResolveArgs),
     /// Roll back a changeset and replay downstream
     #[command(visible_alias = "rb")]
     Rollback(commands::rollback::RollbackArgs),
@@ -107,6 +110,7 @@ async fn main() {
         Some(Commands::Submit(args)) => commands::submit::run(args).await,
         Some(Commands::Status(args)) => commands::status::run(args).await,
         Some(Commands::Materialize(args)) => commands::materialize::run(args).await,
+        Some(Commands::Resolve(args)) => commands::resolve::run(args).await,
         Some(Commands::Rollback(args)) => commands::rollback::run(args).await,
         Some(Commands::Log(args)) => commands::log::run(args).await,
         Some(Commands::Changes(args)) => commands::changes::run(args).await,

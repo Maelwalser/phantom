@@ -406,7 +406,7 @@ async fn check_changeset_resumable(events: &SqliteEventStore, cs_id: &ChangesetI
 /// Spawn the `phantom _agent-monitor` process which will in turn spawn and
 /// monitor the claude process. This ensures the monitor is the parent of
 /// claude and can `waitpid` to get the real exit code.
-fn spawn_agent_monitor(
+pub(crate) fn spawn_agent_monitor(
     phantom_dir: &Path,
     repo_root: &Path,
     agent: &str,

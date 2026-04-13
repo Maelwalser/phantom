@@ -70,6 +70,11 @@ pub enum EventKind {
         /// Details of each conflict.
         conflicts: Vec<ConflictDetail>,
     },
+    /// A conflict resolution agent was launched for this changeset.
+    ConflictResolutionStarted {
+        /// The conflicts being resolved.
+        conflicts: Vec<ConflictDetail>,
+    },
     /// The changeset was dropped (rolled back).
     ChangesetDropped {
         /// Reason the changeset was dropped.
@@ -233,6 +238,7 @@ mod tests {
                 merged_files: vec![PathBuf::from("src/merged.rs")],
                 conflicted_files: vec![PathBuf::from("src/conflict.rs")],
             },
+            EventKind::ConflictResolutionStarted { conflicts: vec![] },
             EventKind::AgentLaunched {
                 pid: 12345,
                 task: "add rate limiting".into(),

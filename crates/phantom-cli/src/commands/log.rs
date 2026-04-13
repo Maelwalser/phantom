@@ -164,6 +164,12 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
                 conflicted_files.len()
             )
         }
+        EventKind::ConflictResolutionStarted { conflicts } => {
+            format!(
+                "ConflictResolutionStarted {{ {} conflict(s) }}",
+                conflicts.len()
+            )
+        }
         EventKind::AgentLaunched { pid, task } => {
             format!("AgentLaunched {{ pid: {pid}, task: {task:?} }}")
         }
