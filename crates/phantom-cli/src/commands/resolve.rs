@@ -1,0 +1,190 @@
+//! `phantom resolve` — auto-resolve merge conflicts by launching a background
+//! Claude Code agent with three-way conflict context.
+//!
+//! Finds the most recent conflicted changeset for the given agent, extracts
+//! the three-way conflict data (base/ours/theirs file versions), generates a
+//! specialized `.phantom-task.md` with conflict resolution instructions, and
+//! launches a background agent to resolve the conflicts.
+
+use anyhow::Context;
+use chrono::Utc;
+use phantom_core::event::{Event, EventKind};
+use phantom_core::id::{AgentId, EventId};
+use phantom_core::traits::EventStore;
+use phantom_events::Projection;
+use phantom_session::context_file::{self, ResolveConflictContext};
+
+use crate::context::PhantomContext;
+
+#[derive(clap::Args)]
+pub struct ResolveArgs {
+    /// Agent name whose conflicts to resolve
+    pub agent: String,
+}
+
+pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
+    let ctx = PhantomContext::locate()?;
+    let git = ctx.open_git()?;
+    let events = ctx.open_events().await?;
+    let overlays = ctx.open_overlays_restored()?;
+
+    let agent_id = AgentId(args.agent.clone());
+    let head = git.head_oid().context("failed to read HEAD")?;
+
+    // Find the latest conflicted changeset for this agent.
+    let all_events = events.query_all().await?;
+    let projection = Projection::from_events(&all_events);
+
+    let changeset = projection
+        .latest_conflicted_changeset(&agent_id)
+        .with_context(|| format!("no conflicted changeset found for agent '{}'", args.agent))?
+        .clone();
+
+    // Extract conflict details from the ChangesetConflicted event.
+    let conflict_details = all_events
+        .iter()
+        .filter(|e| e.changeset_id == changeset.id)
+        .filter_map(|e| match &e.kind {
+            EventKind::ChangesetConflicted { conflicts } => Some(conflicts.clone()),
+            _ => None,
+        })
+        .last()
+        .unwrap_or_default();
+
+    if conflict_details.is_empty() {
+        anyhow::bail!(
+            "changeset {} is marked as conflicted but no conflict details found in the event log",
+            changeset.id
+        );
+    }
+
+    println!(
+        "Resolving {} conflict(s) for agent '{}' (changeset {})...\n",
+        conflict_details.len(),
+        args.agent,
+        changeset.id
+    );
+
+    // Build the three-way conflict context for each conflict.
+    let upper_dir = overlays
+        .upper_dir(&agent_id)?
+        .to_path_buf();
+
+    let mut resolve_contexts = Vec::with_capacity(conflict_details.len());
+    for detail in &conflict_details {
+        let base_content = git
+            .read_file_at_commit(&changeset.base_commit, &detail.file)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+
+        let ours_content = git
+            .read_file_at_commit(&head, &detail.file)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+
+        let theirs_path = upper_dir.join(&detail.file);
+        let theirs_content = std::fs::read_to_string(&theirs_path).ok();
+
+        let kind_label = match detail.kind {
+            phantom_core::ConflictKind::BothModifiedSymbol => "both modified",
+            phantom_core::ConflictKind::ModifyDeleteSymbol => "modify/delete",
+            phantom_core::ConflictKind::BothModifiedDependencyVersion => "dependency version",
+            phantom_core::ConflictKind::RawTextConflict => "text conflict",
+            phantom_core::ConflictKind::BinaryFile => "binary file",
+        };
+        println!(
+            "  {} [{kind_label}] {}",
+            detail.file.display(),
+            detail.description
+        );
+
+        resolve_contexts.push(ResolveConflictContext {
+            detail: detail.clone(),
+            base_content,
+            ours_content,
+            theirs_content,
+        });
+    }
+
+    // Determine the work directory: FUSE mount if available, otherwise upper dir.
+    let mount_point = ctx
+        .phantom_dir
+        .join("overlays")
+        .join(&args.agent)
+        .join("mount");
+    let work_dir = if is_fuse_mounted(&mount_point) {
+        mount_point
+    } else {
+        upper_dir.clone()
+    };
+
+    // Write the specialized conflict-resolution context file.
+    context_file::write_resolve_context_file(
+        &work_dir,
+        &agent_id,
+        &changeset.id,
+        &changeset.base_commit,
+        &resolve_contexts,
+    )?;
+
+    // Emit ConflictResolutionStarted event.
+    let event = Event {
+        id: EventId(0),
+        timestamp: Utc::now(),
+        changeset_id: changeset.id.clone(),
+        agent_id: agent_id.clone(),
+        kind: EventKind::ConflictResolutionStarted {
+            conflicts: conflict_details.clone(),
+        },
+    };
+    events.append(event).await?;
+
+    // Spawn background agent to resolve conflicts.
+    let task = "Resolve merge conflicts per .phantom-task.md";
+    super::task::spawn_agent_monitor(
+        &ctx.phantom_dir,
+        &ctx.repo_root,
+        &args.agent,
+        &changeset.id,
+        task,
+        &work_dir,
+        true, // auto_materialize
+    )?;
+
+    let log_file = ctx
+        .phantom_dir
+        .join("overlays")
+        .join(&args.agent)
+        .join("agent.log");
+
+    println!();
+    println!("Resolve agent launched (background).");
+    println!("  Changeset: {}", changeset.id);
+    println!("  Log:       {}", log_file.display());
+    println!("  Overlay:   {}", work_dir.display());
+    println!();
+    println!(
+        "Run `phantom status --agent {}` to check progress.",
+        args.agent
+    );
+
+    Ok(())
+}
+
+/// Check if a FUSE filesystem is mounted at `mount_point`.
+fn is_fuse_mounted(mount_point: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let parent = match mount_point.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    match (
+        std::fs::metadata(mount_point),
+        std::fs::metadata(parent),
+    ) {
+        (Ok(m), Ok(p)) => m.dev() != p.dev(),
+        _ => false,
+    }
+}
