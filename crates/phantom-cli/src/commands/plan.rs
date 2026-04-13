@@ -19,8 +19,8 @@ use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
 pub struct PlanArgs {
-    /// Description of what to implement
-    pub description: String,
+    /// Description of what to implement (opens interactive editor if omitted)
+    pub description: Option<String>,
     /// Skip confirmation and dispatch immediately
     #[arg(long, short = 'y')]
     pub yes: bool,
@@ -33,18 +33,32 @@ pub struct PlanArgs {
 }
 
 pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
+    let description = match args.description {
+        Some(d) => d,
+        None => match super::textbox::multiline_input(
+            "Describe what to implement:",
+            "Enter your plan description...",
+        )? {
+            Some(d) if !d.trim().is_empty() => d,
+            _ => {
+                println!("Aborted.");
+                return Ok(());
+            }
+        },
+    };
+
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
 
     // Step 1: Generate plan via AI planner.
-    println!("Planning... analyzing codebase for: {:?}", args.description);
+    println!("Planning... analyzing codebase for: {:?}", description);
     println!();
 
-    let raw_output = run_planner(&ctx.repo_root, &args.description)?;
+    let raw_output = run_planner(&ctx.repo_root, &description)?;
 
     // Step 2: Build the Plan struct.
     let plan_id = generate_plan_id();
-    let plan = build_plan(&plan_id, &args.description, raw_output);
+    let plan = build_plan(&plan_id, &description, raw_output);
 
     if plan.domains.is_empty() {
         println!("Planner returned no domains. Nothing to dispatch.");
@@ -112,7 +126,7 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
         agent_id: AgentId("phantom-planner".into()),
         kind: EventKind::PlanCreated {
             plan_id: plan_id.clone(),
-            request: args.description.clone(),
+            request: description.clone(),
             domain_count: plan.domains.len() as u32,
             agent_ids: dispatched_agents,
         },
