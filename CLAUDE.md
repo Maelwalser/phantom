@@ -23,15 +23,15 @@ phantom init                         # Initialize in a git repo
 phantom <agent-name>                 # Create/resume agent overlay (interactive)
 phantom <agent-name> --background    # Run agent in background
 phantom plan "add caching layer"     # Decompose feature into parallel agents
-phantom submit --agent <name>        # Submit overlay as changeset
-phantom materialize --agent <name>   # Commit changeset to trunk
-phantom resolve <agent-name>         # Auto-resolve conflicts via AI agent
+phantom submit <agent>               # Submit overlay as changeset
+phantom materialize <target>         # Commit changeset to trunk (agent name or cs-id)
+phantom resolve <agent>              # Auto-resolve conflicts via AI agent
 phantom status                       # Show overlays, changesets, queue
-phantom log --agent <name>           # Query event log
+phantom log [filter]                 # Query event log (agent name or cs-id)
 phantom changes                      # Recent submits and materializations
 phantom background                   # Watch background agents
-phantom destroy --agent <name>       # Tear down overlay
-phantom rollback --changeset <id>    # Drop changeset, replay downstream
+phantom destroy <agent>              # Tear down overlay
+phantom rollback [changeset-id]      # Drop changeset, replay downstream
 phantom down                         # Unmount all overlays, remove .phantom/
 ```
 
@@ -58,7 +58,7 @@ tests/integration/          # End-to-end tests with real git repos
 ### phantom-core (`crates/phantom-core/`)
 Zero dependencies on other phantom crates. Defines all shared types:
 - **IDs**: `ChangesetId`, `AgentId`, `EventId`, `SymbolId`, `ContentHash` (BLAKE3), `GitOid` (20-byte, no git2 dependency), `PlanId`
-- **Changeset**: status lifecycle (`InProgress → Submitted → Merging → Materialized/Conflicted/Dropped`), `SemanticOperation` (AddSymbol/ModifySymbol/DeleteSymbol/AddFile/DeleteFile/RawDiff), `TestResult`
+- **Changeset**: status lifecycle (`InProgress → Submitted → Merging → Materialized/Conflicted/Resolving/Dropped`), `SemanticOperation` (AddSymbol/ModifySymbol/DeleteSymbol/AddFile/DeleteFile/RawDiff), `TestResult`
 - **Event**: `EventKind` enum with 17+ variants including `TaskCreated`, `ChangesetSubmitted`, `ChangesetMaterialized`, `LiveRebased`, `PlanCreated`, `AgentLaunched/Completed`, `Unknown` (forward-compat via `serde(other)`)
 - **Conflict**: `ConflictDetail` with `ConflictKind` (BothModifiedSymbol, ModifyDeleteSymbol, BothModifiedDependencyVersion, RawTextConflict, BinaryFile) and `ConflictSpan` (byte ranges + line numbers)
 - **Traits**: `EventStore` (async), `SymbolIndex`, `SemanticAnalyzer` (extract_symbols, diff_symbols, three_way_merge)
@@ -82,7 +82,7 @@ FUSE overlay filesystem (feature-gated: `fuse` feature on by default).
 
 ### phantom-semantic (`crates/phantom-semantic/`)
 Tree-sitter-based parsing and Weave-style entity matching.
-- `Parser`: routes files by extension to language extractors. Built-in: Rust (`.rs`), TypeScript (`.ts`, `.tsx`), Python (`.py`), Go (`.go`)
+- `Parser`: routes files by extension to language extractors. Built-in: Rust (`.rs`), TypeScript/JavaScript (`.ts`, `.js`, `.tsx`, `.jsx`), Python (`.py`), Go (`.go`)
 - `InMemorySymbolIndex`: implements `SymbolIndex` trait
 - `SemanticMerger`: implements `SemanticAnalyzer` trait — extract symbols, diff, three-way merge
 - `diff`: entity-key-based diffing (scope + name + kind)
@@ -100,7 +100,8 @@ Tree-sitter-based parsing and Weave-style entity matching.
 ### phantom-session (`crates/phantom-session/`)
 - `CliAdapter` trait: session resumption abstraction per coding CLI. `ClaudeAdapter` (extracts UUID from `claude --resume <id>` output), `GenericAdapter` fallback.
 - `pty`: PTY-based process spawning with raw-mode terminal, SIGINT handling, rolling 8KB output buffer for session ID extraction
-- `context_file`: generates `.phantom-task.md` inside overlay with agent metadata, task description, and available commands
+- `context_file`: generates `.phantom-task.md` inside overlay with agent metadata, task description, and available commands. Submodules: `task.rs` (standard task context), `plan.rs` (plan domain instructions), `resolve.rs` (three-way conflict resolution context)
+- `signatures`: session signature validation/handling
 - `post_session`: auto-submit + auto-materialize flow after agent finishes
 
 ### phantom-testkit (`crates/phantom-testkit/`)
@@ -155,7 +156,7 @@ Key aliases: `st` (status), `sub` (submit), `mat` (materialize), `res` (resolve)
 - Event store with SQLite WAL, schema versioning, forward-compatible deserialization
 - FUSE overlay filesystem with full Filesystem trait impl (read/write/create/delete/rename/hardlink)
 - Copy-on-write layer with whiteout markers
-- Tree-sitter parsing for Rust, TypeScript, Python, Go
+- Tree-sitter parsing for Rust, TypeScript/JavaScript (including JSX/TSX), Python, Go
 - Semantic diff and three-way merge engine
 - Git operations (commit, read tree, changed files)
 - Materialization with semantic merge + conflict detection

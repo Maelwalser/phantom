@@ -1,5 +1,6 @@
 //! `phantom changes` — show recent submits and materializations.
 
+use phantom_core::id::AgentId;
 use phantom_core::EventKind;
 use phantom_events::EventQuery;
 
@@ -7,6 +8,9 @@ use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
 pub struct ChangesArgs {
+    /// Agent/task name — show submits for this overlay
+    pub agent: Option<String>,
+
     /// Maximum number of entries to show
     #[arg(long, short = 'n', default_value = "25")]
     pub limit: u64,
@@ -16,19 +20,29 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events_store = ctx.open_events().await?;
 
-    let query = EventQuery {
-        limit: Some(args.limit),
-        kind_prefixes: vec![
-            "ChangesetSubmitted".to_string(),
-            "ChangesetMaterialized".to_string(),
-        ],
-        ..Default::default()
+    let query = if let Some(ref agent) = args.agent {
+        EventQuery {
+            agent_id: Some(AgentId(agent.clone())),
+            limit: Some(args.limit),
+            kind_prefixes: vec!["ChangesetSubmitted".to_string()],
+            ..Default::default()
+        }
+    } else {
+        EventQuery {
+            limit: Some(args.limit),
+            kind_prefixes: vec!["ChangesetMaterialized".to_string()],
+            ..Default::default()
+        }
     };
 
     let events = events_store.query(&query).await?;
 
     if events.is_empty() {
-        println!("No submits or materializations yet.");
+        if let Some(ref agent) = args.agent {
+            println!("No submits for agent '{agent}' yet.");
+        } else {
+            println!("No materializations yet.");
+        }
         return Ok(());
     }
 
@@ -41,7 +55,11 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
         );
     }
 
-    println!("\n{} change(s) shown.", events.len());
+    if let Some(ref agent) = args.agent {
+        println!("\n{} submit(s) for '{agent}' shown.", events.len());
+    } else {
+        println!("\n{} materialization(s) shown.", events.len());
+    }
 
     Ok(())
 }

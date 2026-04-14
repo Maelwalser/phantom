@@ -59,7 +59,7 @@ pub(crate) fn row_to_event(row: &SqliteRow) -> Result<Event, EventStoreError> {
     let kind: EventKind = match serde_json::from_str(&kind_json) {
         Ok(k) => k,
         Err(e) => {
-            tracing::warn!(
+            tracing::debug!(
                 event_id = id,
                 kind_json,
                 error = %e,

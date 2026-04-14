@@ -153,6 +153,18 @@ impl Projection {
             .max_by_key(|cs| cs.created_at)
     }
 
+    /// Return all changesets belonging to the given agent, newest first.
+    #[must_use]
+    pub fn changesets_for_agent(&self, agent_id: &AgentId) -> Vec<&Changeset> {
+        let mut result: Vec<&Changeset> = self
+            .changesets
+            .values()
+            .filter(|cs| cs.agent_id == *agent_id)
+            .collect();
+        result.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        result
+    }
+
     /// Return changesets with `Submitted` status.
     #[must_use]
     pub fn pending_changesets(&self) -> Vec<&Changeset> {

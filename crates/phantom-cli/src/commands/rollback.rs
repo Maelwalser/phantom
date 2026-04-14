@@ -7,9 +7,9 @@
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use dialoguer::Select;
-use phantom_core::changeset::Changeset;
+use phantom_core::changeset::{Changeset, ChangesetStatus};
 use phantom_core::event::EventKind;
-use phantom_core::id::{ChangesetId, GitOid};
+use phantom_core::id::{AgentId, ChangesetId, GitOid};
 use phantom_core::traits::EventStore;
 use phantom_events::ReplayEngine;
 use phantom_events::projection::Projection;
@@ -20,17 +20,22 @@ use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
 pub struct RollbackArgs {
-    /// Changeset ID to roll back (e.g. "cs-0040"). Omit for interactive selection.
-    pub changeset: Option<String>,
+    /// Changeset ID (e.g. "cs-0040") or agent name. Omit for interactive selection.
+    pub target: Option<String>,
 }
 
 pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
 
-    match args.changeset {
-        Some(id) => rollback_single(&ctx, &events, &ChangesetId(id)).await?,
+    match args.target {
         None => run_interactive(&ctx, &events).await?,
+        Some(ref target) if target.starts_with("cs-") => {
+            rollback_single(&ctx, &events, &ChangesetId(target.clone())).await?
+        }
+        Some(agent_name) => {
+            run_interactive_for_agent(&ctx, &events, &AgentId(agent_name)).await?
+        }
     }
 
     Ok(())
@@ -148,6 +153,64 @@ async fn run_interactive(ctx: &PhantomContext, events: &SqliteEventStore) -> any
     }
 
     println!("Rolled back to checkpoint: {}", materialized_rev[idx]);
+
+    Ok(())
+}
+
+/// Present an interactive menu of rollback-eligible changesets for a specific
+/// agent and roll back the selected one.
+async fn run_interactive_for_agent(
+    ctx: &PhantomContext,
+    events: &SqliteEventStore,
+    agent_id: &AgentId,
+) -> anyhow::Result<()> {
+    let agent_events = events.query_by_agent(agent_id).await?;
+
+    if agent_events.is_empty() {
+        anyhow::bail!("no events found for agent '{agent_id}'");
+    }
+
+    let projection = Projection::from_events(&agent_events);
+
+    // Filter to Submitted or Materialized changesets (rollback-eligible).
+    let mut eligible: Vec<&Changeset> = projection
+        .changesets_for_agent(agent_id)
+        .into_iter()
+        .filter(|cs| {
+            matches!(
+                cs.status,
+                ChangesetStatus::Submitted | ChangesetStatus::Materialized
+            )
+        })
+        .collect();
+    // Newest first (changesets_for_agent already sorts this way, but be explicit).
+    eligible.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    if eligible.is_empty() {
+        println!("No rollback-eligible changesets for agent '{agent_id}'.");
+        return Ok(());
+    }
+
+    let display_items: Vec<String> = eligible
+        .iter()
+        .map(|cs| format_menu_item(&cs.id, cs))
+        .collect();
+
+    let selection = Select::new()
+        .with_prompt(format!(
+            "Select changeset to roll back for agent '{agent_id}'"
+        ))
+        .items(&display_items)
+        .default(0)
+        .interact_opt()?;
+
+    let Some(idx) = selection else {
+        println!("Cancelled.");
+        return Ok(());
+    };
+
+    let cs_id = &eligible[idx].id;
+    rollback_single(ctx, events, cs_id).await?;
 
     Ok(())
 }

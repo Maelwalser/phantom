@@ -64,7 +64,7 @@ enum Commands {
     /// Query the event log
     #[command(visible_alias = "l")]
     Log(commands::log::LogArgs),
-    /// Show recent submits and materializations
+    /// Show materializations, or submits for a specific agent
     #[command(visible_alias = "c")]
     Changes(commands::changes::ChangesArgs),
     /// Destroy an agent's overlay
