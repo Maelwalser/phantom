@@ -37,5 +37,5 @@ pub use event::{Event, EventKind, MergeCheckResult};
 pub use id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, PlanId, SymbolId};
 pub use notification::{TrunkFileStatus, TrunkNotification};
 pub use plan::{Plan, PlanDomain, PlanStatus, RawPlanDomain, RawPlanOutput};
-pub use symbol::{SymbolEntry, SymbolKind};
+pub use symbol::{SymbolEntry, SymbolKind, find_enclosing_symbol};
 pub use traits::{EventStore, MergeResult, SemanticAnalyzer, SymbolIndex};

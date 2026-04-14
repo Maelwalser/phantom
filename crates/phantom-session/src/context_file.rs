@@ -7,7 +7,13 @@ use std::path::Path;
 
 use anyhow::Context;
 use phantom_core::id::{AgentId, ChangesetId, GitOid};
+use phantom_core::symbol::find_enclosing_symbol;
 use tracing::warn;
+
+/// Approximate byte budget for whole-file display in conflict context.
+/// ~8192 tokens × 4 bytes/token = 32,768 bytes.
+const WHOLE_FILE_BYTE_BUDGET: usize = 32_768;
+const BYTES_PER_TOKEN_ESTIMATE: usize = 4;
 
 /// Name of the generated context file placed in the overlay.
 pub const CONTEXT_FILE: &str = ".phantom-task.md";
@@ -186,6 +192,8 @@ pub fn write_resolve_context_file(
 
         let lang = lang_from_path(&conflict.detail.file);
 
+        let file_path = &conflict.detail.file;
+
         // BASE
         writeln!(content, "#### BASE (common ancestor at {base_short})").unwrap();
         write_code_block(
@@ -193,6 +201,7 @@ pub fn write_resolve_context_file(
             lang,
             conflict.base_content.as_deref(),
             conflict.detail.base_span.as_ref(),
+            file_path,
         );
 
         // OURS
@@ -202,6 +211,7 @@ pub fn write_resolve_context_file(
             lang,
             conflict.ours_content.as_deref(),
             conflict.detail.ours_span.as_ref(),
+            file_path,
         );
 
         // THEIRS
@@ -215,6 +225,7 @@ pub fn write_resolve_context_file(
             lang,
             conflict.theirs_content.as_deref(),
             conflict.detail.theirs_span.as_ref(),
+            file_path,
         );
 
         writeln!(
@@ -242,12 +253,51 @@ pub fn write_resolve_context_file(
     Ok(())
 }
 
-/// Extract lines around a conflict span, with padding context.
-fn extract_span_lines(content: &str, span: &phantom_core::conflict::ConflictSpan) -> String {
+/// Extract the enclosing AST node for a conflict span, falling back to ±10
+/// line padding for unsupported languages or when no symbol encloses the span.
+fn extract_span_context(
+    content: &str,
+    span: &phantom_core::conflict::ConflictSpan,
+    file_path: &Path,
+) -> String {
+    let parser = phantom_semantic::Parser::new();
+    if parser.supports_language(file_path) {
+        if let Ok(symbols) = parser.parse_file(file_path, content.as_bytes()) {
+            if let Some(enclosing) = find_enclosing_symbol(&symbols, &span.byte_range) {
+                let start = enclosing.byte_range.start;
+                let end = enclosing.byte_range.end.min(content.len());
+                return content[start..end].to_string();
+            }
+        }
+    }
+    extract_span_lines_fallback(content, span)
+}
+
+/// Fallback: extract lines around a conflict span with ±10 line padding.
+fn extract_span_lines_fallback(
+    content: &str,
+    span: &phantom_core::conflict::ConflictSpan,
+) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let start = span.start_line.saturating_sub(10).max(1) - 1; // zero-indexed
     let end = (span.end_line + 10).min(lines.len());
     lines[start..end].join("\n")
+}
+
+/// Truncate content to fit within the token budget, breaking at the last
+/// complete line before the byte limit.
+fn truncate_to_token_budget(text: &str) -> String {
+    if text.len() <= WHOLE_FILE_BYTE_BUDGET {
+        return text.to_string();
+    }
+    let cut = text[..WHOLE_FILE_BYTE_BUDGET]
+        .rfind('\n')
+        .unwrap_or(WHOLE_FILE_BYTE_BUDGET);
+    let remaining_tokens = (text.len() - cut) / BYTES_PER_TOKEN_ESTIMATE;
+    format!(
+        "{}\n// ... truncated (~{remaining_tokens} more tokens)",
+        &text[..cut]
+    )
 }
 
 /// Write a fenced code block, trimming to span if available.
@@ -256,26 +306,15 @@ fn write_code_block(
     lang: &str,
     content: Option<&str>,
     span: Option<&phantom_core::conflict::ConflictSpan>,
+    file_path: &Path,
 ) {
     use std::fmt::Write;
 
     match content {
         Some(text) => {
             let display = match span {
-                Some(s) => extract_span_lines(text, s),
-                None => {
-                    let lines: Vec<&str> = text.lines().collect();
-                    if lines.len() > 200 {
-                        let mut truncated: String = lines[..200].join("\n");
-                        truncated.push_str(&format!(
-                            "\n// ... truncated ({} more lines)",
-                            lines.len() - 200
-                        ));
-                        truncated
-                    } else {
-                        text.to_string()
-                    }
-                }
+                Some(s) => extract_span_context(text, s, file_path),
+                None => truncate_to_token_budget(text),
             };
             writeln!(out, "```{lang}").unwrap();
             writeln!(out, "{display}").unwrap();
@@ -467,5 +506,65 @@ pub fn cleanup_context_file(upper_dir: &Path) {
         && e.kind() != std::io::ErrorKind::NotFound
     {
         warn!(path = %path.display(), error = %e, "failed to clean up context file");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_to_token_budget_under_budget_is_identity() {
+        let text = "fn main() {}\n";
+        assert_eq!(truncate_to_token_budget(text), text);
+    }
+
+    #[test]
+    fn truncate_to_token_budget_over_budget_cuts_at_line() {
+        // Build a string larger than WHOLE_FILE_BYTE_BUDGET.
+        let line = "x".repeat(100) + "\n";
+        let count = (WHOLE_FILE_BYTE_BUDGET / line.len()) + 10;
+        let text: String = line.repeat(count);
+        assert!(text.len() > WHOLE_FILE_BYTE_BUDGET);
+
+        let result = truncate_to_token_budget(&text);
+        assert!(result.len() < text.len());
+        assert!(result.contains("// ... truncated (~"));
+        assert!(result.contains("more tokens)"));
+        // The cut should be at a newline boundary — no partial lines.
+        let before_comment = result.split("// ... truncated").next().unwrap();
+        assert!(before_comment.ends_with('\n'));
+    }
+
+    #[test]
+    fn extract_span_context_uses_semantic_for_rust() {
+        let src = "struct Foo {}\n\nfn target() {\n    let x = 1;\n    let y = 2;\n}\n\nfn other() {}\n";
+        let span = phantom_core::conflict::ConflictSpan {
+            byte_range: 28..39, // inside "fn target()"
+            start_line: 4,
+            end_line: 4,
+        };
+        let result = extract_span_context(src, &span, Path::new("test.rs"));
+        // Should return the entire fn target() body, not just ±10 lines.
+        assert!(result.contains("fn target()"));
+        assert!(result.contains("let x = 1;"));
+        assert!(result.contains("let y = 2;"));
+        // Should NOT include unrelated symbols.
+        assert!(!result.contains("struct Foo"));
+        assert!(!result.contains("fn other"));
+    }
+
+    #[test]
+    fn extract_span_context_falls_back_for_unsupported_lang() {
+        let src = "line1\nline2\nline3\nline4\nline5\n";
+        let span = phantom_core::conflict::ConflictSpan {
+            byte_range: 6..11,
+            start_line: 2,
+            end_line: 2,
+        };
+        let result = extract_span_context(src, &span, Path::new("config.toml"));
+        // Fallback path: should include surrounding lines.
+        assert!(result.contains("line1"));
+        assert!(result.contains("line2"));
     }
 }
