@@ -26,6 +26,8 @@ pub enum ChangesetStatus {
     Materialized,
     /// Semantic conflict detected; needs re-task.
     Conflicted,
+    /// A conflict resolution agent is actively working on this changeset.
+    Resolving,
     /// Rolled back / removed via event log replay.
     Dropped,
 }
@@ -202,6 +204,7 @@ mod tests {
             ChangesetStatus::Merging,
             ChangesetStatus::Materialized,
             ChangesetStatus::Conflicted,
+            ChangesetStatus::Resolving,
             ChangesetStatus::Dropped,
         ] {
             let json = serde_json::to_string(&status).unwrap();

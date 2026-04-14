@@ -169,7 +169,7 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
                 conflicted_files.len()
             )
         }
-        EventKind::ConflictResolutionStarted { conflicts } => {
+        EventKind::ConflictResolutionStarted { conflicts, .. } => {
             format!(
                 "ConflictResolutionStarted {{ {} conflict(s) }}",
                 conflicts.len()
@@ -222,7 +222,7 @@ fn event_kind_label(kind: &phantom_core::EventKind) -> &'static str {
         EventKind::AgentNotified { .. } => "agent notified",
         EventKind::TestsRun(_) => "tests run",
         EventKind::LiveRebased { .. } => "live rebased",
-        EventKind::ConflictResolutionStarted { .. } => "conflict resolution",
+        EventKind::ConflictResolutionStarted { .. } => "resolving",
         EventKind::AgentLaunched { .. } => "agent launched",
         EventKind::AgentCompleted { .. } => "agent completed",
         EventKind::PlanCreated { .. } => "plan created",

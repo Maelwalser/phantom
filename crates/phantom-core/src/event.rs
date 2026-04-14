@@ -74,6 +74,10 @@ pub enum EventKind {
     ConflictResolutionStarted {
         /// The conflicts being resolved.
         conflicts: Vec<ConflictDetail>,
+        /// Trunk HEAD at resolution time — becomes the new base_commit so
+        /// post-resolution materialization uses the correct merge base.
+        #[serde(default)]
+        new_base: Option<GitOid>,
     },
     /// The changeset was dropped (rolled back).
     ChangesetDropped {
@@ -258,7 +262,10 @@ mod tests {
                 merged_files: vec![PathBuf::from("src/merged.rs")],
                 conflicted_files: vec![PathBuf::from("src/conflict.rs")],
             },
-            EventKind::ConflictResolutionStarted { conflicts: vec![] },
+            EventKind::ConflictResolutionStarted {
+                conflicts: vec![],
+                new_base: Some(GitOid::zero()),
+            },
             EventKind::AgentLaunched {
                 pid: 12345,
                 task: "add rate limiting".into(),

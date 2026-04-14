@@ -82,6 +82,26 @@ pub async fn submit_overlay(
             ))
         })?;
 
+    // If a conflict resolution updated the base, use the new base so that
+    // the post-resolution submit and materialize don't re-detect the same
+    // symbol conflict against a stale base commit.
+    let base_commit = agent_events
+        .iter()
+        .rev()
+        .find_map(|e| {
+            if e.changeset_id == changeset_id {
+                if let EventKind::ConflictResolutionStarted {
+                    new_base: Some(base),
+                    ..
+                } = &e.kind
+                {
+                    return Some(*base);
+                }
+            }
+            None
+        })
+        .unwrap_or(base_commit);
+
     let mut all_ops: Vec<SemanticOperation> = Vec::new();
     let mut additions = 0u32;
     let mut modifications = 0u32;

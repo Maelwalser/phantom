@@ -1,3 +1,4 @@
 /target
 .phantom/
 build.sh
+test-project/

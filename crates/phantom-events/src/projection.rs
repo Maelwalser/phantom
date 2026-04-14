@@ -106,6 +106,12 @@ impl Projection {
                     cs.agent_exit_code = *exit_code;
                     cs.agent_completed_at = Some(event.timestamp);
                 }
+                EventKind::ConflictResolutionStarted { new_base, .. } => {
+                    cs.status = ChangesetStatus::Resolving;
+                    if let Some(base) = new_base {
+                        cs.base_commit = *base;
+                    }
+                }
                 // Other event kinds don't affect changeset state.
                 _ => {}
             }
@@ -157,6 +163,18 @@ impl Projection {
         self.changesets
             .values()
             .filter(|cs| cs.agent_id == *agent_id && cs.status == ChangesetStatus::Conflicted)
+            .max_by_key(|cs| cs.created_at)
+    }
+
+    /// Find a changeset that is actively being resolved for a given agent.
+    ///
+    /// Returns the changeset with `Resolving` status belonging to `agent_id`,
+    /// or `None` if no resolution is in progress.
+    #[must_use]
+    pub fn latest_resolving_changeset(&self, agent_id: &AgentId) -> Option<&Changeset> {
+        self.changesets
+            .values()
+            .filter(|cs| cs.agent_id == *agent_id && cs.status == ChangesetStatus::Resolving)
             .max_by_key(|cs| cs.created_at)
     }
 
@@ -440,5 +458,215 @@ mod tests {
             .latest_submitted_changeset(&AgentId("agent-a".into()))
             .unwrap();
         assert_eq!(result.id.0, "cs-0002");
+    }
+
+    #[test]
+    fn conflict_resolution_updates_base_commit() {
+        let t = chrono::Utc::now();
+        let original_base = GitOid::zero();
+        let new_base = GitOid::from_bytes([0xAA; 20]);
+
+        let events = vec![
+            make_event(
+                1,
+                "cs-0001",
+                "agent-a",
+                EventKind::TaskCreated {
+                    base_commit: original_base,
+                    task: "task".into(),
+                },
+                t,
+            ),
+            make_event(
+                2,
+                "cs-0001",
+                "agent-a",
+                EventKind::ChangesetSubmitted { operations: vec![] },
+                t,
+            ),
+            make_event(
+                3,
+                "cs-0001",
+                "agent-a",
+                EventKind::ChangesetConflicted { conflicts: vec![] },
+                t,
+            ),
+            // ConflictResolutionStarted updates base_commit to new_base
+            make_event(
+                4,
+                "cs-0001",
+                "agent-a",
+                EventKind::ConflictResolutionStarted {
+                    conflicts: vec![],
+                    new_base: Some(new_base),
+                },
+                t,
+            ),
+        ];
+        let projection = Projection::from_events(&events);
+
+        let cs = projection
+            .changeset(&ChangesetId("cs-0001".into()))
+            .unwrap();
+        assert_eq!(
+            cs.base_commit, new_base,
+            "base_commit should be updated by ConflictResolutionStarted"
+        );
+    }
+
+    #[test]
+    fn conflict_resolution_without_new_base_preserves_original() {
+        let t = chrono::Utc::now();
+        let original_base = GitOid::from_bytes([0xBB; 20]);
+
+        let events = vec![
+            make_event(
+                1,
+                "cs-0001",
+                "agent-a",
+                EventKind::TaskCreated {
+                    base_commit: original_base,
+                    task: "task".into(),
+                },
+                t,
+            ),
+            // Legacy event without new_base field
+            make_event(
+                2,
+                "cs-0001",
+                "agent-a",
+                EventKind::ConflictResolutionStarted {
+                    conflicts: vec![],
+                    new_base: None,
+                },
+                t,
+            ),
+        ];
+        let projection = Projection::from_events(&events);
+
+        let cs = projection
+            .changeset(&ChangesetId("cs-0001".into()))
+            .unwrap();
+        assert_eq!(
+            cs.base_commit, original_base,
+            "base_commit should be unchanged when new_base is None"
+        );
+    }
+
+    #[test]
+    fn conflict_resolution_transitions_to_resolving() {
+        let t = chrono::Utc::now();
+        let events = vec![
+            make_event(
+                1,
+                "cs-0001",
+                "agent-a",
+                EventKind::TaskCreated {
+                    base_commit: GitOid::zero(),
+                    task: "task".into(),
+                },
+                t,
+            ),
+            make_event(
+                2,
+                "cs-0001",
+                "agent-a",
+                EventKind::ChangesetSubmitted { operations: vec![] },
+                t,
+            ),
+            make_event(
+                3,
+                "cs-0001",
+                "agent-a",
+                EventKind::ChangesetConflicted { conflicts: vec![] },
+                t,
+            ),
+            make_event(
+                4,
+                "cs-0001",
+                "agent-a",
+                EventKind::ConflictResolutionStarted {
+                    conflicts: vec![],
+                    new_base: None,
+                },
+                t,
+            ),
+        ];
+        let projection = Projection::from_events(&events);
+
+        let cs = projection
+            .changeset(&ChangesetId("cs-0001".into()))
+            .unwrap();
+        assert_eq!(
+            cs.status,
+            ChangesetStatus::Resolving,
+            "ConflictResolutionStarted should transition status to Resolving"
+        );
+
+        // latest_conflicted_changeset should NOT find it
+        assert!(
+            projection
+                .latest_conflicted_changeset(&AgentId("agent-a".into()))
+                .is_none(),
+            "Resolving changeset should not appear as conflicted"
+        );
+
+        // latest_resolving_changeset should find it
+        let resolving = projection
+            .latest_resolving_changeset(&AgentId("agent-a".into()))
+            .unwrap();
+        assert_eq!(resolving.id.0, "cs-0001");
+    }
+
+    #[test]
+    fn resolving_changeset_can_be_resubmitted() {
+        let t = chrono::Utc::now();
+        let events = vec![
+            make_event(
+                1,
+                "cs-0001",
+                "agent-a",
+                EventKind::TaskCreated {
+                    base_commit: GitOid::zero(),
+                    task: "task".into(),
+                },
+                t,
+            ),
+            make_event(
+                2,
+                "cs-0001",
+                "agent-a",
+                EventKind::ChangesetConflicted { conflicts: vec![] },
+                t,
+            ),
+            make_event(
+                3,
+                "cs-0001",
+                "agent-a",
+                EventKind::ConflictResolutionStarted {
+                    conflicts: vec![],
+                    new_base: None,
+                },
+                t,
+            ),
+            // After resolution agent finishes, post-session resubmits
+            make_event(
+                4,
+                "cs-0001",
+                "agent-a",
+                EventKind::ChangesetSubmitted { operations: vec![] },
+                t,
+            ),
+        ];
+        let projection = Projection::from_events(&events);
+
+        let cs = projection
+            .changeset(&ChangesetId("cs-0001".into()))
+            .unwrap();
+        assert_eq!(
+            cs.status,
+            ChangesetStatus::Submitted,
+            "Resolving changeset should transition to Submitted after resubmission"
+        );
     }
 }

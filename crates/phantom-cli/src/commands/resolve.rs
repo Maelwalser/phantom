@@ -35,10 +35,35 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     let all_events = events.query_all().await?;
     let projection = Projection::from_events(&all_events);
 
+    // Check if a resolution is already in progress.
+    if let Some(resolving) = projection.latest_resolving_changeset(&agent_id) {
+        anyhow::bail!(
+            "changeset {} is already being resolved — wait for the resolve agent to finish \
+             or drop the changeset with `phantom rollback --changeset {}`",
+            resolving.id,
+            resolving.id,
+        );
+    }
+
     let changeset = projection
         .latest_conflicted_changeset(&agent_id)
         .with_context(|| format!("no conflicted changeset found for agent '{}'", args.agent))?
         .clone();
+
+    // Guard: if this changeset was already resolved once and re-conflicted,
+    // don't allow automatic re-resolution (prevents infinite loops).
+    let already_resolved = all_events.iter().any(|e| {
+        e.changeset_id == changeset.id
+            && matches!(e.kind, EventKind::ConflictResolutionStarted { .. })
+    });
+    if already_resolved {
+        anyhow::bail!(
+            "changeset {} already had a resolution attempt that re-conflicted.\n\
+             Resolve manually or drop with `phantom rollback --changeset {}`.",
+            changeset.id,
+            changeset.id,
+        );
+    }
 
     // Extract conflict details from the ChangesetConflicted event.
     let conflict_details = all_events
@@ -133,6 +158,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
         agent_id: agent_id.clone(),
         kind: EventKind::ConflictResolutionStarted {
             conflicts: conflict_details.clone(),
+            new_base: Some(head),
         },
     };
     events.append(event).await?;

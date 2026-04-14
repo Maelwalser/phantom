@@ -81,6 +81,14 @@ pub async fn post_session_flow(
                                 detail.description
                             );
                         }
+                        eprintln!();
+                        eprintln!(
+                            "The changeset has been submitted but could not be materialized."
+                        );
+                        eprintln!(
+                            "Run `phantom resolve {agent_id}` to attempt resolution, or \
+                             `phantom rollback --changeset {cs_id}` to drop it."
+                        );
                         anyhow::bail!("materialization failed due to conflicts");
                     }
                 }
