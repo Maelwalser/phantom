@@ -4,10 +4,18 @@
 //! to [`SymbolEntry`] values using Weave-style entity matching by composite key
 //! `(name, kind, scope)`.
 
+pub mod bash;
+pub mod css;
+pub mod dockerfile;
 pub mod go;
+pub mod hcl;
+pub mod json;
+pub mod makefile;
 pub mod python;
 pub mod rust;
+pub mod toml;
 pub mod typescript;
+pub mod yaml;
 
 use std::path::Path;
 
@@ -33,6 +41,14 @@ pub trait LanguageExtractor: Send + Sync {
         source: &[u8],
         file_path: &Path,
     ) -> Vec<SymbolEntry>;
+
+    /// Exact filenames this extractor handles (e.g., `"Dockerfile"`, `"Makefile"`).
+    ///
+    /// Used for files that lack a meaningful extension. Checked before extension
+    /// matching. Default: empty (extension-based matching only).
+    fn filenames(&self) -> &[&str] {
+        &[]
+    }
 }
 
 // ── Shared helpers used by all language extractors ──────────────────────

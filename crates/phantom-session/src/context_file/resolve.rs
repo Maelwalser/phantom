@@ -42,7 +42,8 @@ pub fn write_resolve_rules_file(path: &Path) -> anyhow::Result<()> {
 1. For symbol-level conflicts you are shown the BASE version as full source,
    then OURS and THEIRS as unified diffs showing what each side changed
    relative to BASE. Your working directory has the THEIRS version —
-   integrate the OURS changes. For other conflict types you see three full
+   integrate the OURS changes. Do not re-read the file; use the content shown here.
+   For other conflict types you see three full
    code blocks (BASE, OURS, THEIRS).
 2. Your goal: produce a merged version that preserves the intent of BOTH sides.
 3. NEVER silently drop code from either side unless one side explicitly deleted it.
@@ -159,7 +160,7 @@ pub fn write_resolve_context_file(
 
             writeln!(
                 content,
-                "#### THEIRS (agent's version \u{2014} in your working directory)"
+                "#### THEIRS (agent's version \u{2014} this is the current state of the file in your working directory; do not re-read it)"
             )
             .unwrap();
             write_code_block(
@@ -173,8 +174,7 @@ pub fn write_resolve_context_file(
 
         writeln!(
             content,
-            "Edit `{}` in your working directory to merge both changes.",
-            conflict.detail.file.display()
+            "Edit this file in your working directory to merge both changes."
         )
         .unwrap();
         writeln!(content).unwrap();
@@ -265,12 +265,7 @@ fn write_compact_conflict(
     // Write BASE once.
     let end_line = base_start_line + base_symbol.lines().count().saturating_sub(1);
     writeln!(out, "#### BASE (common ancestor at {base_short})").unwrap();
-    writeln!(
-        out,
-        "Lines {base_start_line}-{end_line} in `{}`",
-        file_path.display()
-    )
-    .unwrap();
+    writeln!(out, "Lines {base_start_line}-{end_line}").unwrap();
     writeln!(out, "```{lang}").unwrap();
     writeln!(out, "{base_symbol}").unwrap();
     writeln!(out, "```").unwrap();
@@ -283,7 +278,7 @@ fn write_compact_conflict(
     write_diff_section(
         out,
         "THEIRS",
-        "agent applied these changes \u{2014} in your working directory",
+        "agent applied these changes \u{2014} this is what is in your working directory; do not re-read the file",
         &base_symbol,
         theirs_symbol.as_deref(),
     );
@@ -309,15 +304,13 @@ fn write_diff_section(
         Some(text) => {
             let patch = diffy::create_patch(base_symbol, text);
             let patch_str = patch.to_string();
-            // Strip the `--- original` and `+++ modified` header lines —
+            // Skip the `--- original` and `+++ modified` header lines —
             // the surrounding markdown already labels each side.
-            let stripped = patch_str
-                .lines()
-                .skip_while(|l| l.starts_with("--- ") || l.starts_with("+++ "))
-                .collect::<Vec<_>>()
-                .join("\n");
+            // diffy always emits exactly two header lines, so skip(2) is correct.
             writeln!(out, "```diff").unwrap();
-            writeln!(out, "{stripped}").unwrap();
+            for line in patch_str.lines().skip(2) {
+                writeln!(out, "{line}").unwrap();
+            }
             writeln!(out, "```").unwrap();
         }
         None => {

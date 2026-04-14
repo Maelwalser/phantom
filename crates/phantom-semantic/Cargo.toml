@@ -12,6 +12,13 @@ tree-sitter-rust = { workspace = true }
 tree-sitter-typescript = { workspace = true }
 tree-sitter-python = { workspace = true }
 tree-sitter-go = { workspace = true }
+tree-sitter-yaml = { workspace = true }
+tree-sitter-toml-ng = { workspace = true }
+tree-sitter-json = { workspace = true }
+tree-sitter-bash = { workspace = true }
+tree-sitter-hcl = { workspace = true }
+tree-sitter-css = { workspace = true }
+tree-sitter-make = { workspace = true }
 blake3 = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

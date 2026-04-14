@@ -237,7 +237,7 @@ fn syntax_validation_ignores_unsupported_languages() {
     let content = b"this is { definitely not valid { code";
 
     assert!(
-        !parser.has_syntax_errors(Path::new("config.toml"), content),
+        !parser.has_syntax_errors(Path::new("config.xyz"), content),
         "unsupported languages should return false (no grammar to check)"
     );
 }

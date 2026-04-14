@@ -54,6 +54,12 @@ pub enum SymbolKind {
     Interface,
     /// A method within a class or impl block.
     Method,
+    /// A config section (YAML top-level key, TOML table, JSON object key, HCL block, CSS rule).
+    Section,
+    /// A standalone directive (Dockerfile instruction, shell command, CSS @-rule).
+    Directive,
+    /// A variable assignment (shell export, Makefile variable).
+    Variable,
 }
 
 /// A single symbol extracted from a source file.

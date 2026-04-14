@@ -10,15 +10,25 @@ use phantom_core::SymbolEntry;
 
 use crate::error::SemanticError;
 use crate::languages::LanguageExtractor;
+use crate::languages::bash::BashExtractor;
+use crate::languages::css::CssExtractor;
+use crate::languages::dockerfile::DockerfileExtractor;
 use crate::languages::go::GoExtractor;
+use crate::languages::hcl::HclExtractor;
+use crate::languages::json::JsonExtractor;
+use crate::languages::makefile::MakefileExtractor;
 use crate::languages::python::PythonExtractor;
 use crate::languages::rust::RustExtractor;
+use crate::languages::toml::TomlExtractor;
 use crate::languages::typescript::TypeScriptExtractor;
+use crate::languages::yaml::YamlExtractor;
 
 /// Multi-language parser that routes files to the right tree-sitter grammar.
 pub struct Parser {
     /// Maps file extension to extractor index.
     ext_to_index: HashMap<String, usize>,
+    /// Maps exact filename to extractor index (for Dockerfile, Makefile, etc.).
+    name_to_index: HashMap<String, usize>,
     /// Registered extractors.
     extractors: Vec<Box<dyn LanguageExtractor>>,
 }
@@ -29,13 +39,24 @@ impl Parser {
     pub fn new() -> Self {
         let mut parser = Self {
             ext_to_index: HashMap::new(),
+            name_to_index: HashMap::new(),
             extractors: Vec::new(),
         };
+        // Programming languages
         parser.register(Box::new(RustExtractor));
         parser.register(Box::new(TypeScriptExtractor::new()));
         parser.register(Box::new(TypeScriptExtractor::tsx()));
         parser.register(Box::new(PythonExtractor));
         parser.register(Box::new(GoExtractor));
+        // Config & infrastructure files
+        parser.register(Box::new(YamlExtractor));
+        parser.register(Box::new(TomlExtractor));
+        parser.register(Box::new(JsonExtractor));
+        parser.register(Box::new(DockerfileExtractor));
+        parser.register(Box::new(BashExtractor));
+        parser.register(Box::new(HclExtractor));
+        parser.register(Box::new(CssExtractor));
+        parser.register(Box::new(MakefileExtractor));
         parser
     }
 
@@ -46,17 +67,35 @@ impl Parser {
     pub fn empty() -> Self {
         Self {
             ext_to_index: HashMap::new(),
+            name_to_index: HashMap::new(),
             extractors: Vec::new(),
         }
     }
 
-    /// Register a language extractor, mapping each of its extensions.
+    /// Register a language extractor, mapping each of its extensions and filenames.
     pub fn register(&mut self, extractor: Box<dyn LanguageExtractor>) {
         let idx = self.extractors.len();
         for ext in extractor.extensions() {
             self.ext_to_index.insert(ext.to_string(), idx);
         }
+        for name in extractor.filenames() {
+            self.name_to_index.insert(name.to_string(), idx);
+        }
         self.extractors.push(extractor);
+    }
+
+    /// Resolve the extractor index for a given path, checking filename first then extension.
+    fn resolve_index(&self, path: &Path) -> Option<usize> {
+        // Check exact filename first (e.g., "Dockerfile", "Makefile").
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && let Some(&idx) = self.name_to_index.get(name)
+        {
+            return Some(idx);
+        }
+        // Fall back to extension-based lookup.
+        path.extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| self.ext_to_index.get(ext).copied())
     }
 
     /// Parse a file and extract its symbols.
@@ -65,20 +104,13 @@ impl Parser {
         path: &Path,
         content: &[u8],
     ) -> Result<Vec<SymbolEntry>, SemanticError> {
-        let ext = path.extension().and_then(|e| e.to_str()).ok_or_else(|| {
+        let idx = self.resolve_index(path).ok_or_else(|| {
             SemanticError::UnsupportedLanguage {
                 path: path.to_path_buf(),
             }
         })?;
 
-        let idx = self
-            .ext_to_index
-            .get(ext)
-            .ok_or_else(|| SemanticError::UnsupportedLanguage {
-                path: path.to_path_buf(),
-            })?;
-
-        let extractor = &self.extractors[*idx];
+        let extractor = &self.extractors[idx];
         let language = extractor.language();
 
         let mut ts_parser = tree_sitter::Parser::new();
@@ -102,10 +134,7 @@ impl Parser {
     /// Check if the given file path has a supported language.
     #[must_use]
     pub fn supports_language(&self, path: &Path) -> bool {
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|ext| self.ext_to_index.contains_key(ext))
-            .unwrap_or(false)
+        self.resolve_index(path).is_some()
     }
 
     /// Check if `content` has syntax errors when parsed with the grammar for
@@ -115,12 +144,8 @@ impl Parser {
     /// Returns `false` for unsupported languages (no grammar to check against).
     #[must_use]
     pub fn has_syntax_errors(&self, path: &Path, content: &[u8]) -> bool {
-        let ext = match path.extension().and_then(|e| e.to_str()) {
-            Some(e) => e,
-            None => return false,
-        };
-        let idx = match self.ext_to_index.get(ext) {
-            Some(i) => *i,
+        let idx = match self.resolve_index(path) {
+            Some(i) => i,
             None => return false,
         };
 
