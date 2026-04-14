@@ -60,7 +60,11 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
     };
     events_store.append(event).await?;
 
-    println!("Agent '{}' overlay destroyed.", args.agent);
+    println!(
+        "  {} Agent '{}' overlay destroyed.",
+        console::style("✗").yellow(),
+        console::style(&args.agent).bold()
+    );
     Ok(())
 }
 

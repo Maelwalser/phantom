@@ -8,6 +8,7 @@ use phantom_events::Projection;
 use phantom_orchestrator::materialization_service::{self, ActiveOverlay, MaterializeOutput};
 use phantom_orchestrator::materializer::{MaterializeResult, Materializer};
 
+use super::ui;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
@@ -41,7 +42,11 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
             .latest_submitted_changeset(&agent_id)
             .with_context(|| format!("no submitted changeset found for agent '{agent_name}'"))?;
 
-        println!("{agent_name} → changeset {}", cs.id);
+        println!(
+            "{agent_name} {} {}",
+            ui::style_dim("→"),
+            ui::style_dim(&cs.id.to_string())
+        );
         cs.id.clone()
     };
 
@@ -68,39 +73,56 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
         } => {
             let short = new_commit.to_hex();
             let short = &short[..12.min(short.len())];
-            println!("Materialized {} → commit {short}", changeset_id);
+            println!(
+                "  {} Materialized {} → commit {}",
+                console::style("✓").green(),
+                changeset_id,
+                console::style(short).cyan()
+            );
 
             if !text_fallback_files.is_empty() {
                 eprintln!(
-                    "\n  Warning: {} file(s) merged via line-based fallback (no syntax validation):",
+                    "\n  {} {} file(s) merged via line-based fallback (no syntax validation):",
+                    console::style("⚠").yellow(),
                     text_fallback_files.len()
                 );
                 for f in &text_fallback_files {
-                    eprintln!("    - {}", f.display());
+                    eprintln!("    {}", console::style(format!("- {}", f.display())).dim());
                 }
-                eprintln!("  Review these files before deploying.\n");
+                eprintln!(
+                    "  {}\n",
+                    console::style("Review these files before deploying.").yellow()
+                );
             }
 
             if !output.ripple_effects.is_empty() {
-                println!("Ripple: the following agents may be affected:");
+                println!(
+                    "\n  {} The following agents may be affected:",
+                    console::style("↻").cyan()
+                );
                 for effect in &output.ripple_effects {
                     if effect.merged_count > 0 || effect.conflicted_count > 0 {
                         println!(
-                            "  {}: {} file(s) ({} merged, {} conflicted)",
-                            effect.agent_id,
+                            "    {} {} file(s) ({} merged, {} conflicted)",
+                            console::style(&effect.agent_id.to_string()).bold(),
                             effect.files.len(),
-                            effect.merged_count,
-                            effect.conflicted_count,
+                            console::style(effect.merged_count).green(),
+                            console::style(effect.conflicted_count).red(),
                         );
                     } else {
-                        println!("  {}: {} file(s)", effect.agent_id, effect.files.len());
+                        println!(
+                            "    {} {} file(s)",
+                            console::style(&effect.agent_id.to_string()).bold(),
+                            effect.files.len()
+                        );
                     }
                 }
             }
         }
         MaterializeResult::Conflict { details } => {
             eprintln!(
-                "Materialization of {} failed with {} conflict(s):\n",
+                "\n  {} Materialization of {} failed with {} conflict(s):\n",
+                console::style("✗").red(),
                 changeset_id,
                 details.len()
             );
@@ -115,10 +137,14 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
                     phantom_core::ConflictKind::BinaryFile => "binary file",
                 };
                 let location = format_conflict_location(detail);
-                eprintln!("  {} [{kind_label}]", detail.file.display());
+                eprintln!(
+                    "  {} {}",
+                    console::style(detail.file.display().to_string()).bold(),
+                    console::style(format!("[{kind_label}]")).red()
+                );
                 eprintln!("    {}", detail.description);
                 if !location.is_empty() {
-                    eprintln!("    {location}");
+                    eprintln!("    {}", console::style(location).dim());
                 }
                 eprintln!();
             }

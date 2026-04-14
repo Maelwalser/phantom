@@ -29,9 +29,15 @@ pub async fn run(args: DownArgs) -> anyhow::Result<()> {
 
     if !args.force {
         if agents.is_empty() {
-            println!("No active overlays. Removing .phantom/ directory.");
+            println!(
+                "  {} No active overlays. Removing .phantom/ directory.",
+                console::style("·").dim()
+            );
         } else {
-            println!("Active overlays that will be torn down:");
+            println!(
+                "  {} Active overlays that will be torn down:",
+                console::style("⚠").yellow()
+            );
             for agent in &agents {
                 let has_fuse = agent_has_fuse(&overlays_dir, agent);
                 let has_process = agent_has_process(&overlays_dir, agent);
@@ -45,14 +51,16 @@ pub async fn run(args: DownArgs) -> anyhow::Result<()> {
                 let suffix = if markers.is_empty() {
                     String::new()
                 } else {
-                    format!(" ({})", markers.join(", "))
+                    format!(" {}", console::style(format!("({})", markers.join(", "))).dim())
                 };
-                println!("  {agent}{suffix}");
+                println!("    {} {agent}{suffix}", console::style("·").dim());
             }
             println!();
         }
-        println!("This will unmount all FUSE overlays, kill all agent processes,");
-        println!("and remove the .phantom/ directory. Continue? [y/N]");
+        println!(
+            "  This will unmount all FUSE overlays, kill all agent processes,"
+        );
+        println!("  and remove the .phantom/ directory. Continue? [y/N]");
 
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
@@ -77,10 +85,11 @@ pub async fn run(args: DownArgs) -> anyhow::Result<()> {
 
     if !unmount_failures.is_empty() {
         eprintln!(
-            "Warning: failed to unmount FUSE for: {}",
+            "  {} Failed to unmount FUSE for: {}",
+            console::style("⚠").yellow(),
             unmount_failures.join(", ")
         );
-        eprintln!("Attempting lazy unmount...");
+        eprintln!("    Attempting lazy unmount...");
 
         for agent in &unmount_failures {
             lazy_unmount(&overlays_dir, agent);
@@ -113,7 +122,10 @@ pub async fn run(args: DownArgs) -> anyhow::Result<()> {
     std::fs::remove_dir_all(&phantom_dir)
         .with_context(|| format!("failed to remove {}", phantom_dir.display()))?;
 
-    println!("Phantom torn down. Repository is back to plain git.");
+    println!(
+        "  {} Phantom torn down. Repository is back to plain git.",
+        console::style("✓").green()
+    );
     Ok(())
 }
 

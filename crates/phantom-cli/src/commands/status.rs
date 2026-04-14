@@ -18,6 +18,7 @@ use phantom_orchestrator::git::GitOps;
 use phantom_overlay::OverlayManager;
 
 use super::agent_monitor;
+use super::ui;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
@@ -69,7 +70,11 @@ async fn run_summary(
     // Header
     let head_short = head.to_hex();
     let head_short = &head_short[..12.min(head_short.len())];
-    println!("Trunk HEAD: {head_short}");
+    println!(
+        "{} {}",
+        ui::style_dim("Trunk HEAD:"),
+        ui::style_cyan(head_short)
+    );
     println!();
 
     // Active overlays with run state.
@@ -105,9 +110,9 @@ async fn run_summary(
     }
 
     if active_agents.is_empty() {
-        println!("Active overlays: (none)");
+        println!("  {} {}", ui::style_bold("Active overlays:"), ui::style_dim("(none)"));
     } else {
-        println!("Active overlays:");
+        ui::section_header("Active overlays");
 
         // Print plan groups first.
         for (plan_prefix, agents) in &plan_agents {
@@ -122,17 +127,23 @@ async fn run_summary(
                     }
                 })
                 .unwrap_or_default();
-            println!("  Plan: {plan_prefix} — {request}");
+            println!(
+                "  {} {} {} {}",
+                ui::style_dim("Plan:"),
+                ui::style_cyan(plan_prefix),
+                ui::style_dim("—"),
+                request
+            );
 
             for agent in agents {
                 let run_state = read_agent_run_state(phantom_dir, &agent.0);
-                let state_str = format_run_state_short(&run_state);
-                // Extract the domain name from the agent ID (everything after the plan prefix).
+                let indicator = ui::run_state_indicator(&run_state);
+                let state_text = ui::run_state_text(&run_state);
                 let domain_name = agent
                     .0
                     .strip_prefix(&format!("{plan_prefix}-"))
                     .unwrap_or(&agent.0);
-                println!("    {domain_name:<20} {state_str}");
+                println!("    {indicator} {domain_name:<20} {state_text}");
             }
             println!();
         }
@@ -140,7 +151,14 @@ async fn run_summary(
         // Print standalone agents.
         for agent in &standalone_agents {
             let run_state = read_agent_run_state(phantom_dir, &agent.0);
-            let state_str = format_run_state_short(&run_state);
+            let indicator = ui::run_state_indicator(&run_state);
+            let state_text = ui::run_state_text(&run_state);
+            let elapsed = match &run_state {
+                AgentRunState::Running { elapsed, .. } => {
+                    format!(" {}", ui::style_dim(&format_duration(elapsed)))
+                }
+                _ => String::new(),
+            };
 
             let task = all_events
                 .iter()
@@ -157,9 +175,12 @@ async fn run_summary(
                 } else {
                     task.to_string()
                 };
-                println!("  {agent:<14} {state_str:<28} {truncated}");
+                println!(
+                    "  {indicator} {agent:<14} {state_text:<12}{elapsed}  {}",
+                    ui::style_dim(&truncated)
+                );
             } else {
-                println!("  {agent:<14} {state_str}");
+                println!("  {indicator} {agent:<14} {state_text}{elapsed}");
             }
         }
     }
@@ -168,23 +189,36 @@ async fn run_summary(
     // Pending changesets
     let pending = projection.pending_changesets();
     if pending.is_empty() {
-        println!("Pending changesets: (none)");
+        println!(
+            "  {} {}",
+            ui::style_bold("Pending changesets:"),
+            ui::style_dim("(none)")
+        );
     } else {
-        println!("Pending changesets:");
-        println!("  {:<20} {:<14} {:>5}   STATUS", "ID", "AGENT", "FILES");
+        ui::section_header("Pending changesets");
+        println!(
+            "  {}",
+            ui::style_dim(&format!(
+                "{:<20} {:<14} {:>5}   STATUS",
+                "ID", "AGENT", "FILES"
+            ))
+        );
         for cs in &pending {
             println!(
-                "  {:<20} {:<14} {:>5}   {:?}",
+                "  {:<20} {:<14} {:>5}   {}",
                 cs.id,
                 cs.agent_id,
                 cs.files_touched.len(),
-                cs.status,
+                ui::status_label(&cs.status),
             );
         }
     }
     println!();
 
-    println!("Total events: {}", all_events.len());
+    println!(
+        "{}",
+        ui::style_dim(&format!("Total events: {}", all_events.len()))
+    );
 
     Ok(())
 }
@@ -223,49 +257,66 @@ async fn run_detailed(
 
     let changeset = projection.changeset(&changeset_id);
 
-    println!("Agent: {agent_name}");
-    println!("Changeset: {changeset_id}");
+    ui::key_value("Agent", agent_name);
+    ui::key_value("Changeset", &changeset_id.to_string());
     if !task.is_empty() {
-        println!("Task: {task}");
+        ui::key_value("Task", task);
     }
 
     if let Some(cs) = changeset {
-        println!("Status: {:?}", cs.status);
+        let status_styled = ui::status_label(&cs.status);
+        println!(
+            "  {}  {status_styled}",
+            console::Style::new().dim().apply_to(format!("{:<12}", "Status"))
+        );
         let base_hex = cs.base_commit.to_hex();
-        println!("Base: {}", &base_hex[..12.min(base_hex.len())]);
+        ui::key_value("Base", ui::style_cyan(&base_hex[..12.min(base_hex.len())]));
     }
     println!();
 
     // Background agent run state
     let run_state = read_agent_run_state(phantom_dir, agent_name);
-    println!("Run state: {}", format_run_state_long(&run_state));
+    let indicator = ui::run_state_indicator(&run_state);
+    println!(
+        "  {}  {indicator} {}",
+        console::Style::new().dim().apply_to(format!("{:<12}", "Run state")),
+        format_run_state_long(&run_state)
+    );
     println!();
 
     // Files modified in overlay
     match overlays.get_layer(&agent_id) {
         Ok(layer) => match layer.modified_files() {
             Ok(files) if !files.is_empty() => {
-                println!("Modified files ({}):", files.len());
+                println!(
+                    "  {} {}",
+                    ui::style_bold("Modified files"),
+                    ui::style_dim(&format!("({})", files.len()))
+                );
                 for f in &files {
-                    println!("  {}", f.display());
+                    println!("    {}", ui::style_dim(&f.display().to_string()));
                 }
                 println!();
             }
             Ok(_) => {
-                println!("Modified files: (none)");
+                println!(
+                    "  {} {}",
+                    ui::style_bold("Modified files:"),
+                    ui::style_dim("(none)")
+                );
                 println!();
             }
             Err(e) => {
-                println!("Modified files: (error: {e})");
+                println!("  {} {}", ui::style_bold("Modified files:"), ui::style_error(&format!("(error: {e})")));
                 println!();
             }
         },
         Err(_) => {
             if let Some(cs) = changeset {
                 if cs.status == ChangesetStatus::Materialized {
-                    println!("Overlay: cleared (materialized)");
+                    ui::key_value("Overlay", ui::style_dim("cleared (materialized)"));
                 } else {
-                    println!("Overlay: not found");
+                    ui::key_value("Overlay", ui::style_warning("not found"));
                 }
                 println!();
             }
@@ -322,28 +373,6 @@ pub fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
     }
 
     AgentRunState::Idle
-}
-
-/// Format run state for the summary table.
-pub fn format_run_state_short(state: &AgentRunState) -> String {
-    match state {
-        AgentRunState::Running { pid, elapsed } => {
-            format!("running {}  pid {pid}", format_duration(elapsed))
-        }
-        AgentRunState::Finished => "finished".into(),
-        AgentRunState::Failed { status } => {
-            if let Some(s) = status {
-                let code = s
-                    .exit_code
-                    .map(|c| format!("exit {c}"))
-                    .unwrap_or_else(|| "signal".into());
-                format!("failed  {code}")
-            } else {
-                "failed  (crashed)".into()
-            }
-        }
-        AgentRunState::Idle => "idle  (interactive)".into(),
-    }
 }
 
 /// Format run state for the detailed view.

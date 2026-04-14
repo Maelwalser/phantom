@@ -16,6 +16,7 @@ use phantom_events::Projection;
 use crate::context::PhantomContext;
 
 use super::status::{self, AgentRunState};
+use super::ui;
 
 #[derive(clap::Args)]
 pub struct BackgroundArgs {
@@ -88,6 +89,9 @@ async fn run_loop(stdout: &mut io::Stdout, interval: Duration) -> anyhow::Result
 }
 
 async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
+    // Force colors since we write to a buffer that gets flushed to a real terminal.
+    console::set_colors_enabled(true);
+
     let ctx = PhantomContext::locate()?;
     let events_store = ctx.open_events().await?;
     let git = ctx.open_git()?;
@@ -103,10 +107,17 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     // Header
     writeln!(
         out,
-        "\x1b[1mphantom background\x1b[0m — watching agents  \x1b[2m{now}  (Ctrl+C to exit)\x1b[0m"
+        "{} — watching agents  {}",
+        console::style("phantom background").bold(),
+        console::style(format!("{now}  (Ctrl+C to exit)")).dim()
     )?;
     writeln!(out)?;
-    writeln!(out, "Trunk HEAD: \x1b[36m{head_short}\x1b[0m")?;
+    writeln!(
+        out,
+        "{} {}",
+        console::style("Trunk HEAD:").dim(),
+        console::style(head_short).cyan()
+    )?;
     writeln!(out)?;
 
     // Gather all agents (active changesets).
@@ -122,19 +133,24 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     if all_agents.is_empty() {
         writeln!(
             out,
-            "\x1b[2m  No agents found. Use `phantom <agent> --background` to start one.\x1b[0m"
+            "  {}",
+            console::style("No agents found. Use `phantom <agent> --background` to start one.")
+                .dim()
         )?;
         return Ok(());
     }
 
     // Table header
-    let task_header = "TASK";
     writeln!(
         out,
-        "  {:<16} {:<14} {:<10} {task_header}",
-        "AGENT", "STATUS", "ELAPSED"
+        "  {}",
+        console::style(format!(
+            "{:<16} {:<14} {:<10} TASK",
+            "AGENT", "STATUS", "ELAPSED"
+        ))
+        .dim()
     )?;
-    writeln!(out, "  {}", "─".repeat(70))?;
+    writeln!(out, "  {}", console::style("─".repeat(70)).dim())?;
 
     let mut running = 0usize;
     let mut finished = 0usize;
@@ -151,7 +167,12 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
             AgentRunState::Idle => idle += 1,
         }
 
-        let (indicator, state_label, elapsed_str) = format_state_columns(&run_state);
+        let indicator = ui::run_state_indicator(&run_state);
+        let state_text = ui::run_state_text(&run_state);
+        let elapsed_str = match &run_state {
+            AgentRunState::Running { elapsed, .. } => status::format_duration(elapsed),
+            _ => String::new(),
+        };
 
         // Find task description.
         let task = all_events
@@ -172,51 +193,30 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
 
         writeln!(
             out,
-            "  {:<16} {}{:<14}\x1b[0m {:<10} {}",
-            agent.0, indicator, state_label, elapsed_str, truncated_task
+            "  {:<16} {indicator} {state_text:<12} {:<10} {}",
+            agent.0,
+            elapsed_str,
+            console::style(truncated_task).dim()
         )?;
     }
 
     writeln!(out)?;
     write!(out, "  ")?;
     if running > 0 {
-        write!(out, "\x1b[33m● {running} running\x1b[0m  ")?;
+        write!(out, "{}  ", console::style(format!("● {running} running")).yellow())?;
     }
     if finished > 0 {
-        write!(out, "\x1b[32m✓ {finished} finished\x1b[0m  ")?;
+        write!(out, "{}  ", console::style(format!("✓ {finished} finished")).green())?;
     }
     if failed > 0 {
-        write!(out, "\x1b[31m✗ {failed} failed\x1b[0m  ")?;
+        write!(out, "{}  ", console::style(format!("✗ {failed} failed")).red())?;
     }
     if idle > 0 {
-        write!(out, "\x1b[2m○ {idle} idle\x1b[0m  ")?;
+        write!(out, "{}  ", console::style(format!("○ {idle} idle")).dim())?;
     }
     writeln!(out)?;
 
     Ok(())
-}
-
-/// Format run state into (color+indicator, label, elapsed) columns.
-fn format_state_columns(state: &AgentRunState) -> (&'static str, String, String) {
-    match state {
-        AgentRunState::Running { pid: _, elapsed } => (
-            "\x1b[33m● ",
-            "running".into(),
-            status::format_duration(elapsed),
-        ),
-        AgentRunState::Finished => ("\x1b[32m✓ ", "finished".into(), String::new()),
-        AgentRunState::Failed { status: s } => {
-            let label = if let Some(s) = s {
-                s.exit_code
-                    .map(|c| format!("exit {c}"))
-                    .unwrap_or_else(|| "signal".into())
-            } else {
-                "crashed".into()
-            };
-            ("\x1b[31m✗ ", label, String::new())
-        }
-        AgentRunState::Idle => ("\x1b[2m○ ", "idle".into(), String::new()),
-    }
 }
 
 /// Scan `.phantom/overlays/` for agent directories that have a status file

@@ -39,7 +39,11 @@ pub async fn run() -> anyhow::Result<()> {
 
     ensure_gitignore(&cwd)?;
 
-    println!("Phantom initialized in {}", cwd.display());
+    println!(
+        "  {} Phantom initialized in {}",
+        console::style("✓").green(),
+        cwd.display()
+    );
     Ok(())
 }
 

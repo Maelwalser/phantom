@@ -5,7 +5,6 @@
 //! after the selected checkpoint.
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
 use dialoguer::Select;
 use phantom_core::changeset::{Changeset, ChangesetStatus};
 use phantom_core::event::EventKind;
@@ -16,6 +15,7 @@ use phantom_events::projection::Projection;
 use phantom_events::store::SqliteEventStore;
 use phantom_orchestrator::git::GitOps;
 
+use super::ui;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
@@ -60,11 +60,18 @@ async fn rollback_single(
 
     let dropped = events.mark_dropped(changeset_id).await?;
 
-    println!("Dropped {dropped} event(s) for changeset {changeset_id}.");
+    println!(
+        "  {} Dropped {dropped} event(s) for changeset {}.",
+        console::style("↺").yellow(),
+        console::style(&changeset_id.to_string()).bold()
+    );
 
     match materialized_commit {
         None => {
-            println!("Changeset was not materialized — no git changes to revert.");
+            println!(
+                "  {} Changeset was not materialized — no git changes to revert.",
+                console::style("·").dim()
+            );
         }
         Some(commit_oid) => {
             let git =
@@ -75,12 +82,19 @@ async fn rollback_single(
                 Ok(revert_oid) => {
                     let short = revert_oid.to_hex();
                     let short = &short[..12.min(short.len())];
-                    println!("Reverted commit → {short}");
+                    println!(
+                        "  {} Reverted commit → {}",
+                        console::style("✓").green(),
+                        console::style(short).cyan()
+                    );
                 }
                 Err(e) => {
-                    eprintln!("Warning: git revert failed: {e}");
-                    eprintln!("The rolled-back changes may have been modified by later commits.");
-                    eprintln!("Manual resolution with `git revert` may be needed.");
+                    eprintln!(
+                        "  {} git revert failed: {e}",
+                        console::style("⚠").yellow()
+                    );
+                    eprintln!("    The rolled-back changes may have been modified by later commits.");
+                    eprintln!("    Manual resolution with `git revert` may be needed.");
                 }
             }
         }
@@ -90,11 +104,17 @@ async fn rollback_single(
     let downstream = replay.changesets_after(changeset_id).await?;
 
     if downstream.is_empty() {
-        println!("No downstream changesets affected.");
+        println!(
+            "  {}",
+            console::style("No downstream changesets affected.").dim()
+        );
     } else {
-        println!("Downstream changesets requiring re-task:");
+        println!(
+            "  {} Downstream changesets requiring re-task:",
+            console::style("⚠").yellow()
+        );
         for cs in &downstream {
-            println!("  {cs}");
+            println!("    {}", console::style(cs.to_string()).bold());
         }
     }
 
@@ -145,7 +165,11 @@ async fn run_interactive(ctx: &PhantomContext, events: &SqliteEventStore) -> any
 
     // Roll back changesets at indices 0..idx (newest first).
     let to_rollback = &materialized_rev[..idx];
-    println!("Rolling back {} changeset(s)...\n", to_rollback.len());
+    println!(
+        "\n  {} Rolling back {} changeset(s)...\n",
+        console::style("↺").yellow(),
+        to_rollback.len()
+    );
 
     for cs_id in to_rollback {
         rollback_single(ctx, events, cs_id).await?;
@@ -221,20 +245,9 @@ fn format_menu_item(id: &ChangesetId, cs: &Changeset) -> String {
     } else {
         cs.task.clone()
     };
-    let age = format_relative_time(cs.created_at);
+    let age = ui::relative_time(cs.created_at);
     format!(
         "{:<10}  {:<14}  {:50}  ({})",
         id.0, cs.agent_id.0, task_display, age
     )
-}
-
-fn format_relative_time(ts: DateTime<Utc>) -> String {
-    let elapsed = Utc::now() - ts;
-    if elapsed.num_days() > 0 {
-        format!("{}d ago", elapsed.num_days())
-    } else if elapsed.num_hours() > 0 {
-        format!("{}h ago", elapsed.num_hours())
-    } else {
-        format!("{}m ago", elapsed.num_minutes().max(1))
-    }
 }

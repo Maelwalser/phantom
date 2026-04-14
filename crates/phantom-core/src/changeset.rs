@@ -32,6 +32,20 @@ pub enum ChangesetStatus {
     Dropped,
 }
 
+impl std::fmt::Display for ChangesetStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InProgress => write!(f, "in progress"),
+            Self::Submitted => write!(f, "submitted"),
+            Self::Merging => write!(f, "merging"),
+            Self::Materialized => write!(f, "materialized"),
+            Self::Conflicted => write!(f, "conflicted"),
+            Self::Resolving => write!(f, "resolving"),
+            Self::Dropped => write!(f, "dropped"),
+        }
+    }
+}
+
 /// A structured description of a single change an agent made.
 ///
 /// Operations are expressed in terms of symbols rather than raw text lines,

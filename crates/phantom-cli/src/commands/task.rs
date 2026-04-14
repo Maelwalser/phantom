@@ -153,7 +153,6 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
     };
 
     let base_short = base_commit.to_hex().chars().take(12).collect::<String>();
-    let verb = if is_new { "tasked" } else { "resumed" };
 
     if args.background {
         let task = args.task.as_deref().unwrap_or("");
@@ -184,17 +183,29 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             None,
         )?;
 
-        println!("Agent '{}' {verb} (background).", args.agent);
-        println!("  Changeset: {changeset_id}");
-        println!("  Task:      {task}");
-        println!("  Log:       {}", log_file.display());
-        println!("  Overlay:   {}", work_dir.display());
-        println!("  Base:      {base_short}");
+        let verb_styled = if is_new {
+            console::style("tasked").green()
+        } else {
+            console::style("resumed").cyan()
+        };
+        println!(
+            "  Agent '{}' {verb_styled} {}",
+            console::style(&args.agent).bold(),
+            console::style("(background)").dim()
+        );
+        super::ui::key_value("Changeset", &changeset_id.to_string());
+        super::ui::key_value("Task", task);
+        super::ui::key_value("Log", log_file.display());
+        super::ui::key_value("Overlay", work_dir.display());
+        super::ui::key_value("Base", console::style(&base_short).cyan());
         if fuse_mounted {
-            println!("  FUSE:      mounted");
+            super::ui::key_value("FUSE", console::style("mounted").green());
         }
         println!();
-        println!("Run `phantom {}` again to check progress.", args.agent);
+        println!(
+            "  Run {} again to check progress.",
+            console::style(format!("phantom {}", args.agent)).bold()
+        );
     } else {
         // If a background agent is already running or has completed for this
         // overlay, show its status instead of opening an interactive session.
@@ -210,16 +221,24 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
         }
 
         if is_new {
-            println!("Agent '{}' tasked.", args.agent);
-            println!("  Changeset: {changeset_id}");
-            println!("  Overlay:   {}", work_dir.display());
-            println!("  Base:      {base_short}");
+            println!(
+                "  Agent '{}' {}.",
+                console::style(&args.agent).bold(),
+                console::style("tasked").green()
+            );
+            super::ui::key_value("Changeset", &changeset_id.to_string());
+            super::ui::key_value("Overlay", work_dir.display());
+            super::ui::key_value("Base", console::style(&base_short).cyan());
             if fuse_mounted {
-                println!("  FUSE:      mounted");
+                super::ui::key_value("FUSE", console::style("mounted").green());
             }
             println!();
         } else {
-            println!("Task '{}' resumed.", args.agent);
+            println!(
+                "  Task '{}' {}.",
+                console::style(&args.agent).bold(),
+                console::style("resumed").cyan()
+            );
         }
         super::interactive::run_interactive_session(
             &ctx,

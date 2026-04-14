@@ -6,6 +6,7 @@ use phantom_events::EventQuery;
 use phantom_orchestrator::git::{GitOps, git_oid_to_oid};
 
 use super::agent_color::AgentPalette;
+use super::ui;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
@@ -51,20 +52,25 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
     let git = ctx.open_git().ok();
 
     let mut palette = AgentPalette::new();
-    let dim = console::Style::new().dim();
 
     for event in &events {
-        let ts = dim.apply_to(event.timestamp.format("%Y-%m-%d %H:%M:%S"));
+        let ts = ui::dim_timestamp(event.timestamp);
         let agent_style = palette.style_for(&event.agent_id.0).clone();
         let agent = agent_style.apply_to(&event.agent_id.0);
         let (label, detail) = format_change(&event.kind, git.as_ref());
-        println!("  {ts}  {label:<14} {agent}  {detail}");
+        println!("  {ts:>12}  {label:<14} {agent}  {detail}");
     }
 
     if let Some(ref agent) = args.agent {
-        println!("\n{} submit(s) for '{agent}' shown.", events.len());
+        println!(
+            "\n{}",
+            ui::style_dim(&format!("{} submit(s) for '{agent}'", events.len()))
+        );
     } else {
-        println!("\n{} materialization(s) shown.", events.len());
+        println!(
+            "\n{}",
+            ui::style_dim(&format!("{} materialization(s)", events.len()))
+        );
     }
 
     Ok(())

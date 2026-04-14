@@ -5,6 +5,7 @@ use phantom_core::id::{AgentId, ChangesetId, SymbolId};
 use phantom_events::EventQuery;
 
 use super::agent_color::AgentPalette;
+use super::ui;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
@@ -56,22 +57,21 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
     }
 
     let mut palette = AgentPalette::new();
-    let dim = console::Style::new().dim();
 
     for event in &events {
-        let ts = dim.apply_to(event.timestamp.format("%Y-%m-%d %H:%M:%S"));
+        let ts = ui::dim_timestamp(event.timestamp);
         let agent_style = palette.style_for(&event.agent_id.0).clone();
         let agent = agent_style.apply_to(&event.agent_id.0);
         if args.verbose {
             let kind_summary = format_event_kind(&event.kind);
-            println!("{ts}  {agent}  {kind_summary}");
+            println!("  {ts:>12}  {agent}  {kind_summary}");
         } else {
-            let label = event_kind_label(&event.kind);
-            println!("{ts}  {agent}  {label}");
+            let label = styled_event_kind_label(&event.kind);
+            println!("  {ts:>12}  {agent}  {label}");
         }
     }
 
-    println!("\n{} event(s) shown.", events.len());
+    println!("\n{}", ui::style_dim(&format!("{} event(s)", events.len())));
 
     Ok(())
 }
@@ -232,6 +232,27 @@ fn event_kind_label(kind: &phantom_core::EventKind) -> &'static str {
         EventKind::PlanCreated { .. } => "plan created",
         EventKind::PlanCompleted { .. } => "plan completed",
         EventKind::Unknown => "unknown",
+    }
+}
+
+/// Styled label with semantic colors for event kinds.
+fn styled_event_kind_label(kind: &phantom_core::EventKind) -> console::StyledObject<&'static str> {
+    use phantom_core::EventKind;
+    let label = event_kind_label(kind);
+    match kind {
+        EventKind::ChangesetMaterialized { .. } | EventKind::PlanCompleted { .. } => {
+            console::style(label).green()
+        }
+        EventKind::ChangesetSubmitted { .. } => console::style(label).yellow(),
+        EventKind::ChangesetConflicted { .. } => console::style(label).red(),
+        EventKind::ChangesetDropped { .. } => console::style(label).red().dim(),
+        EventKind::TaskCreated { .. }
+        | EventKind::AgentLaunched { .. }
+        | EventKind::PlanCreated { .. } => console::style(label).cyan(),
+        EventKind::LiveRebased { .. } | EventKind::ConflictResolutionStarted { .. } => {
+            console::style(label).cyan()
+        }
+        _ => console::style(label).dim(),
     }
 }
 

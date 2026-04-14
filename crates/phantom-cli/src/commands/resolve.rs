@@ -84,10 +84,11 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     }
 
     println!(
-        "Resolving {} conflict(s) for agent '{}' (changeset {})...\n",
+        "\n  {} Resolving {} conflict(s) for agent '{}' (changeset {})...\n",
+        console::style("↻").cyan(),
         conflict_details.len(),
-        args.agent,
-        changeset.id
+        console::style(&args.agent).bold(),
+        console::style(&changeset.id.to_string()).dim()
     );
 
     // Build the three-way conflict context for each conflict.
@@ -116,9 +117,10 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
             phantom_core::ConflictKind::BinaryFile => "binary file",
         };
         println!(
-            "  {} [{kind_label}] {}",
-            detail.file.display(),
-            detail.description
+            "    {} {} {}",
+            console::style(detail.file.display().to_string()).bold(),
+            console::style(format!("[{kind_label}]")).red(),
+            console::style(&detail.description).dim()
         );
 
         resolve_contexts.push(ResolveConflictContext {
@@ -190,14 +192,18 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
         .join("agent.log");
 
     println!();
-    println!("Resolve agent launched (background).");
-    println!("  Changeset: {}", changeset.id);
-    println!("  Log:       {}", log_file.display());
-    println!("  Overlay:   {}", work_dir.display());
+    println!(
+        "  {} Resolve agent launched {}.",
+        console::style("✓").green(),
+        console::style("(background)").dim()
+    );
+    super::ui::key_value("Changeset", &changeset.id.to_string());
+    super::ui::key_value("Log", log_file.display());
+    super::ui::key_value("Overlay", work_dir.display());
     println!();
     println!(
-        "Run `phantom status --agent {}` to check progress.",
-        args.agent
+        "  Run {} to check progress.",
+        console::style(format!("phantom status {}", args.agent)).bold()
     );
 
     Ok(())

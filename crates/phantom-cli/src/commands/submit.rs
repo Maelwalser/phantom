@@ -21,10 +21,18 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
 
     match submit_agent(&ctx, &events, &overlays, &agent_id).await? {
         Some(changeset_id) => {
-            println!("Changeset {changeset_id} submitted.");
+            println!(
+                "  {} Changeset {} submitted.",
+                console::style("✓").green(),
+                console::style(&changeset_id.to_string()).bold()
+            );
         }
         None => {
-            println!("No modified files found for agent '{}'.", args.agent);
+            println!(
+                "  {} No modified files found for agent '{}'.",
+                console::style("·").dim(),
+                args.agent
+            );
         }
     }
 
@@ -68,14 +76,14 @@ pub async fn submit_agent(
             // Print conflict warnings if the service detected them.
             // The service itself no longer prints -- that's the CLI's responsibility.
             println!(
-                "  {} additions, {} modifications, {} deletions across {} file(s)",
-                out.additions,
-                out.modifications,
-                out.deletions,
+                "    {} additions, {} modifications, {} deletions across {} file(s)",
+                console::style(out.additions).green(),
+                console::style(out.modifications).yellow(),
+                console::style(out.deletions).red(),
                 out.modified_files.len()
             );
             for f in &out.modified_files {
-                println!("    {}", f.display());
+                println!("    {}", console::style(f.display().to_string()).dim());
             }
             Ok(Some(out.changeset_id))
         }
