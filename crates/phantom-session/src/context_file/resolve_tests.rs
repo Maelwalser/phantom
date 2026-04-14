@@ -131,6 +131,9 @@ fn compact_format_for_both_modified_symbol() {
     );
     // Hunk headers should be preserved.
     assert!(out.contains("@@"), "hunk headers should be preserved");
+    // Scope context header should appear between BASE and the diffs.
+    assert!(out.contains("#### Scope Context"), "scope context header should be present");
+    assert!(out.contains("`fn target() {`"), "scope signature should be the function signature");
 }
 
 #[test]
@@ -332,11 +335,14 @@ fn compact_format_for_raw_text_conflict() {
     };
 
     let mut out = String::new();
-    let ok = write_compact_raw_text_conflict(&mut out, "markdown", &conflict, "abc123");
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "markdown", &conflict, "abc123", &parser);
 
     assert!(ok, "should succeed for RawTextConflict with all content");
     assert!(!out.contains("#### BASE"), "raw text conflicts should not emit a BASE block");
     assert!(!out.contains("```markdown"), "no markdown code block — only diffs");
+    // Non-parseable file (README.md) should NOT emit scope context.
+    assert!(!out.contains("#### Scope Context"), "non-parseable file should not have scope context");
     assert!(out.contains("#### OURS"));
     assert!(out.contains("#### THEIRS"));
     assert!(out.contains("```diff"));
@@ -372,7 +378,8 @@ fn compact_format_for_dependency_version_conflict() {
     };
 
     let mut out = String::new();
-    let ok = write_compact_raw_text_conflict(&mut out, "toml", &conflict, "abc123");
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "toml", &conflict, "abc123", &parser);
 
     assert!(ok, "should succeed for BothModifiedDependencyVersion");
     assert!(out.contains("```diff"));
@@ -403,7 +410,8 @@ fn raw_text_compact_falls_back_when_content_missing() {
     };
 
     let mut out = String::new();
-    let ok = write_compact_raw_text_conflict(&mut out, "yaml", &conflict, "abc");
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "yaml", &conflict, "abc", &parser);
     assert!(!ok, "should fall back when ours_content is missing");
 }
 
@@ -434,13 +442,76 @@ fn raw_text_identical_side_shows_message() {
     };
 
     let mut out = String::new();
-    let ok = write_compact_raw_text_conflict(&mut out, "markdown", &conflict, "abc");
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "markdown", &conflict, "abc", &parser);
     assert!(ok);
     assert!(
         out.contains("*(identical to BASE)*"),
         "OURS should show identical message"
     );
     assert!(out.contains("```diff"), "THEIRS should show a diff");
+}
+
+#[test]
+fn raw_text_compact_emits_scope_for_parseable_file() {
+    use phantom_core::conflict::{ConflictDetail, ConflictKind};
+    use phantom_core::id::ChangesetId;
+
+    // A Rust file with two functions — the change is deep inside `handler`.
+    let base = "\
+fn setup() {
+    init();
+}
+
+fn handler(req: Request) -> Response {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let result = a + b + c + d + e + f;
+    respond(result)
+}
+";
+    // OURS modifies a line deep in handler.
+    let ours = base.replace("let result = a + b + c + d + e + f;", "let result = a + b + c;");
+    // THEIRS modifies a different line in handler.
+    let theirs = base.replace("respond(result)", "respond(result * 2)");
+
+    let conflict = ResolveConflictContext {
+        detail: ConflictDetail {
+            kind: ConflictKind::RawTextConflict,
+            file: std::path::PathBuf::from("src/main.rs"),
+            symbol_id: None,
+            ours_changeset: ChangesetId("cs-1".into()),
+            theirs_changeset: ChangesetId("cs-2".into()),
+            description: "raw text conflict in Rust file".into(),
+            base_span: None,
+            ours_span: None,
+            theirs_span: None,
+        },
+        base_content: Some(base.into()),
+        ours_content: Some(ours),
+        theirs_content: Some(theirs),
+    };
+
+    let mut out = String::new();
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "rust", &conflict, "abc123", &parser);
+
+    assert!(ok, "should succeed");
+    // Scope context should be emitted for the parseable Rust file.
+    assert!(out.contains("#### Scope Context"), "scope context header should be present");
+    assert!(
+        out.contains("`fn handler(req: Request) -> Response {`"),
+        "scope signature should identify the enclosing function, got:\n{out}"
+    );
+    // setup() should NOT appear since changes are only in handler().
+    assert!(
+        !out.contains("`fn setup()"),
+        "unrelated function should not appear in scope context"
+    );
 }
 
 #[test]
@@ -485,7 +556,8 @@ fn raw_text_compact_falls_back_for_oversized_content() {
     };
 
     let mut out = String::new();
-    let ok = write_compact_raw_text_conflict(&mut out, "json", &conflict, "abc");
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "json", &conflict, "abc", &parser);
     assert!(!ok, "should fall back for oversized content (>250KB)");
 }
 
@@ -565,4 +637,19 @@ fn resolve_context_file_excludes_rules() {
     // Rules should NOT be in this file — they live in the system prompt.
     assert!(!content.contains("Resolution Rules"));
     assert!(!content.contains("After Resolution"));
+}
+
+#[test]
+fn line_to_byte_offset_basics() {
+    let content = "aaa\nbbb\nccc\n";
+    // Line 1 starts at byte 0.
+    assert_eq!(line_to_byte_offset(content, 1), 0);
+    // Line 2 starts at byte 4 (after "aaa\n").
+    assert_eq!(line_to_byte_offset(content, 2), 4);
+    // Line 3 starts at byte 8 (after "aaa\nbbb\n").
+    assert_eq!(line_to_byte_offset(content, 3), 8);
+    // Line 0 or below clamps to 0.
+    assert_eq!(line_to_byte_offset(content, 0), 0);
+    // Line beyond content returns content.len().
+    assert_eq!(line_to_byte_offset(content, 100), content.len());
 }

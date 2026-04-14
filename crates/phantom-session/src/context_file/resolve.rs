@@ -44,13 +44,16 @@ pub fn write_resolve_rules_file(path: &Path) -> anyhow::Result<()> {
 
 ## Resolution Rules
 
-1. For symbol-level conflicts you are shown the BASE version as full source,
-   then OURS and THEIRS as unified diffs showing what each side changed
-   relative to BASE. Your working directory has the THEIRS version —
-   integrate the OURS changes. Do not re-read the file; use the content shown here.
+1. For symbol-level conflicts you are shown a Scope Context line identifying
+   the enclosing declaration, then the BASE version as full source, then OURS
+   and THEIRS as unified diffs showing what each side changed relative to BASE.
+   Your working directory has the THEIRS version — integrate the OURS changes.
+   Do not re-read the file; use the content shown here.
    For raw text and dependency conflicts you see OURS and THEIRS as unified
-   diffs against BASE (with 3 lines of context). Use the Read tool if you need
-   broader file context. For binary files you see three labeled blocks.
+   diffs against BASE (with 3 lines of context). A Scope Context header may
+   appear if the file is parseable, listing the enclosing function or type
+   signature. Use the Read tool if you need broader file context.
+   For binary files you see three labeled blocks.
 2. Your goal: produce a merged version that preserves the intent of BOTH sides.
 3. NEVER silently drop code from either side unless one side explicitly deleted it.
 4. For BothModifiedSymbol conflicts: merge both sets of changes into the symbol.
@@ -63,10 +66,11 @@ pub fn write_resolve_rules_file(path: &Path) -> anyhow::Result<()> {
    compatibility constraint.
 7. Edit ONLY the files listed in the conflict context file. Do not modify unrelated files.
 8. After editing, verify the file still parses correctly.
-9. If you cannot resolve a conflict with confidence, leave a comment
-   using the file's native comment syntax containing the marker
-   `PHANTOM_UNRESOLVED: <reason>` (e.g. `// …` in Rust/TS/Go,
-   `# …` in Python/YAML/Shell).
+9. If you cannot resolve a conflict with confidence, leave a marker
+   `PHANTOM_UNRESOLVED: <reason>` using the file's native comment syntax
+   (e.g. `// …` in Rust/TS/Go, `# …` in Python/YAML/Shell).
+   If the file format does not support comments (e.g. JSON), insert a
+   root-level key instead: `\"PHANTOM_UNRESOLVED\": \"<reason>\"`.
 
 ## After Resolution
 Your changes will be automatically submitted and materialized when you finish.
@@ -160,7 +164,7 @@ pub fn write_resolve_context_file(
         // three-block fallback.
         if !used_compact && (is_symbol_conflict || is_text_conflict) {
             used_compact =
-                write_compact_raw_text_conflict(&mut content, lang, conflict, base_short);
+                write_compact_raw_text_conflict(&mut content, lang, conflict, base_short, &parser);
         }
 
         if !used_compact {
@@ -300,6 +304,15 @@ fn write_compact_conflict(
     writeln!(out, "```").unwrap();
     writeln!(out).unwrap();
 
+    // Emit a one-line scope header so the diffs are self-documenting even
+    // when the BASE block is large and the signature scrolls out of view.
+    let scope_signature = base_symbol.lines().next().unwrap_or("");
+    if !scope_signature.is_empty() {
+        writeln!(out, "#### Scope Context").unwrap();
+        writeln!(out, "`{scope_signature}`").unwrap();
+        writeln!(out).unwrap();
+    }
+
     // Write OURS diff.
     write_diff_section(out, "OURS", "trunk applied these changes", &base_symbol, ours_symbol.as_deref());
 
@@ -320,13 +333,22 @@ fn write_compact_conflict(
 /// Emits OURS and THEIRS as unified diffs against BASE. The diffs include
 /// 3 lines of context around each change, so the full BASE is not shown —
 /// the agent can use the Read tool if broader context is needed.
+///
+/// When the file is parseable by tree-sitter, a **Scope Context** header is
+/// emitted listing the enclosing declaration signatures for the changed
+/// regions. This prevents the LLM from editing symbols blindly when the
+/// 3-line diff context does not reach the function/struct signature.
+///
 /// Returns `true` if compact format was written.
 fn write_compact_raw_text_conflict(
     out: &mut String,
     _lang: &str,
     conflict: &ResolveConflictContext,
     _base_short: &str,
+    parser: &phantom_semantic::Parser,
 ) -> bool {
+    use std::fmt::Write;
+
     let (base_content, ours_content, theirs_content) = match (
         conflict.base_content.as_deref(),
         conflict.ours_content.as_deref(),
@@ -341,6 +363,19 @@ fn write_compact_raw_text_conflict(
         || theirs_content.len() > MAX_DIFF_BYTE_SIZE
     {
         return false;
+    }
+
+    // For parseable files, extract enclosing symbol signatures for the
+    // changed regions so the LLM knows what scope it is editing.
+    let file_path = &conflict.detail.file;
+    if let Some(signatures) = collect_scope_signatures(base_content, ours_content, theirs_content, file_path, parser) {
+        if !signatures.is_empty() {
+            writeln!(out, "#### Scope Context").unwrap();
+            for sig in &signatures {
+                writeln!(out, "`{sig}`").unwrap();
+            }
+            writeln!(out).unwrap();
+        }
     }
 
     // Diffs include 3-line context around each change — the full BASE is redundant
@@ -362,6 +397,66 @@ fn write_compact_raw_text_conflict(
     );
 
     true
+}
+
+/// Collect unique enclosing-symbol first-line signatures for all diff hunks.
+///
+/// Returns `None` if the file is not parseable, `Some(vec)` otherwise (possibly
+/// empty if no hunks fall inside a known symbol).
+fn collect_scope_signatures(
+    base_content: &str,
+    ours_content: &str,
+    theirs_content: &str,
+    file_path: &Path,
+    parser: &phantom_semantic::Parser,
+) -> Option<Vec<String>> {
+    if !parser.supports_language(file_path) {
+        return None;
+    }
+    let symbols = parser.parse_file(file_path, base_content.as_bytes()).ok()?;
+    if symbols.is_empty() {
+        return None;
+    }
+
+    let ours_patch = diffy::create_patch(base_content, ours_content);
+    let theirs_patch = diffy::create_patch(base_content, theirs_content);
+
+    let mut signatures: Vec<String> = Vec::new();
+
+    for hunk in ours_patch.hunks().iter().chain(theirs_patch.hunks().iter()) {
+        let hunk_line = hunk.old_range().start(); // 1-indexed
+        let byte_offset = line_to_byte_offset(base_content, hunk_line);
+        let target = byte_offset..byte_offset + 1;
+        if let Some(sym) = find_enclosing_symbol(&symbols, &target) {
+            let sym_text = &base_content[sym.byte_range.start..sym.byte_range.end.min(base_content.len())];
+            if let Some(first_line) = sym_text.lines().next() {
+                let sig = first_line.to_string();
+                if !signatures.contains(&sig) {
+                    signatures.push(sig);
+                }
+            }
+        }
+    }
+
+    Some(signatures)
+}
+
+/// Convert a 1-indexed line number to a byte offset in `content`.
+///
+/// Returns the byte offset of the first character on the given line,
+/// or `content.len()` if the line is beyond the end of the content.
+fn line_to_byte_offset(content: &str, line: usize) -> usize {
+    if line <= 1 {
+        return 0;
+    }
+    content
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .filter(|&(_, b)| *b == b'\n')
+        .nth(line - 2) // line 2 starts after the 1st newline (index 0)
+        .map(|(i, _)| i + 1)
+        .unwrap_or(content.len())
 }
 
 /// Write a single diff section (OURS or THEIRS) relative to BASE.
