@@ -31,6 +31,7 @@ pub async fn run_interactive_session(
     base_commit: &GitOid,
     work_dir: &Path,
     args: &TaskArgs,
+    system_prompt_file: Option<&Path>,
 ) -> anyhow::Result<()> {
     let command = args.command.as_deref().unwrap_or("claude");
     let cli_adapter = adapter::adapter_for(command);
@@ -71,9 +72,9 @@ pub async fn run_interactive_session(
     // Fall back to direct Stdio::inherit() when not a TTY (tests, CI, piped input).
     let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
     let (exit_status, captured_session_id) = if is_tty {
-        pty::spawn_with_pty(cli_adapter.as_ref(), work_dir, session_id, &env_refs)?
+        pty::spawn_with_pty(cli_adapter.as_ref(), work_dir, session_id, &env_refs, system_prompt_file)?
     } else {
-        pty::spawn_direct(cli_adapter.as_ref(), work_dir, session_id, &env_refs)?
+        pty::spawn_direct(cli_adapter.as_ref(), work_dir, session_id, &env_refs, system_prompt_file)?
     };
 
     // Persist the session ID for next task invocation.

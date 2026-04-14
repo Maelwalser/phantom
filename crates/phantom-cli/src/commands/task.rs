@@ -228,6 +228,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             &base_commit,
             &work_dir,
             &args,
+            None,
         )
         .await?;
     }

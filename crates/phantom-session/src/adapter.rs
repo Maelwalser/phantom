@@ -72,11 +72,15 @@ pub trait CliAdapter {
 
     /// Build the `Command` to spawn. When `session_id` is `Some`, the command
     /// should include whatever flag the CLI uses to resume a prior session.
+    ///
+    /// When `system_prompt_file` is `Some`, the CLI should append the file's
+    /// contents to its system prompt (e.g. `--append-system-prompt-file`).
     fn build_command(
         &self,
         work_dir: &Path,
         session_id: Option<&str>,
         env_vars: &[(&str, &str)],
+        system_prompt_file: Option<&Path>,
     ) -> Command;
 
     /// Build a headless (non-interactive) command for background execution.
@@ -119,6 +123,7 @@ impl CliAdapter for ClaudeAdapter {
         work_dir: &Path,
         session_id: Option<&str>,
         env_vars: &[(&str, &str)],
+        system_prompt_file: Option<&Path>,
     ) -> Command {
         let mut cmd = Command::new("claude");
         cmd.current_dir(work_dir);
@@ -136,6 +141,13 @@ impl CliAdapter for ClaudeAdapter {
 
         if let Some(dir_str) = work_dir.to_str() {
             cmd.args(["--add-dir", dir_str]);
+        }
+
+        // Inject custom instructions while preserving built-in capabilities.
+        if let Some(path) = system_prompt_file
+            && let Some(path_str) = path.to_str()
+        {
+            cmd.args(["--append-system-prompt-file", path_str]);
         }
 
         cmd
@@ -203,6 +215,7 @@ impl CliAdapter for GenericAdapter {
         work_dir: &Path,
         _session_id: Option<&str>,
         env_vars: &[(&str, &str)],
+        _system_prompt_file: Option<&Path>,
     ) -> Command {
         let mut cmd = Command::new(&self.command);
         cmd.current_dir(work_dir);

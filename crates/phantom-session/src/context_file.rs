@@ -47,12 +47,12 @@ trunk and other agents.
 - `phantom submit {agent_id}` -- submit your changes
 - `phantom materialize {changeset_id}` -- merge to trunk
 - `phantom status` -- view all agents and changesets
-{task_section}
+
 ## Agent Info
 - Agent: {agent_id}
 - Changeset: {changeset_id}
 - Base commit: {base_short}
-"#
+{task_section}"#
     );
 
     let path = upper_dir.join(CONTEXT_FILE);
@@ -102,8 +102,10 @@ pub fn write_resolve_rules_file(path: &Path) -> anyhow::Result<()> {
    compatibility constraint.
 7. Edit ONLY the files listed in the conflict context file. Do not modify unrelated files.
 8. After editing, verify the file still parses correctly.
-9. If you cannot resolve a conflict with confidence, leave a comment:
-   `// PHANTOM_UNRESOLVED: <reason>`
+9. If you cannot resolve a conflict with confidence, leave a comment
+   using the file's native comment syntax containing the marker
+   `PHANTOM_UNRESOLVED: <reason>` (e.g. `// …` in Rust/TS/Go,
+   `# …` in Python/YAML/Shell).
 
 ## After Resolution
 Your changes will be automatically submitted and materialized when you finish.
@@ -352,8 +354,16 @@ fn write_diff_section(
         }
         Some(text) => {
             let patch = diffy::create_patch(base_symbol, text);
+            let patch_str = patch.to_string();
+            // Strip the `--- original` and `+++ modified` header lines —
+            // the surrounding markdown already labels each side.
+            let stripped = patch_str
+                .lines()
+                .skip_while(|l| l.starts_with("--- ") || l.starts_with("+++ "))
+                .collect::<Vec<_>>()
+                .join("\n");
             writeln!(out, "```diff").unwrap();
-            write!(out, "{patch}").unwrap();
+            writeln!(out, "{stripped}").unwrap();
             writeln!(out, "```").unwrap();
         }
         None => {
@@ -743,6 +753,17 @@ mod tests {
         // Should NOT contain three full code blocks.
         let rust_block_count = out.matches("```rust").count();
         assert_eq!(rust_block_count, 1, "BASE should be the only rust block");
+        // Redundant diff headers should be stripped for token efficiency.
+        assert!(
+            !out.contains("--- original"),
+            "diff header '--- original' should be stripped"
+        );
+        assert!(
+            !out.contains("+++ modified"),
+            "diff header '+++ modified' should be stripped"
+        );
+        // Hunk headers should be preserved.
+        assert!(out.contains("@@"), "hunk headers should be preserved");
     }
 
     #[test]
@@ -968,10 +989,10 @@ mod tests {
 
         let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
         let commands_pos = content.find("## Commands").unwrap();
-        let task_pos = content.find("## Task").unwrap();
         let info_pos = content.find("## Agent Info").unwrap();
-        // Static commands section should precede dynamic task and agent info.
-        assert!(commands_pos < task_pos, "Commands should come before Task");
-        assert!(task_pos < info_pos, "Task should come before Agent Info");
+        let task_pos = content.find("## Task").unwrap();
+        // Order: most-static to most-dynamic for prompt cache efficiency.
+        assert!(commands_pos < info_pos, "Commands should come before Agent Info");
+        assert!(info_pos < task_pos, "Agent Info should come before Task");
     }
 }
