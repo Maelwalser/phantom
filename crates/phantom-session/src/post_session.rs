@@ -66,10 +66,19 @@ pub async fn post_session_flow(
                 )
                 .await?;
                 match output.result {
-                    MaterializeResult::Success { new_commit } => {
+                    MaterializeResult::Success {
+                        new_commit,
+                        text_fallback_files,
+                    } => {
                         let hex = new_commit.to_hex();
                         let short = &hex[..12.min(hex.len())];
                         println!("Materialized {cs_id} -> commit {short}");
+                        if !text_fallback_files.is_empty() {
+                            eprintln!(
+                                "  Warning: {} file(s) merged via line-based fallback (no syntax validation)",
+                                text_fallback_files.len()
+                            );
+                        }
                     }
                     MaterializeResult::Conflict { details } => {
                         eprintln!("Materialization failed with {} conflict(s):", details.len());

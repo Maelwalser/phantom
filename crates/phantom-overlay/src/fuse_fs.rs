@@ -97,6 +97,13 @@ mod inner {
         /// inode.  The caller is responsible for only calling this when an
         /// inode is actually being handed to the kernel (lookup reply,
         /// create reply, readdir entry, etc.).
+        ///
+        /// NOTE: This takes a write lock unconditionally because the
+        /// lookup_count must be incremented atomically with the lookup.
+        /// A read-then-write approach would introduce a TOCTOU race.
+        /// If profiling shows this is a bottleneck under high concurrency
+        /// (e.g. LSP indexing), consider migrating to `DashMap` or
+        /// per-shard locking.
         fn get_or_create_inode(&self, path: &PathBuf) -> u64 {
             let mut inner = self.inner.write().unwrap();
             if let Some(&ino) = inner.path_to_ino.get(path) {
@@ -231,26 +238,14 @@ mod inner {
         }
     }
 
-    /// Compute a stable, non-zero offset cookie for a directory entry name.
+    /// Snapshotted directory listing for a single `opendir` handle.
     ///
-    /// FUSE uses the offset returned by `readdir` as a resumption cookie for
-    /// chunked directory listings.  Using a hash of the entry name (instead of
-    /// a volatile array index) keeps the cookie valid even when other entries
-    /// are added or removed between calls.
-    ///
-    /// Uses FNV-1a (deterministic across process restarts, unlike
-    /// `DefaultHasher` which is randomly seeded per process).
-    pub(crate) fn dir_entry_cookie(name: &str) -> u64 {
-        const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-        const FNV_PRIME: u64 = 0x00000100000001B3;
-        let mut hash = FNV_OFFSET_BASIS;
-        for byte in name.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-        // Ensure non-zero (offset 0 means "start from beginning" in FUSE)
-        // and positive (avoid i64 sign issues in some FUSE implementations).
-        (hash | 1) & 0x7FFF_FFFF_FFFF_FFFF
+    /// Entries are captured at `opendir` time and each assigned a sequential
+    /// 1-based offset cookie.  This eliminates hash-collision bugs that occur
+    /// when using filename hashes as resumption cookies.
+    struct DirSnapshot {
+        /// `(inode, file_type, name)` — order is fixed at snapshot time.
+        entries: Vec<(u64, FileType, String)>,
     }
 
     /// FUSE filesystem backed by an [`OverlayLayer`].
@@ -258,11 +253,15 @@ mod inner {
         layer: RwLock<OverlayLayer>,
         agent_id: AgentId,
         inodes: InodeTable,
-        /// Counter for allocating unique file handles.
+        /// Counter for allocating unique file handles (shared for files and dirs).
         next_fh: AtomicU64,
         /// Open file descriptor table. Keyed by the file handle returned to
         /// the kernel via `open()` / `create()`.
         open_files: RwLock<HashMap<u64, OpenFile>>,
+        /// Open directory handles. Keyed by the file handle returned via
+        /// `opendir()`.  Each entry holds a snapshotted listing so that
+        /// paginated `readdir` calls use collision-free sequential offsets.
+        open_dirs: RwLock<HashMap<u64, DirSnapshot>>,
     }
 
     impl PhantomFs {
@@ -274,6 +273,7 @@ mod inner {
                 inodes: InodeTable::new(),
                 next_fh: AtomicU64::new(1),
                 open_files: RwLock::new(HashMap::new()),
+                open_dirs: RwLock::new(HashMap::new()),
             }
         }
 
@@ -408,21 +408,14 @@ mod inner {
             }
         }
 
-        fn readdir(
-            &self,
-            _req: &Request,
-            ino: INodeNo,
-            _fh: FileHandle,
-            offset: u64,
-            mut reply: ReplyDirectory,
-        ) {
+        fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
             let Some(path) = self.inodes.get_path(ino.0) else {
                 reply.error(Errno::ENOENT);
                 return;
             };
 
-            // Hold the read lock only for the directory listing, then release
-            // before touching the inode table.
+            // Snapshot the directory listing at open time so paginated readdir
+            // calls use collision-free sequential offsets.
             let entries = {
                 let layer = self.layer.read().unwrap();
                 match layer.read_dir(&path) {
@@ -434,17 +427,14 @@ mod inner {
                 }
             };
 
-            // Resolve parent inode for ".." entry.
             let parent_ino = if ino.0 == 1 {
-                1 // root's parent is itself
+                1
             } else {
-                // Derive parent path and look up its inode.
                 path.parent()
                     .map(|p| self.inodes.get_or_create_inode(&p.to_path_buf()))
                     .unwrap_or(1)
             };
 
-            // Synthetic "." and ".." entries.
             let mut all_entries: Vec<(u64, FileType, String)> = vec![
                 (ino.0, FileType::Directory, ".".to_string()),
                 (parent_ino, FileType::Directory, "..".to_string()),
@@ -461,35 +451,55 @@ mod inner {
                 all_entries.push((child_ino, ft, entry.name.to_string_lossy().into_owned()));
             }
 
-            // Sort entries by name for deterministic order across calls.
+            // Sort by name for deterministic order.
             all_entries.sort_by(|a, b| a.2.cmp(&b.2));
 
-            // offset == 0 means start from the beginning.
-            // offset != 0 means resume after the entry whose cookie matches.
-            let start_idx = if offset == 0 {
-                0
-            } else {
-                match all_entries
-                    .iter()
-                    .position(|(_, _, name)| dir_entry_cookie(name) == offset)
-                {
-                    Some(pos) => pos + 1,
-                    None => {
-                        // The entry for this cookie was deleted between paginated
-                        // readdir calls.  Signal end-of-directory rather than
-                        // restarting from index 0 (which would cause an infinite loop).
-                        reply.ok();
-                        return;
-                    }
-                }
+            let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+            self.open_dirs
+                .write()
+                .unwrap()
+                .insert(fh, DirSnapshot { entries: all_entries });
+            reply.opened(FileHandle(fh), FopenFlags::empty());
+        }
+
+        fn readdir(
+            &self,
+            _req: &Request,
+            _ino: INodeNo,
+            fh: FileHandle,
+            offset: u64,
+            mut reply: ReplyDirectory,
+        ) {
+            let dirs = self.open_dirs.read().unwrap();
+            let Some(snapshot) = dirs.get(&fh.0) else {
+                reply.error(Errno::EBADF);
+                return;
             };
 
-            for (_, (child_ino, ft, name)) in all_entries.iter().enumerate().skip(start_idx) {
-                let cookie = dir_entry_cookie(name);
+            // offset is the sequential 1-based cookie of the last entry
+            // returned.  Entries are numbered 1..=len, so offset==0 means
+            // "start from the beginning" and offset==N means "resume after
+            // the Nth entry".
+            let start = offset as usize;
+            for (idx, (child_ino, ft, name)) in snapshot.entries.iter().enumerate().skip(start) {
+                // Cookie for this entry: 1-based index.
+                let cookie = (idx as u64) + 1;
                 if reply.add(INodeNo(*child_ino), cookie, *ft, name) {
                     break;
                 }
             }
+            reply.ok();
+        }
+
+        fn releasedir(
+            &self,
+            _req: &Request,
+            _ino: INodeNo,
+            fh: FileHandle,
+            _flags: OpenFlags,
+            reply: ReplyEmpty,
+        ) {
+            self.open_dirs.write().unwrap().remove(&fh.0);
             reply.ok();
         }
 
@@ -941,53 +951,117 @@ mod inner {
             reply.ok();
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Helper: simulate paginated readdir over a snapshot, collecting all
+        /// returned entries.  Mimics the kernel calling readdir repeatedly with
+        /// the last cookie returned.
+        fn collect_readdir(snapshot: &DirSnapshot, page_size: usize) -> Vec<String> {
+            let mut result = Vec::new();
+            let mut offset: u64 = 0;
+            loop {
+                let start = offset as usize;
+                let mut added = 0;
+                for (idx, (_ino, _ft, name)) in snapshot.entries.iter().enumerate().skip(start) {
+                    let cookie = (idx as u64) + 1;
+                    result.push(name.clone());
+                    offset = cookie;
+                    added += 1;
+                    if added >= page_size {
+                        break;
+                    }
+                }
+                if added == 0 {
+                    break;
+                }
+            }
+            result
+        }
+
+        #[test]
+        fn readdir_sequential_returns_all_entries() {
+            let snapshot = DirSnapshot {
+                entries: vec![
+                    (1, FileType::Directory, ".".into()),
+                    (1, FileType::Directory, "..".into()),
+                    (2, FileType::RegularFile, "a.txt".into()),
+                    (3, FileType::RegularFile, "b.txt".into()),
+                    (4, FileType::RegularFile, "c.txt".into()),
+                ],
+            };
+
+            // Page size of 2 forces multiple readdir rounds.
+            let names = collect_readdir(&snapshot, 2);
+            assert_eq!(names, vec![".", "..", "a.txt", "b.txt", "c.txt"]);
+        }
+
+        #[test]
+        fn readdir_single_page_returns_all() {
+            let snapshot = DirSnapshot {
+                entries: vec![
+                    (1, FileType::Directory, ".".into()),
+                    (1, FileType::Directory, "..".into()),
+                    (2, FileType::RegularFile, "only.txt".into()),
+                ],
+            };
+
+            let names = collect_readdir(&snapshot, 100);
+            assert_eq!(names, vec![".", "..", "only.txt"]);
+        }
+
+        #[test]
+        fn readdir_empty_directory() {
+            let snapshot = DirSnapshot {
+                entries: vec![
+                    (1, FileType::Directory, ".".into()),
+                    (1, FileType::Directory, "..".into()),
+                ],
+            };
+
+            let names = collect_readdir(&snapshot, 1);
+            assert_eq!(names, vec![".", ".."]);
+        }
+
+        #[test]
+        fn readdir_page_size_one_returns_all() {
+            let snapshot = DirSnapshot {
+                entries: vec![
+                    (1, FileType::Directory, ".".into()),
+                    (1, FileType::Directory, "..".into()),
+                    (10, FileType::RegularFile, "x".into()),
+                    (11, FileType::RegularFile, "y".into()),
+                    (12, FileType::RegularFile, "z".into()),
+                ],
+            };
+
+            // Page size 1 = worst-case pagination.
+            let names = collect_readdir(&snapshot, 1);
+            assert_eq!(names, vec![".", "..", "x", "y", "z"]);
+        }
+
+        #[test]
+        fn readdir_no_duplicate_entries() {
+            let entries: Vec<(u64, FileType, String)> = (0..50)
+                .map(|i| (i + 2, FileType::RegularFile, format!("file_{i:04}.txt")))
+                .collect();
+            let mut all: Vec<(u64, FileType, String)> = vec![
+                (1, FileType::Directory, ".".into()),
+                (1, FileType::Directory, "..".into()),
+            ];
+            all.extend(entries);
+            let snapshot = DirSnapshot { entries: all };
+
+            let names = collect_readdir(&snapshot, 7);
+            // Verify no duplicates and correct count.
+            assert_eq!(names.len(), 52);
+            let unique: std::collections::HashSet<&String> = names.iter().collect();
+            assert_eq!(unique.len(), 52, "readdir produced duplicate entries");
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
 pub use inner::PhantomFs;
-
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-mod tests {
-    use super::inner::dir_entry_cookie;
-
-    #[test]
-    fn dir_entry_cookie_is_deterministic() {
-        let cookie1 = dir_entry_cookie("hello.txt");
-        let cookie2 = dir_entry_cookie("hello.txt");
-        assert_eq!(cookie1, cookie2);
-
-        let cookie3 = dir_entry_cookie("world.txt");
-        assert_ne!(cookie1, cookie3);
-    }
-
-    #[test]
-    fn dir_entry_cookie_nonzero_and_positive() {
-        for name in &[".", "..", "a", "hello.txt", "Cargo.toml"] {
-            let cookie = dir_entry_cookie(name);
-            assert_ne!(cookie, 0, "cookie for {name:?} must be non-zero");
-            assert_eq!(
-                cookie & 0x8000_0000_0000_0000,
-                0,
-                "cookie for {name:?} must be positive (top bit clear)"
-            );
-        }
-    }
-
-    #[test]
-    fn dir_entry_cookie_dot_entries_differ() {
-        let dot = dir_entry_cookie(".");
-        let dotdot = dir_entry_cookie("..");
-        assert_ne!(dot, dotdot);
-    }
-
-    #[test]
-    fn dir_entry_cookie_known_value() {
-        // Pin a known value to catch accidental algorithm changes.
-        // FNV-1a of "test": 0xcbf29ce484222325 ^ 't' * prime ^ 'e' * prime ^ 's' * prime ^ 't' * prime
-        let cookie = dir_entry_cookie("test");
-        assert_eq!(cookie, dir_entry_cookie("test"));
-        // Verify it's stable across runs by checking a hardcoded value.
-        assert_eq!(cookie, 8783962037831871269);
-    }
-}

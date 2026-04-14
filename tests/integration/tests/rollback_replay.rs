@@ -37,7 +37,7 @@ async fn test_rollback_middle_changeset_replays_downstream() {
         .await
         .unwrap();
     let commit_after_001 = match r1 {
-        MaterializeResult::Success { new_commit } => new_commit,
+        MaterializeResult::Success { new_commit, .. } => new_commit,
         _ => panic!("cs-001 should succeed"),
     };
 
@@ -65,7 +65,7 @@ async fn test_rollback_middle_changeset_replays_downstream() {
         .await
         .unwrap();
     let commit_after_002 = match r2 {
-        MaterializeResult::Success { new_commit } => new_commit,
+        MaterializeResult::Success { new_commit, .. } => new_commit,
         _ => panic!("cs-002 should succeed"),
     };
 

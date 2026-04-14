@@ -33,6 +33,10 @@ pub enum MaterializeResult {
     Success {
         /// The new trunk commit OID.
         new_commit: GitOid,
+        /// Files that were merged via line-based text fallback because no
+        /// tree-sitter grammar is available for their language. These files
+        /// had no syntax validation after merging.
+        text_fallback_files: Vec<PathBuf>,
     },
     /// The changeset had conflicts and was not committed.
     Conflict {
@@ -130,7 +134,10 @@ impl Materializer {
         self.append_materialized_event(changeset, &new_commit, event_store)
             .await?;
 
-        Ok(MaterializeResult::Success { new_commit })
+        Ok(MaterializeResult::Success {
+            new_commit,
+            text_fallback_files: vec![],
+        })
     }
 
     /// Slow path: trunk advanced, run three-way semantic merge per file.
@@ -148,6 +155,7 @@ impl Materializer {
 
         let mut all_conflicts = Vec::new();
         let mut merged_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        let mut text_fallback_files: Vec<PathBuf> = Vec::new();
 
         // Group the agent's submitted operations by file for symbol-level
         // pre-check. When the agent's changes and trunk's changes affect
@@ -187,6 +195,9 @@ impl Materializer {
                                 .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
                             match result {
                                 MergeResult::Clean(content) => {
+                                    if !ctx.analyzer.supports_language(file) {
+                                        text_fallback_files.push(file.clone());
+                                    }
                                     merged_files.push((file.clone(), content));
                                 }
                                 MergeResult::Conflict(conflicts) => {
@@ -259,11 +270,19 @@ impl Materializer {
                         false
                     };
 
+                    // Track files that lack semantic analysis support — these
+                    // will be merged via line-based text fallback with no syntax
+                    // validation.
+                    let is_unsupported = !ctx.analyzer.supports_language(file);
+
                     if symbols_disjoint {
                         debug!(file = %file.display(), "symbol-disjoint — using text merge");
                         if let MergeResult::Clean(content) =
                             self.git.text_merge(&base_content, &ours, &theirs)?
                         {
+                            if is_unsupported {
+                                text_fallback_files.push(file.clone());
+                            }
                             merged_files.push((file.clone(), content));
                             continue;
                         }
@@ -284,6 +303,9 @@ impl Materializer {
 
                     match result {
                         MergeResult::Clean(content) => {
+                            if is_unsupported {
+                                text_fallback_files.push(file.clone());
+                            }
                             merged_files.push((file.clone(), content));
                         }
                         MergeResult::Conflict(conflicts) => {
@@ -320,10 +342,22 @@ impl Materializer {
             debug!(error = %e, "checkout_head after merge commit failed (non-fatal)");
         }
 
+        if !text_fallback_files.is_empty() {
+            tracing::warn!(
+                changeset = %changeset.id,
+                files = ?text_fallback_files,
+                "materialized with {} file(s) merged via line-based text fallback (no syntax validation)",
+                text_fallback_files.len()
+            );
+        }
+
         self.append_materialized_event(changeset, &new_commit, ctx.event_store)
             .await?;
 
-        Ok(MaterializeResult::Success { new_commit })
+        Ok(MaterializeResult::Success {
+            new_commit,
+            text_fallback_files,
+        })
     }
 
     /// Validate that a relative path does not escape the trunk directory.
@@ -673,7 +707,7 @@ mod tests {
             .unwrap();
 
         match result {
-            MaterializeResult::Success { new_commit } => {
+            MaterializeResult::Success { new_commit, .. } => {
                 assert_ne!(new_commit, base);
                 let events = event_store.events();
                 assert_eq!(events.len(), 1);
@@ -715,7 +749,7 @@ mod tests {
             .unwrap();
 
         match result {
-            MaterializeResult::Success { new_commit } => {
+            MaterializeResult::Success { new_commit, .. } => {
                 assert_ne!(new_commit, base);
                 let events = event_store.events();
                 assert_eq!(events.len(), 1);
@@ -812,7 +846,7 @@ mod tests {
             .unwrap();
 
         match result {
-            MaterializeResult::Success { new_commit } => {
+            MaterializeResult::Success { new_commit, .. } => {
                 let content = materializer
                     .git
                     .read_file_at_commit(&new_commit, Path::new("src/new_module.rs"))
@@ -934,7 +968,7 @@ mod tests {
             .unwrap();
 
         match result {
-            MaterializeResult::Success { new_commit } => {
+            MaterializeResult::Success { new_commit, .. } => {
                 let content = materializer
                     .git
                     .read_file_at_commit(&new_commit, Path::new("src/api.rs"))

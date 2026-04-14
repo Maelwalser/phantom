@@ -20,6 +20,12 @@ use crate::adapter::CliAdapter;
 /// Flag set by our SIGINT handler to prevent process termination during PTY sessions.
 static SIGINT_RECEIVED: AtomicBool = AtomicBool::new(false);
 
+/// Guards against concurrent `spawn_with_pty` calls within the same process.
+/// POSIX signal handlers can only access global state, so `SIGINT_RECEIVED` is
+/// inherently process-global. This flag makes the single-session constraint
+/// explicit rather than silently racy.
+static PTY_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// Async-signal-safe SIGINT handler that sets a flag instead of terminating.
 extern "C" fn handle_sigint(_sig: libc::c_int) {
     SIGINT_RECEIVED.store(true, Ordering::Release);
@@ -62,6 +68,110 @@ impl Drop for TermiosGuard {
 }
 
 // ---------------------------------------------------------------------------
+// Signal handler guard
+// ---------------------------------------------------------------------------
+
+/// RAII guard that restores the previous SIGINT handler on drop.
+///
+/// If a panic unwinds past `spawn_with_pty`, the original handler is still
+/// restored — unlike a bare `unsafe { sigaction(...) }` at the end of the
+/// function, which would be skipped.
+struct SigactionGuard {
+    old: libc::sigaction,
+}
+
+impl SigactionGuard {
+    /// Install a custom SIGINT handler that sets `SIGINT_RECEIVED` instead of
+    /// terminating the process. Returns a guard that restores the previous
+    /// handler when dropped.
+    ///
+    /// # Safety
+    /// `handle_sigint` must be async-signal-safe (it is — atomic store only).
+    fn install() -> Self {
+        let old: libc::sigaction = unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = handle_sigint as *const () as usize;
+            sa.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut sa.sa_mask);
+            let mut old: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(libc::SIGINT, &sa, &mut old);
+            old
+        };
+        SIGINT_RECEIVED.store(false, Ordering::Release);
+        Self { old }
+    }
+}
+
+impl Drop for SigactionGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::sigaction(libc::SIGINT, &self.old, std::ptr::null_mut());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Non-blocking write helper
+// ---------------------------------------------------------------------------
+
+/// Write `data` to `fd` without blocking indefinitely.
+///
+/// The fd must be in non-blocking mode. On `WouldBlock`, polls `fd` and
+/// `shutdown_fd` together. Returns `false` if the shutdown pipe fires or an
+/// unrecoverable error occurs, signalling the caller to exit its loop.
+fn nb_write_all(fd: RawFd, shutdown_fd: RawFd, data: &[u8]) -> bool {
+    use nix::poll::{PollFd, PollFlags, PollTimeout};
+
+    let mut offset = 0;
+    while offset < data.len() {
+        let n = unsafe {
+            libc::write(fd, data[offset..].as_ptr().cast(), data.len() - offset)
+        };
+        if n > 0 {
+            offset += n as usize;
+            continue;
+        }
+        if n == 0 {
+            return false;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if err.kind() != io::ErrorKind::WouldBlock {
+            return false;
+        }
+        // WouldBlock — poll until writable or shutdown.
+        let fd_borrow = unsafe { BorrowedFd::borrow_raw(fd) };
+        let shutdown_borrow = unsafe { BorrowedFd::borrow_raw(shutdown_fd) };
+        let mut fds = [
+            PollFd::new(fd_borrow, PollFlags::POLLOUT),
+            PollFd::new(shutdown_borrow, PollFlags::POLLIN),
+        ];
+        match nix::poll::poll(&mut fds, PollTimeout::from(5000u16)) {
+            Ok(0) => continue,
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(_) => return false,
+            Ok(_) => {}
+        }
+        if let Some(revents) = fds[1].revents() {
+            if revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Set a file descriptor to non-blocking mode.
+fn set_nonblocking(fd: &OwnedFd) -> anyhow::Result<()> {
+    use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    let flags = OFlag::from_bits_truncate(fcntl(fd, FcntlArg::F_GETFL)?);
+    fcntl(fd, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // PTY-based process spawning
 // ---------------------------------------------------------------------------
 
@@ -75,6 +185,20 @@ pub fn spawn_with_pty(
     session_id: Option<&str>,
     env_vars: &[(&str, &str)],
 ) -> anyhow::Result<(ExitStatus, Option<String>)> {
+    // Guard: only one PTY session per process. The SIGINT handler writes to a
+    // global AtomicBool, so concurrent sessions would race on it.
+    if PTY_SESSION_ACTIVE.swap(true, Ordering::AcqRel) {
+        anyhow::bail!("a PTY session is already active in this process");
+    }
+    // Ensure the flag is cleared on all exit paths (including panic unwind).
+    struct SessionActiveGuard;
+    impl Drop for SessionActiveGuard {
+        fn drop(&mut self) {
+            PTY_SESSION_ACTIVE.store(false, Ordering::Release);
+        }
+    }
+    let _session_guard = SessionActiveGuard;
+
     // 1. Open a PTY pair.
     let pty = openpty(None, None).context("failed to open PTY")?;
     let master_fd = pty.master;
@@ -97,7 +221,7 @@ pub fn spawn_with_pty(
     // 3. Switch the real terminal to raw mode so keystrokes pass through.
     //    SAFETY: stdin (fd 0) is valid while the process is alive.
     let stdin_borrowed = unsafe { BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
-    let guard = TermiosGuard::save(stdin_borrowed)?;
+    let termios_guard = TermiosGuard::save(stdin_borrowed)?;
 
     let mut raw =
         termios::tcgetattr(stdin_borrowed).context("failed to get terminal attributes")?;
@@ -108,19 +232,8 @@ pub fn spawn_with_pty(
     // Install a SIGINT handler that prevents process termination.
     // The child process (Claude Code) handles Ctrl+C itself via the PTY.
     // We only need to survive SIGINT so we can clean up the terminal.
-    //
-    // SAFETY: handle_sigint is async-signal-safe (atomic store only).
-    // We save the old handler to restore after cleanup.
-    let old_sigint: libc::sigaction = unsafe {
-        let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = handle_sigint as *const () as usize;
-        sa.sa_flags = libc::SA_RESTART;
-        libc::sigemptyset(&mut sa.sa_mask);
-        let mut old: libc::sigaction = std::mem::zeroed();
-        libc::sigaction(libc::SIGINT, &sa, &mut old);
-        old
-    };
-    SIGINT_RECEIVED.store(false, Ordering::Release);
+    // The RAII guard restores the previous handler on drop (including panics).
+    let _sigint_guard = SigactionGuard::install();
 
     // 4. Spawn the child process.
     let mut child = cmd.spawn().with_context(|| {
@@ -140,6 +253,11 @@ pub fn spawn_with_pty(
     let master_read_fd: OwnedFd =
         nix::unistd::dup(&master_fd).context("failed to dup master PTY for read")?;
 
+    // Set the write fd to non-blocking so writes cannot deadlock the stdin
+    // thread when the PTY buffer is full (e.g. child process stops reading).
+    set_nonblocking(&master_write_fd)
+        .context("failed to set master PTY write fd to non-blocking")?;
+
     // Create a pipe used to signal both threads to stop when the child exits.
     // When we close `shutdown_write`, poll() on the read ends returns POLLHUP.
     let (shutdown_read, shutdown_write) =
@@ -150,12 +268,14 @@ pub fn spawn_with_pty(
     // stdin -> master (forwarder thread)
     // Uses poll() to multiplex stdin and the shutdown pipe so the thread
     // exits promptly when the child process terminates.
+    // Writes to the master fd use nb_write_all() which polls the shutdown
+    // pipe on WouldBlock, preventing deadlock if the PTY buffer is full.
     let stdin_thread = std::thread::spawn(move || {
         use nix::poll::{PollFd, PollFlags, PollTimeout};
 
         let stdin_raw: RawFd = libc::STDIN_FILENO;
         let shutdown_raw: RawFd = shutdown_read.as_raw_fd();
-        let mut master_write = std::fs::File::from(master_write_fd);
+        let master_write_raw: RawFd = master_write_fd.as_raw_fd();
         let mut buf = [0u8; 4096];
 
         loop {
@@ -199,7 +319,7 @@ pub fn spawn_with_pty(
                     if n == 0 {
                         break;
                     }
-                    if master_write.write_all(&buf[..n as usize]).is_err() {
+                    if !nb_write_all(master_write_raw, shutdown_raw, &buf[..n as usize]) {
                         break;
                     }
                 }
@@ -210,12 +330,15 @@ pub fn spawn_with_pty(
         }
 
         drop(shutdown_read);
+        drop(master_write_fd);
     });
 
     // master -> stdout + rolling buffer (capture thread)
     // Uses poll() to multiplex PTY master reads and the shutdown pipe so
     // the thread exits promptly even if orphaned child processes keep the
     // PTY slave open after Claude Code exits.
+    // Stdout writes use `let _ =` to ignore errors — stdout is a shared
+    // resource and setting it non-blocking would affect the entire process.
     let capture_thread = std::thread::spawn(move || -> VecDeque<u8> {
         use nix::poll::{PollFd, PollFlags, PollTimeout};
 
@@ -266,7 +389,7 @@ pub fn spawn_with_pty(
                         break;
                     }
 
-                    // Forward to real stdout.
+                    // Forward to real stdout (ignore errors — stdout is shared).
                     let _ = stdout.write_all(&buf[..n as usize]);
                     let _ = stdout.flush();
 
@@ -320,17 +443,16 @@ pub fn spawn_with_pty(
         .join()
         .map_err(|_| anyhow::anyhow!("capture thread panicked"))?;
 
-    // 7. Restore terminal FIRST (while SIGINT is still blocked).
-    drop(guard);
-
-    // Restore the original SIGINT handler.
-    // SAFETY: old_sigint was captured from the previous handler.
-    unsafe {
-        libc::sigaction(libc::SIGINT, &old_sigint, std::ptr::null_mut());
-    }
+    // 7. Restore terminal and SIGINT handler (while SIGINT is still blocked).
+    //    Both are RAII guards — drop order is reverse declaration order, but
+    //    we drop explicitly here for clarity: terminal first, then signal handler.
+    drop(termios_guard);
+    drop(_sigint_guard);
 
     // Unmask SIGINT.
     let _ = nix::sys::signal::sigprocmask(SigmaskHow::SIG_SETMASK, Some(&old_sigmask), None);
+
+    // _session_guard drops here, clearing PTY_SESSION_ACTIVE.
 
     // 8. Extract session ID from the captured tail.
     let tail_bytes = Vec::from(tail_buf);

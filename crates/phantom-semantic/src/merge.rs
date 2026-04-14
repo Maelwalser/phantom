@@ -85,10 +85,19 @@ impl phantom_core::traits::SemanticAnalyzer for SemanticMerger {
                     tracing::warn!(?path, "semantic merge failed, falling back to text merge");
                 }
             }
+        } else {
+            tracing::info!(
+                ?path,
+                "unsupported language — using line-based text merge (no syntax validation)"
+            );
         }
 
         // Fallback: line-based three-way merge
         text_merge(base, ours, theirs, path)
+    }
+
+    fn supports_language(&self, path: &Path) -> bool {
+        self.parser.supports_language(path)
     }
 }
 

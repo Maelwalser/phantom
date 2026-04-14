@@ -45,7 +45,7 @@ async fn test_ripple_notification_after_materialize() {
         .expect("materialize failed");
 
     let new_head = match result {
-        MaterializeResult::Success { new_commit } => new_commit,
+        MaterializeResult::Success { new_commit, .. } => new_commit,
         MaterializeResult::Conflict { details } => {
             panic!("expected success, got conflict: {details:?}")
         }

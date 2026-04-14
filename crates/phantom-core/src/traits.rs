@@ -77,6 +77,12 @@ pub trait SemanticAnalyzer: Send + Sync {
         theirs: &[u8],
         path: &Path,
     ) -> Result<MergeResult, CoreError>;
+
+    /// Check if the given file path has a supported language for semantic
+    /// analysis. Returns `false` by default.
+    fn supports_language(&self, _path: &Path) -> bool {
+        false
+    }
 }
 
 /// Outcome of a three-way semantic merge.

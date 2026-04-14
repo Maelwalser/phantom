@@ -114,17 +114,31 @@ pub async fn submit_overlay(
 
         let ops = match base_content {
             Ok(base) => {
-                let base_symbols = analyzer.extract_symbols(file, &base).unwrap_or_default();
-                let current_symbols = analyzer
-                    .extract_symbols(file, &agent_content)
-                    .unwrap_or_default();
+                let base_symbols = match analyzer.extract_symbols(file, &base) {
+                    Ok(syms) => syms,
+                    Err(_) => {
+                        tracing::debug!(?file, "no semantic analysis available for base");
+                        Vec::new()
+                    }
+                };
+                let current_symbols = match analyzer.extract_symbols(file, &agent_content) {
+                    Ok(syms) => syms,
+                    Err(_) => {
+                        tracing::debug!(?file, "no semantic analysis available for current");
+                        Vec::new()
+                    }
+                };
                 analyzer.diff_symbols(&base_symbols, &current_symbols)
             }
             Err(_) => {
                 // New file -- all symbols are additions.
-                let symbols = analyzer
-                    .extract_symbols(file, &agent_content)
-                    .unwrap_or_default();
+                let symbols = match analyzer.extract_symbols(file, &agent_content) {
+                    Ok(syms) => syms,
+                    Err(_) => {
+                        tracing::debug!(?file, "no semantic analysis available for new file");
+                        Vec::new()
+                    }
+                };
                 symbols
                     .into_iter()
                     .map(|sym| SemanticOperation::AddSymbol {

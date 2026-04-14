@@ -62,10 +62,24 @@ pub async fn run(args: MaterializeArgs) -> anyhow::Result<()> {
         materialize_changeset(&ctx, &events, &mut overlays, &changeset_id, &commit_message).await?;
 
     match output.result {
-        MaterializeResult::Success { new_commit } => {
+        MaterializeResult::Success {
+            new_commit,
+            text_fallback_files,
+        } => {
             let short = new_commit.to_hex();
             let short = &short[..12.min(short.len())];
             println!("Materialized {} → commit {short}", changeset_id);
+
+            if !text_fallback_files.is_empty() {
+                eprintln!(
+                    "\n  Warning: {} file(s) merged via line-based fallback (no syntax validation):",
+                    text_fallback_files.len()
+                );
+                for f in &text_fallback_files {
+                    eprintln!("    - {}", f.display());
+                }
+                eprintln!("  Review these files before deploying.\n");
+            }
 
             if !output.ripple_effects.is_empty() {
                 println!("Ripple: the following agents may be affected:");
