@@ -43,8 +43,9 @@ pub fn write_resolve_rules_file(path: &Path) -> anyhow::Result<()> {
    then OURS and THEIRS as unified diffs showing what each side changed
    relative to BASE. Your working directory has the THEIRS version —
    integrate the OURS changes. Do not re-read the file; use the content shown here.
-   For raw text and dependency conflicts you see BASE as full text, then
-   OURS and THEIRS as unified diffs. For binary files you see three labeled blocks.
+   For raw text and dependency conflicts you see OURS and THEIRS as unified
+   diffs against BASE (with 3 lines of context). Use the Read tool if you need
+   broader file context. For binary files you see three labeled blocks.
 2. Your goal: produce a merged version that preserves the intent of BOTH sides.
 3. NEVER silently drop code from either side unless one side explicitly deleted it.
 4. For BothModifiedSymbol conflicts: merge both sets of changes into the symbol.
@@ -94,6 +95,7 @@ pub fn write_resolve_context_file(
     let base_hex = base_commit.to_hex();
     let base_short = &base_hex[..12.min(base_hex.len())];
 
+    let parser = phantom_semantic::Parser::new();
     let mut content = String::new();
     writeln!(content, "# Phantom Conflict Resolution").unwrap();
     writeln!(content).unwrap();
@@ -142,7 +144,7 @@ pub fn write_resolve_context_file(
         );
 
         let used_compact = if is_symbol_conflict {
-            write_compact_conflict(&mut content, lang, conflict, base_short)
+            write_compact_conflict(&mut content, lang, conflict, base_short, &parser)
         } else if is_text_conflict {
             write_compact_raw_text_conflict(&mut content, lang, conflict, base_short)
         } else {
@@ -158,6 +160,7 @@ pub fn write_resolve_context_file(
                 conflict.base_content.as_deref(),
                 conflict.detail.base_span.as_ref(),
                 file_path,
+                &parser,
             );
 
             writeln!(content, "#### OURS (current trunk)").unwrap();
@@ -167,6 +170,7 @@ pub fn write_resolve_context_file(
                 conflict.ours_content.as_deref(),
                 conflict.detail.ours_span.as_ref(),
                 file_path,
+                &parser,
             );
 
             writeln!(
@@ -180,6 +184,7 @@ pub fn write_resolve_context_file(
                 conflict.theirs_content.as_deref(),
                 conflict.detail.theirs_span.as_ref(),
                 file_path,
+                &parser,
             );
         }
 
@@ -207,8 +212,8 @@ fn extract_symbol_text(
     content: &str,
     span: &phantom_core::conflict::ConflictSpan,
     file_path: &Path,
+    parser: &phantom_semantic::Parser,
 ) -> Option<(String, usize)> {
-    let parser = phantom_semantic::Parser::new();
     if !parser.supports_language(file_path) {
         return None;
     }
@@ -231,6 +236,7 @@ fn write_compact_conflict(
     lang: &str,
     conflict: &ResolveConflictContext,
     base_short: &str,
+    parser: &phantom_semantic::Parser,
 ) -> bool {
     use std::fmt::Write;
 
@@ -253,7 +259,7 @@ fn write_compact_conflict(
 
     // Extract symbol text from BASE.
     let (base_symbol, base_start_line) =
-        match extract_symbol_text(base_content, base_span, file_path) {
+        match extract_symbol_text(base_content, base_span, file_path, parser) {
             Some(pair) => pair,
             None => return false,
         };
@@ -263,14 +269,14 @@ fn write_compact_conflict(
         .detail
         .ours_span
         .as_ref()
-        .and_then(|s| extract_symbol_text(ours_content, s, file_path))
+        .and_then(|s| extract_symbol_text(ours_content, s, file_path, parser))
         .map(|(text, _)| text);
 
     let theirs_symbol = conflict
         .detail
         .theirs_span
         .as_ref()
-        .and_then(|s| extract_symbol_text(theirs_content, s, file_path))
+        .and_then(|s| extract_symbol_text(theirs_content, s, file_path, parser))
         .map(|(text, _)| text);
 
     // Write BASE once.
@@ -299,17 +305,16 @@ fn write_compact_conflict(
 
 /// Attempt to write a conflict in compact diff format for raw text conflicts.
 ///
-/// Shows BASE content once (truncated to token budget), then OURS and THEIRS
-/// as unified diffs against BASE. Works for any text file regardless of
-/// tree-sitter support. Returns `true` if compact format was written.
+/// Emits OURS and THEIRS as unified diffs against BASE. The diffs include
+/// 3 lines of context around each change, so the full BASE is not shown —
+/// the agent can use the Read tool if broader context is needed.
+/// Returns `true` if compact format was written.
 fn write_compact_raw_text_conflict(
     out: &mut String,
-    lang: &str,
+    _lang: &str,
     conflict: &ResolveConflictContext,
-    base_short: &str,
+    _base_short: &str,
 ) -> bool {
-    use std::fmt::Write;
-
     let (base_content, ours_content, theirs_content) = match (
         conflict.base_content.as_deref(),
         conflict.ours_content.as_deref(),
@@ -319,15 +324,8 @@ fn write_compact_raw_text_conflict(
         _ => return false,
     };
 
-    let base_display = truncate_to_token_budget(base_content);
-
-    writeln!(out, "#### BASE (common ancestor at {base_short})").unwrap();
-    writeln!(out, "```{lang}").unwrap();
-    writeln!(out, "{base_display}").unwrap();
-    writeln!(out, "```").unwrap();
-    writeln!(out).unwrap();
-
-    // Write OURS and THEIRS as diffs against the full base (not the truncated version).
+    // Diffs include 3-line context around each change — the full BASE is redundant
+    // and would waste tokens. The agent can use the Read tool if broader context is needed.
     write_diff_section(
         out,
         "OURS",
@@ -387,8 +385,8 @@ fn extract_span_context(
     content: &str,
     span: &phantom_core::conflict::ConflictSpan,
     file_path: &Path,
+    parser: &phantom_semantic::Parser,
 ) -> String {
-    let parser = phantom_semantic::Parser::new();
     if parser.supports_language(file_path)
         && let Ok(symbols) = parser.parse_file(file_path, content.as_bytes())
         && let Some(enclosing) = find_enclosing_symbol(&symbols, &span.byte_range)
@@ -401,14 +399,21 @@ fn extract_span_context(
 }
 
 /// Fallback: extract lines around a conflict span with ±10 line padding.
+///
+/// Uses iterator chaining to avoid collecting the entire file into memory —
+/// only the ~20 lines around the span are allocated.
 fn extract_span_lines_fallback(
     content: &str,
     span: &phantom_core::conflict::ConflictSpan,
 ) -> String {
-    let lines: Vec<&str> = content.lines().collect();
     let start = span.start_line.saturating_sub(10).max(1) - 1; // zero-indexed
-    let end = (span.end_line + 10).min(lines.len());
-    lines[start..end].join("\n")
+    let count = span.end_line + 10 - start;
+    content
+        .lines()
+        .skip(start)
+        .take(count)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Truncate content to fit within the token budget, breaking at the last
@@ -434,13 +439,14 @@ fn write_code_block(
     content: Option<&str>,
     span: Option<&phantom_core::conflict::ConflictSpan>,
     file_path: &Path,
+    parser: &phantom_semantic::Parser,
 ) {
     use std::fmt::Write;
 
     match content {
         Some(text) => {
             let display = match span {
-                Some(s) => extract_span_context(text, s, file_path),
+                Some(s) => extract_span_context(text, s, file_path, parser),
                 None => truncate_to_token_budget(text),
             };
             writeln!(out, "```{lang}").unwrap();

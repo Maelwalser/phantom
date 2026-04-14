@@ -24,6 +24,9 @@ struct Insertion {
     prepend: bool,
     /// The raw bytes to insert (from the source file).
     content: Vec<u8>,
+    /// Insertion order index used to break ties during sorting so that
+    /// multiple insertions at the same position preserve their source order.
+    original_index: usize,
 }
 
 /// Find the nearest preceding sibling of `new_sym` that also exists in `base_map`,
@@ -212,6 +215,7 @@ pub(super) fn reconstruct_merged_file(
                     after_output_pos: pos,
                     prepend: false,
                     content,
+                    original_index: insertions.len(),
                 });
                 continue;
             }
@@ -225,6 +229,7 @@ pub(super) fn reconstruct_merged_file(
                     after_output_pos: pos,
                     prepend: true,
                     content,
+                    original_index: insertions.len(),
                 });
                 continue;
             }
@@ -235,6 +240,7 @@ pub(super) fn reconstruct_merged_file(
             after_output_pos: result.len(),
             prepend: false,
             content,
+            original_index: insertions.len(),
         });
     }
 
@@ -257,6 +263,7 @@ pub(super) fn reconstruct_merged_file(
                     after_output_pos: pos,
                     prepend: false,
                     content,
+                    original_index: insertions.len(),
                 });
                 continue;
             }
@@ -270,6 +277,7 @@ pub(super) fn reconstruct_merged_file(
                     after_output_pos: pos,
                     prepend: true,
                     content,
+                    original_index: insertions.len(),
                 });
                 continue;
             }
@@ -280,22 +288,29 @@ pub(super) fn reconstruct_merged_file(
             after_output_pos: result.len(),
             prepend: false,
             content,
+            original_index: insertions.len(),
         });
     }
 
     // Apply insertions in reverse position order so earlier offsets stay valid.
-    // Stable sort preserves relative order for insertions at the same position.
-    insertions.sort_by(|a, b| b.after_output_pos.cmp(&a.after_output_pos));
+    // Tie-breaking ensures correct output order when multiple insertions
+    // target the same position: since each splice at pos X pushes prior
+    // content right, items spliced later end up earlier in the output.
+    insertions.sort_by(|a, b| {
+        b.after_output_pos
+            .cmp(&a.after_output_pos)
+            // At same position: non-prepend (anchored to prev sibling end)
+            // before prepend (anchored to next sibling start) in iteration
+            // order, so prepend content ends up earlier in the output.
+            .then(a.prepend.cmp(&b.prepend))
+            // Within same position and prepend: higher original_index
+            // spliced first → pushed right by later splices → source order
+            // is preserved in the output.
+            .then(b.original_index.cmp(&a.original_index))
+    });
 
     for ins in insertions {
-        let pos = ins.after_output_pos;
-        if ins.prepend {
-            // Insert before the symbol at this position
-            result.splice(pos..pos, ins.content);
-        } else {
-            // Insert after the symbol that ended at this position
-            result.splice(pos..pos, ins.content);
-        }
+        result.splice(ins.after_output_pos..ins.after_output_pos, ins.content);
     }
 
     result

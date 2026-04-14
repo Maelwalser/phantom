@@ -6,7 +6,7 @@
 
 #[cfg(target_os = "linux")]
 mod inner {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
     use std::path::PathBuf;
     use std::sync::RwLock;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,7 +17,7 @@ mod inner {
     /// take the write lock.
     struct InodeTableInner {
         ino_to_path: HashMap<u64, PathBuf>,
-        path_to_ino: HashMap<PathBuf, u64>,
+        path_to_ino: BTreeMap<PathBuf, u64>,
         /// Kernel-side lookup reference count per inode.  Incremented on
         /// every `lookup`, `create`, `mkdir`, and `readdir` reply that
         /// hands an inode to the kernel; decremented by `forget`.
@@ -46,7 +46,7 @@ mod inner {
     impl InodeTable {
         pub(crate) fn new() -> Self {
             let mut ino_to_path = HashMap::new();
-            let mut path_to_ino = HashMap::new();
+            let mut path_to_ino = BTreeMap::new();
             ino_to_path.insert(1, PathBuf::from(""));
             path_to_ino.insert(PathBuf::from(""), 1);
 
@@ -140,18 +140,26 @@ mod inner {
             }
 
             // Re-key child paths (directory rename).
-            // Only clone matching children (M << N) instead of all N keys.
+            // Use BTreeMap range query: children of `old_path` are in the
+            // half-open range [old_path + "/", old_path + "0") since "/" is
+            // 0x2F and "0" is 0x30 — no valid path component byte lies between.
+            use std::ffi::OsString;
+            use std::os::unix::ffi::OsStringExt;
+
+            let mut start_bytes = old_path.as_os_str().as_encoded_bytes().to_vec();
+            start_bytes.push(b'/');
+            let start_key = PathBuf::from(OsString::from_vec(start_bytes.clone()));
+
+            let mut end_bytes = start_bytes;
+            *end_bytes.last_mut().unwrap() = b'/' + 1; // 0x2F → 0x30
+            let end_key = PathBuf::from(OsString::from_vec(end_bytes));
+
             let children: Vec<(PathBuf, PathBuf)> = inner
                 .path_to_ino
-                .keys()
-                .filter_map(|p| {
-                    p.strip_prefix(old_path).ok().and_then(|suffix| {
-                        if suffix.as_os_str().is_empty() {
-                            None // the renamed path itself, already handled above
-                        } else {
-                            Some((p.clone(), new_path.join(suffix)))
-                        }
-                    })
+                .range(start_key..end_key)
+                .map(|(p, _)| {
+                    let suffix = p.strip_prefix(old_path).unwrap();
+                    (p.clone(), new_path.join(suffix))
                 })
                 .collect();
             for (old_child, new_child) in children {

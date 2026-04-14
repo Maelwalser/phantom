@@ -318,3 +318,31 @@ fn both_sides_add_at_different_positions() {
         MergeResult::Conflict(c) => panic!("expected clean merge, got conflicts: {c:?}"),
     }
 }
+
+#[test]
+fn multiple_functions_added_after_same_anchor_preserve_order() {
+    // Two new functions added sequentially after the same anchor — their
+    // relative order must be preserved in the merged output.
+    let base = b"fn anchor() {}\n";
+    let ours = b"fn anchor() {}\nfn alpha() {}\nfn beta() {}\n";
+    let theirs = base;
+
+    let result = merger()
+        .three_way_merge(base, ours, theirs, Path::new("test.rs"))
+        .unwrap();
+
+    match result {
+        MergeResult::Clean(merged) => {
+            let text = String::from_utf8_lossy(&merged);
+            assert!(text.contains("alpha"), "should include alpha");
+            assert!(text.contains("beta"), "should include beta");
+            let pos_alpha = text.find("alpha").unwrap();
+            let pos_beta = text.find("beta").unwrap();
+            assert!(
+                pos_alpha < pos_beta,
+                "alpha should appear before beta (source order), got: {text:?}"
+            );
+        }
+        MergeResult::Conflict(c) => panic!("expected clean merge, got conflicts: {c:?}"),
+    }
+}

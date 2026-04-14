@@ -31,7 +31,8 @@ fn extract_span_context_uses_semantic_for_rust() {
         start_line: 4,
         end_line: 4,
     };
-    let result = extract_span_context(src, &span, Path::new("test.rs"));
+    let parser = phantom_semantic::Parser::new();
+    let result = extract_span_context(src, &span, Path::new("test.rs"), &parser);
     // Should return the entire fn target() body, not just ±10 lines.
     assert!(result.contains("fn target()"));
     assert!(result.contains("let x = 1;"));
@@ -49,7 +50,8 @@ fn extract_span_context_falls_back_for_unsupported_lang() {
         start_line: 2,
         end_line: 2,
     };
-    let result = extract_span_context(src, &span, Path::new("config.toml"));
+    let parser = phantom_semantic::Parser::new();
+    let result = extract_span_context(src, &span, Path::new("config.toml"), &parser);
     // Fallback path: should include surrounding lines.
     assert!(result.contains("line1"));
     assert!(result.contains("line2"));
@@ -98,7 +100,8 @@ fn compact_format_for_both_modified_symbol() {
 
     let conflict = make_both_modified_conflict(base, ours, theirs);
     let mut out = String::new();
-    let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc123");
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc123", &parser);
 
     assert!(ok, "should succeed for BothModifiedSymbol with all content");
     // BASE shown once as a code block.
@@ -152,7 +155,8 @@ fn compact_format_falls_back_when_content_missing() {
     };
 
     let mut out = String::new();
-    let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc");
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc", &parser);
     assert!(!ok, "should fall back when ours_content is missing");
 }
 
@@ -164,7 +168,8 @@ fn compact_format_identical_side_shows_message() {
 
     let conflict = make_both_modified_conflict(base, ours, theirs);
     let mut out = String::new();
-    let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc");
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc", &parser);
 
     assert!(ok);
     assert!(
@@ -209,7 +214,8 @@ fn compact_format_deleted_side() {
     };
 
     let mut out = String::new();
-    let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc");
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc", &parser);
     assert!(ok);
     assert!(
         out.contains("*(symbol deleted)*"),
@@ -283,17 +289,15 @@ fn full_resolve_file_uses_compact_for_raw_text() {
     .unwrap();
 
     let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
-    // Should use compact diff format — BASE once, OURS/THEIRS as diffs.
+    // Should use compact diff format — OURS/THEIRS as diffs, no BASE block.
     assert!(
         content.contains("```diff"),
         "RawTextConflict should use diff format"
     );
-    assert!(content.contains("#### BASE"));
+    assert!(!content.contains("#### BASE"), "raw text conflicts should not emit a BASE block");
     assert!(content.contains("#### OURS"));
     assert!(content.contains("#### THEIRS"));
-    // Should have exactly one toml code block (BASE).
-    let toml_blocks = content.matches("```toml").count();
-    assert_eq!(toml_blocks, 1, "should have exactly one toml code block (BASE)");
+    assert_eq!(content.matches("```toml").count(), 0, "no toml code blocks — only diffs");
 }
 
 #[test]
@@ -326,14 +330,11 @@ fn compact_format_for_raw_text_conflict() {
     let ok = write_compact_raw_text_conflict(&mut out, "markdown", &conflict, "abc123");
 
     assert!(ok, "should succeed for RawTextConflict with all content");
-    assert!(out.contains("#### BASE"));
-    assert!(out.contains("```markdown"));
+    assert!(!out.contains("#### BASE"), "raw text conflicts should not emit a BASE block");
+    assert!(!out.contains("```markdown"), "no markdown code block — only diffs");
     assert!(out.contains("#### OURS"));
     assert!(out.contains("#### THEIRS"));
     assert!(out.contains("```diff"));
-    // BASE shown once as a code block.
-    let md_blocks = out.matches("```markdown").count();
-    assert_eq!(md_blocks, 1, "BASE should be the only markdown block");
     // Diffs should contain the actual changes.
     assert!(out.contains("modified_ours"));
     assert!(out.contains("modified_theirs"));
