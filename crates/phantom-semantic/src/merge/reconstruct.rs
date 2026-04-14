@@ -13,12 +13,84 @@ fn ensure_newline(buf: &mut Vec<u8>) {
     }
 }
 
+/// A pending insertion of a new symbol into the output buffer.
+struct Insertion {
+    /// Byte position in the output buffer after which to insert.
+    /// `0` means insert at the very beginning (before all content).
+    after_output_pos: usize,
+    /// Whether this insertion targets the beginning of the file (before any
+    /// base content).  Used to distinguish "insert at pos 0 = prepend" from
+    /// "insert after the byte at pos 0".
+    prepend: bool,
+    /// The raw bytes to insert (from the source file).
+    content: Vec<u8>,
+}
+
+/// Find the nearest preceding sibling of `new_sym` that also exists in `base_map`,
+/// returning its entity key.  Symbols are ordered by byte offset in `source_symbols`.
+fn find_preceding_base_sibling<'a>(
+    new_sym: &SymbolEntry,
+    source_symbols: &[SymbolEntry],
+    base_map: &HashMap<EntityKey, &'a SymbolEntry>,
+) -> Option<EntityKey> {
+    // Symbols in the same source file, sorted by byte offset, that appear
+    // before `new_sym` and also exist in base.
+    let mut best: Option<(&SymbolEntry, EntityKey)> = None;
+    for sym in source_symbols {
+        if sym.byte_range.start >= new_sym.byte_range.start {
+            continue;
+        }
+        let key = entity_key(sym);
+        if base_map.contains_key(&key) {
+            match &best {
+                Some((prev, _)) if sym.byte_range.start > prev.byte_range.start => {
+                    best = Some((sym, key));
+                }
+                None => {
+                    best = Some((sym, key));
+                }
+                _ => {}
+            }
+        }
+    }
+    best.map(|(_, key)| key)
+}
+
+/// Find the nearest following sibling of `new_sym` that also exists in `base_map`,
+/// returning its entity key.
+fn find_following_base_sibling<'a>(
+    new_sym: &SymbolEntry,
+    source_symbols: &[SymbolEntry],
+    base_map: &HashMap<EntityKey, &'a SymbolEntry>,
+) -> Option<EntityKey> {
+    let mut best: Option<(&SymbolEntry, EntityKey)> = None;
+    for sym in source_symbols {
+        if sym.byte_range.start <= new_sym.byte_range.start {
+            continue;
+        }
+        let key = entity_key(sym);
+        if base_map.contains_key(&key) {
+            match &best {
+                Some((next, _)) if sym.byte_range.start < next.byte_range.start => {
+                    best = Some((sym, key));
+                }
+                None => {
+                    best = Some((sym, key));
+                }
+                _ => {}
+            }
+        }
+    }
+    best.map(|(_, key)| key)
+}
+
 /// Reconstruct a merged file from base, ours, and theirs using symbol regions.
 ///
 /// Strategy:
 /// 1. Build a map of base symbol regions (byte ranges).
 /// 2. Walk through base, replacing symbol regions with the appropriate version.
-/// 3. Append symbols that were added by either side.
+/// 3. Insert symbols added by either side at their approximate original position
+///    relative to neighboring symbols that exist in base.
 pub(super) fn reconstruct_merged_file(
     base: &[u8],
     ours: &[u8],
@@ -41,6 +113,12 @@ pub(super) fn reconstruct_merged_file(
     let mut result = Vec::new();
     let mut cursor = 0;
 
+    // Track output positions for base symbols so we can place new symbols nearby.
+    // Maps entity key → byte offset in `result` immediately after the symbol was emitted.
+    let mut base_output_end: HashMap<EntityKey, usize> = HashMap::new();
+    // Maps entity key → byte offset in `result` immediately before the symbol was emitted.
+    let mut base_output_start: HashMap<EntityKey, usize> = HashMap::new();
+
     for base_sym in &sorted_base {
         let key = entity_key(base_sym);
         let range = &base_sym.byte_range;
@@ -52,6 +130,8 @@ pub(super) fn reconstruct_merged_file(
 
         let in_ours = ours_map.get(&key);
         let in_theirs = theirs_map.get(&key);
+
+        let start_pos = result.len();
 
         match (in_ours, in_theirs) {
             (Some(o), Some(t)) => {
@@ -67,7 +147,6 @@ pub(super) fn reconstruct_merged_file(
                 }
             }
             (Some(o), None) => {
-                // Theirs deleted it, ours still has it (unchanged, since conflicts are already caught)
                 if o.content_hash == base_sym.content_hash {
                     // Ours unchanged, theirs deleted → honor deletion (skip)
                 } else {
@@ -87,6 +166,9 @@ pub(super) fn reconstruct_merged_file(
             }
         }
 
+        base_output_start.insert(key.clone(), start_pos);
+        base_output_end.insert(key, result.len());
+
         cursor = range.end;
     }
 
@@ -95,31 +177,124 @@ pub(super) fn reconstruct_merged_file(
         result.extend_from_slice(&base[cursor..]);
     }
 
-    // Append symbols that were added by ours (not in base)
+    // Collect new symbols from ours and theirs with position hints.
+    let mut insertions: Vec<Insertion> = Vec::new();
+
+    // New symbols added by ours (not in base)
     for ours_sym in ours_symbols {
         let key = entity_key(ours_sym);
-        if !base_map.contains_key(&key) {
-            // Check if theirs also added the same symbol — if so, only add once
-            if let Some(theirs_sym) = theirs_map.get(&key) {
-                if theirs_sym.content_hash == ours_sym.content_hash {
-                    // Identical — add from ours
-                    ensure_newline(&mut result);
-                    result.extend_from_slice(&ours[ours_sym.byte_range.clone()]);
-                }
-                // Different content is a conflict, already caught
-            } else {
-                ensure_newline(&mut result);
-                result.extend_from_slice(&ours[ours_sym.byte_range.clone()]);
+        if base_map.contains_key(&key) {
+            continue;
+        }
+
+        // Decide whether to include this symbol
+        let should_include = if let Some(theirs_sym) = theirs_map.get(&key) {
+            // Both sides added — include only if identical (dedup)
+            theirs_sym.content_hash == ours_sym.content_hash
+        } else {
+            true
+        };
+
+        if !should_include {
+            continue;
+        }
+
+        let mut content = Vec::new();
+        ensure_newline(&mut content);
+        content.extend_from_slice(&ours[ours_sym.byte_range.clone()]);
+
+        // Find position hint via neighboring base symbols
+        if let Some(prev_key) =
+            find_preceding_base_sibling(ours_sym, ours_symbols, &base_map)
+        {
+            if let Some(&pos) = base_output_end.get(&prev_key) {
+                insertions.push(Insertion {
+                    after_output_pos: pos,
+                    prepend: false,
+                    content,
+                });
+                continue;
             }
         }
+
+        if let Some(next_key) =
+            find_following_base_sibling(ours_sym, ours_symbols, &base_map)
+        {
+            if let Some(&pos) = base_output_start.get(&next_key) {
+                insertions.push(Insertion {
+                    after_output_pos: pos,
+                    prepend: true,
+                    content,
+                });
+                continue;
+            }
+        }
+
+        // Fallback: append to EOF
+        insertions.push(Insertion {
+            after_output_pos: result.len(),
+            prepend: false,
+            content,
+        });
     }
 
-    // Append symbols that were added only by theirs (not in base and not in ours)
+    // New symbols added only by theirs (not in base and not in ours)
     for theirs_sym in theirs_symbols {
         let key = entity_key(theirs_sym);
-        if !base_map.contains_key(&key) && !ours_map.contains_key(&key) {
-            ensure_newline(&mut result);
-            result.extend_from_slice(&theirs[theirs_sym.byte_range.clone()]);
+        if base_map.contains_key(&key) || ours_map.contains_key(&key) {
+            continue;
+        }
+
+        let mut content = Vec::new();
+        ensure_newline(&mut content);
+        content.extend_from_slice(&theirs[theirs_sym.byte_range.clone()]);
+
+        if let Some(prev_key) =
+            find_preceding_base_sibling(theirs_sym, theirs_symbols, &base_map)
+        {
+            if let Some(&pos) = base_output_end.get(&prev_key) {
+                insertions.push(Insertion {
+                    after_output_pos: pos,
+                    prepend: false,
+                    content,
+                });
+                continue;
+            }
+        }
+
+        if let Some(next_key) =
+            find_following_base_sibling(theirs_sym, theirs_symbols, &base_map)
+        {
+            if let Some(&pos) = base_output_start.get(&next_key) {
+                insertions.push(Insertion {
+                    after_output_pos: pos,
+                    prepend: true,
+                    content,
+                });
+                continue;
+            }
+        }
+
+        // Fallback: append to EOF
+        insertions.push(Insertion {
+            after_output_pos: result.len(),
+            prepend: false,
+            content,
+        });
+    }
+
+    // Apply insertions in reverse position order so earlier offsets stay valid.
+    // Stable sort preserves relative order for insertions at the same position.
+    insertions.sort_by(|a, b| b.after_output_pos.cmp(&a.after_output_pos));
+
+    for ins in insertions {
+        let pos = ins.after_output_pos;
+        if ins.prepend {
+            // Insert before the symbol at this position
+            result.splice(pos..pos, ins.content);
+        } else {
+            // Insert after the symbol that ended at this position
+            result.splice(pos..pos, ins.content);
         }
     }
 

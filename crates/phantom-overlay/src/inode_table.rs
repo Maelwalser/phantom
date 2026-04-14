@@ -11,8 +11,6 @@ mod inner {
     use std::sync::RwLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use crate::types::reparent_children;
-
     /// All mutable inode state protected by a single `RwLock`.
     /// Read-only lookups (`get_path`, `is_unlinked`) take the read lock;
     /// mutations (`get_or_create_inode`, `unlink`, `rename`, `forget`)
@@ -142,8 +140,20 @@ mod inner {
             }
 
             // Re-key child paths (directory rename).
-            let keys: Vec<PathBuf> = inner.path_to_ino.keys().cloned().collect();
-            let children = reparent_children(keys.iter(), old_path, new_path);
+            // Only clone matching children (M << N) instead of all N keys.
+            let children: Vec<(PathBuf, PathBuf)> = inner
+                .path_to_ino
+                .keys()
+                .filter_map(|p| {
+                    p.strip_prefix(old_path).ok().and_then(|suffix| {
+                        if suffix.as_os_str().is_empty() {
+                            None // the renamed path itself, already handled above
+                        } else {
+                            Some((p.clone(), new_path.join(suffix)))
+                        }
+                    })
+                })
+                .collect();
             for (old_child, new_child) in children {
                 if let Some(ino) = inner.path_to_ino.remove(&old_child) {
                     inner.path_to_ino.insert(new_child.clone(), ino);

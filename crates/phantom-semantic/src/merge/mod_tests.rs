@@ -241,3 +241,80 @@ fn syntax_validation_ignores_unsupported_languages() {
         "unsupported languages should return false (no grammar to check)"
     );
 }
+
+#[test]
+fn new_function_added_after_existing_preserves_order() {
+    // Agent adds a function between two existing ones — it should NOT end up at EOF.
+    let base = b"fn first() { 1 }\nfn third() { 3 }\n";
+    let ours = b"fn first() { 1 }\nfn second() { 2 }\nfn third() { 3 }\n";
+    let theirs = base;
+
+    let result = merger()
+        .three_way_merge(base, ours, theirs, Path::new("test.rs"))
+        .unwrap();
+
+    match result {
+        MergeResult::Clean(merged) => {
+            let text = String::from_utf8_lossy(&merged);
+            assert!(text.contains("second"), "should include added function");
+            let pos_first = text.find("first").unwrap();
+            let pos_second = text.find("second").unwrap();
+            let pos_third = text.find("third").unwrap();
+            assert!(
+                pos_first < pos_second && pos_second < pos_third,
+                "functions should be in order: first < second < third, got: {text:?}"
+            );
+        }
+        MergeResult::Conflict(c) => panic!("expected clean merge, got conflicts: {c:?}"),
+    }
+}
+
+#[test]
+fn new_use_statement_added_before_functions() {
+    // Agent adds a use statement at the top — it should appear before functions.
+    let base = b"fn existing() { 1 }\n";
+    let ours = b"use std::fmt;\nfn existing() { 1 }\n";
+    let theirs = base;
+
+    let result = merger()
+        .three_way_merge(base, ours, theirs, Path::new("test.rs"))
+        .unwrap();
+
+    match result {
+        MergeResult::Clean(merged) => {
+            let text = String::from_utf8_lossy(&merged);
+            assert!(text.contains("std::fmt"), "should include use statement");
+            let pos_use = text.find("std::fmt").unwrap();
+            let pos_fn = text.find("existing").unwrap();
+            assert!(
+                pos_use < pos_fn,
+                "use statement should appear before function, got: {text:?}"
+            );
+        }
+        MergeResult::Conflict(c) => panic!("expected clean merge, got conflicts: {c:?}"),
+    }
+}
+
+#[test]
+fn both_sides_add_at_different_positions() {
+    // Ours adds after first, theirs adds after second.
+    let base = b"fn first() { 1 }\nfn last() { 9 }\n";
+    let ours = b"fn first() { 1 }\nfn from_ours() { 2 }\nfn last() { 9 }\n";
+    let theirs = b"fn first() { 1 }\nfn last() { 9 }\nfn from_theirs() { 8 }\n";
+
+    let result = merger()
+        .three_way_merge(base, ours, theirs, Path::new("test.rs"))
+        .unwrap();
+
+    match result {
+        MergeResult::Clean(merged) => {
+            let text = String::from_utf8_lossy(&merged);
+            assert!(text.contains("from_ours"), "should include ours' addition");
+            assert!(
+                text.contains("from_theirs"),
+                "should include theirs' addition"
+            );
+        }
+        MergeResult::Conflict(c) => panic!("expected clean merge, got conflicts: {c:?}"),
+    }
+}
