@@ -18,6 +18,9 @@ const BYTES_PER_TOKEN_ESTIMATE: usize = 4;
 /// Name of the generated context file placed in the overlay.
 pub const CONTEXT_FILE: &str = ".phantom-task.md";
 
+/// Name of the static resolution rules file injected via system prompt.
+pub const RESOLVE_RULES_FILE: &str = "resolve-rules.md";
+
 /// Write a context file into the overlay with agent metadata and optional task.
 pub fn write_context_file(
     upper_dir: &Path,
@@ -39,16 +42,16 @@ pub fn write_context_file(
 
 You are working inside a Phantom overlay. Your changes are isolated from
 trunk and other agents.
-{task_section}
-## Agent Info
-- Agent: {agent_id}
-- Changeset: {changeset_id}
-- Base commit: {base_short}
 
 ## Commands
 - `phantom submit {agent_id}` -- submit your changes
 - `phantom materialize {changeset_id}` -- merge to trunk
 - `phantom status` -- view all agents and changesets
+{task_section}
+## Agent Info
+- Agent: {agent_id}
+- Changeset: {changeset_id}
+- Base commit: {base_short}
 "#
     );
 
@@ -71,10 +74,57 @@ pub struct ResolveConflictContext {
     pub theirs_content: Option<String>,
 }
 
+/// Write the static resolution rules to a file for system prompt injection.
+///
+/// This file is passed via `--append-system-prompt-file` so its content becomes
+/// part of the cached system prompt prefix. Because the content is 100% static,
+/// it maximises prompt cache hit rates across all conflict resolution sessions.
+pub fn write_resolve_rules_file(path: &Path) -> anyhow::Result<()> {
+    let content = "\
+# Phantom Conflict Resolution Rules
+
+## Resolution Rules
+
+1. For symbol-level conflicts you are shown the BASE version as full source,
+   then OURS and THEIRS as unified diffs showing what each side changed
+   relative to BASE. Your working directory has the THEIRS version —
+   integrate the OURS changes. For other conflict types you see three full
+   code blocks (BASE, OURS, THEIRS).
+2. Your goal: produce a merged version that preserves the intent of BOTH sides.
+3. NEVER silently drop code from either side unless one side explicitly deleted it.
+4. For BothModifiedSymbol conflicts: merge both sets of changes into the symbol.
+   If they modify different parts, combine them. If they make contradictory
+   changes to the same lines, prefer the more complete version and leave a
+   comment explaining the choice.
+5. For ModifyDeleteSymbol conflicts: keep the modification unless the deletion
+   was clearly intentional (e.g., functionality moved elsewhere).
+6. For dependency version conflicts: pick the higher version unless there is a
+   compatibility constraint.
+7. Edit ONLY the files listed in the conflict context file. Do not modify unrelated files.
+8. After editing, verify the file still parses correctly.
+9. If you cannot resolve a conflict with confidence, leave a comment:
+   `// PHANTOM_UNRESOLVED: <reason>`
+
+## After Resolution
+Your changes will be automatically submitted and materialized when you finish.
+";
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    }
+
+    std::fs::write(path, content)
+        .with_context(|| format!("failed to write resolve rules to {}", path.display()))?;
+
+    Ok(())
+}
+
 /// Write a conflict-resolution context file into the overlay.
 ///
-/// Generates a `.phantom-task.md` with three-version diffs and resolution
-/// instructions for a background Claude Code agent.
+/// Generates a `.phantom-task.md` with three-version diffs for a background
+/// Claude Code agent. Static resolution rules are injected separately via
+/// `--append-system-prompt-file` (see [`write_resolve_rules_file`]).
 pub fn write_resolve_context_file(
     upper_dir: &Path,
     agent_id: &AgentId,
@@ -102,78 +152,6 @@ pub fn write_resolve_context_file(
     writeln!(content, "- Changeset: {changeset_id}").unwrap();
     writeln!(content, "- Base commit: {base_short}").unwrap();
     writeln!(content).unwrap();
-    writeln!(content, "## Resolution Rules").unwrap();
-    writeln!(content).unwrap();
-    writeln!(
-        content,
-        "1. You are shown three versions of each conflicting region: BASE (common"
-    )
-    .unwrap();
-    writeln!(
-        content,
-        "   ancestor), OURS (current trunk), and THEIRS (the agent's version in"
-    )
-    .unwrap();
-    writeln!(content, "   your working directory).").unwrap();
-    writeln!(
-        content,
-        "2. Your goal: produce a merged version that preserves the intent of BOTH sides."
-    )
-    .unwrap();
-    writeln!(
-        content,
-        "3. NEVER silently drop code from either side unless one side explicitly deleted it."
-    )
-    .unwrap();
-    writeln!(
-        content,
-        "4. For BothModifiedSymbol conflicts: merge both sets of changes into the symbol."
-    )
-    .unwrap();
-    writeln!(
-        content,
-        "   If they modify different parts, combine them. If they make contradictory"
-    )
-    .unwrap();
-    writeln!(
-        content,
-        "   changes to the same lines, prefer the more complete version and leave a"
-    )
-    .unwrap();
-    writeln!(content, "   comment explaining the choice.").unwrap();
-    writeln!(
-        content,
-        "5. For ModifyDeleteSymbol conflicts: keep the modification unless the deletion"
-    )
-    .unwrap();
-    writeln!(
-        content,
-        "   was clearly intentional (e.g., functionality moved elsewhere)."
-    )
-    .unwrap();
-    writeln!(
-        content,
-        "6. For dependency version conflicts: pick the higher version unless there is a"
-    )
-    .unwrap();
-    writeln!(content, "   compatibility constraint.").unwrap();
-    writeln!(
-        content,
-        "7. Edit ONLY the files listed below. Do not modify unrelated files."
-    )
-    .unwrap();
-    writeln!(
-        content,
-        "8. After editing, verify the file still parses correctly."
-    )
-    .unwrap();
-    writeln!(
-        content,
-        "9. If you cannot resolve a conflict with confidence, leave a comment:"
-    )
-    .unwrap();
-    writeln!(content, "   `// PHANTOM_UNRESOLVED: <reason>`").unwrap();
-    writeln!(content).unwrap();
     writeln!(content, "## Conflicts").unwrap();
 
     for (i, conflict) in conflicts.iter().enumerate() {
@@ -191,42 +169,51 @@ pub fn write_resolve_context_file(
         writeln!(content).unwrap();
 
         let lang = lang_from_path(&conflict.detail.file);
-
         let file_path = &conflict.detail.file;
 
-        // BASE
-        writeln!(content, "#### BASE (common ancestor at {base_short})").unwrap();
-        write_code_block(
-            &mut content,
-            lang,
-            conflict.base_content.as_deref(),
-            conflict.detail.base_span.as_ref(),
-            file_path,
+        // Try compact diff format for symbol-level conflicts.
+        let is_symbol_conflict = matches!(
+            conflict.detail.kind,
+            phantom_core::ConflictKind::BothModifiedSymbol
+                | phantom_core::ConflictKind::ModifyDeleteSymbol
         );
 
-        // OURS
-        writeln!(content, "#### OURS (current trunk)").unwrap();
-        write_code_block(
-            &mut content,
-            lang,
-            conflict.ours_content.as_deref(),
-            conflict.detail.ours_span.as_ref(),
-            file_path,
-        );
+        let used_compact = is_symbol_conflict
+            && write_compact_conflict(&mut content, lang, conflict, base_short);
 
-        // THEIRS
-        writeln!(
-            content,
-            "#### THEIRS (agent's version — in your working directory)"
-        )
-        .unwrap();
-        write_code_block(
-            &mut content,
-            lang,
-            conflict.theirs_content.as_deref(),
-            conflict.detail.theirs_span.as_ref(),
-            file_path,
-        );
+        if !used_compact {
+            // Fallback: three full code blocks.
+            writeln!(content, "#### BASE (common ancestor at {base_short})").unwrap();
+            write_code_block(
+                &mut content,
+                lang,
+                conflict.base_content.as_deref(),
+                conflict.detail.base_span.as_ref(),
+                file_path,
+            );
+
+            writeln!(content, "#### OURS (current trunk)").unwrap();
+            write_code_block(
+                &mut content,
+                lang,
+                conflict.ours_content.as_deref(),
+                conflict.detail.ours_span.as_ref(),
+                file_path,
+            );
+
+            writeln!(
+                content,
+                "#### THEIRS (agent's version \u{2014} in your working directory)"
+            )
+            .unwrap();
+            write_code_block(
+                &mut content,
+                lang,
+                conflict.theirs_content.as_deref(),
+                conflict.detail.theirs_span.as_ref(),
+                file_path,
+            );
+        }
 
         writeln!(
             content,
@@ -238,19 +225,142 @@ pub fn write_resolve_context_file(
         writeln!(content, "---").unwrap();
     }
 
-    writeln!(content).unwrap();
-    writeln!(content, "## After Resolution").unwrap();
-    writeln!(
-        content,
-        "Your changes will be automatically submitted and materialized when you finish."
-    )
-    .unwrap();
-
     let path = upper_dir.join(CONTEXT_FILE);
     std::fs::write(&path, content)
         .with_context(|| format!("failed to write resolve context file to {}", path.display()))?;
 
     Ok(())
+}
+
+/// Extract the enclosing symbol's source text and start line from file content.
+///
+/// Returns `(symbol_text, start_line)` on success, or `None` if the language
+/// is unsupported, parsing fails, or no symbol encloses the span.
+fn extract_symbol_text(
+    content: &str,
+    span: &phantom_core::conflict::ConflictSpan,
+    file_path: &Path,
+) -> Option<(String, usize)> {
+    let parser = phantom_semantic::Parser::new();
+    if !parser.supports_language(file_path) {
+        return None;
+    }
+    let symbols = parser.parse_file(file_path, content.as_bytes()).ok()?;
+    let enclosing = find_enclosing_symbol(&symbols, &span.byte_range)?;
+    let start = enclosing.byte_range.start;
+    let end = enclosing.byte_range.end.min(content.len());
+    let text = content[start..end].to_string();
+    let start_line = content[..start].matches('\n').count() + 1;
+    Some((text, start_line))
+}
+
+/// Attempt to write a conflict in compact diff format.
+///
+/// Shows BASE symbol text once, then OURS and THEIRS as unified diffs
+/// against BASE. Returns `true` if the compact format was written,
+/// `false` if the caller should fall back to the three-block format.
+fn write_compact_conflict(
+    out: &mut String,
+    lang: &str,
+    conflict: &ResolveConflictContext,
+    base_short: &str,
+) -> bool {
+    use std::fmt::Write;
+
+    let file_path = &conflict.detail.file;
+
+    // Require all three contents and a base span.
+    let (base_content, ours_content, theirs_content) = match (
+        conflict.base_content.as_deref(),
+        conflict.ours_content.as_deref(),
+        conflict.theirs_content.as_deref(),
+    ) {
+        (Some(b), Some(o), Some(t)) => (b, o, t),
+        _ => return false,
+    };
+
+    let base_span = match conflict.detail.base_span.as_ref() {
+        Some(s) => s,
+        None => return false,
+    };
+
+    // Extract symbol text from BASE.
+    let (base_symbol, base_start_line) =
+        match extract_symbol_text(base_content, base_span, file_path) {
+            Some(pair) => pair,
+            None => return false,
+        };
+
+    // Extract symbol text from OURS and THEIRS (None = side deleted the symbol).
+    let ours_symbol = conflict
+        .detail
+        .ours_span
+        .as_ref()
+        .and_then(|s| extract_symbol_text(ours_content, s, file_path))
+        .map(|(text, _)| text);
+
+    let theirs_symbol = conflict
+        .detail
+        .theirs_span
+        .as_ref()
+        .and_then(|s| extract_symbol_text(theirs_content, s, file_path))
+        .map(|(text, _)| text);
+
+    // Write BASE once.
+    let end_line = base_start_line + base_symbol.lines().count().saturating_sub(1);
+    writeln!(out, "#### BASE (common ancestor at {base_short})").unwrap();
+    writeln!(
+        out,
+        "Lines {base_start_line}-{end_line} in `{}`",
+        file_path.display()
+    )
+    .unwrap();
+    writeln!(out, "```{lang}").unwrap();
+    writeln!(out, "{base_symbol}").unwrap();
+    writeln!(out, "```").unwrap();
+    writeln!(out).unwrap();
+
+    // Write OURS diff.
+    write_diff_section(out, "OURS", "trunk applied these changes", &base_symbol, ours_symbol.as_deref());
+
+    // Write THEIRS diff.
+    write_diff_section(
+        out,
+        "THEIRS",
+        "agent applied these changes \u{2014} in your working directory",
+        &base_symbol,
+        theirs_symbol.as_deref(),
+    );
+
+    true
+}
+
+/// Write a single diff section (OURS or THEIRS) relative to BASE.
+fn write_diff_section(
+    out: &mut String,
+    label: &str,
+    desc: &str,
+    base_symbol: &str,
+    modified: Option<&str>,
+) {
+    use std::fmt::Write;
+
+    writeln!(out, "#### {label} ({desc})").unwrap();
+    match modified {
+        Some(text) if text == base_symbol => {
+            writeln!(out, "*(identical to BASE)*").unwrap();
+        }
+        Some(text) => {
+            let patch = diffy::create_patch(base_symbol, text);
+            writeln!(out, "```diff").unwrap();
+            write!(out, "{patch}").unwrap();
+            writeln!(out, "```").unwrap();
+        }
+        None => {
+            writeln!(out, "*(symbol deleted)*").unwrap();
+        }
+    }
+    writeln!(out).unwrap();
 }
 
 /// Extract the enclosing AST node for a conflict span, falling back to ±10
@@ -367,6 +477,7 @@ pub fn write_plan_domain_instructions(
     instructions_path: &Path,
     domain: &phantom_core::plan::PlanDomain,
     plan: &phantom_core::plan::Plan,
+    cross_domain_signatures: Option<&str>,
 ) -> anyhow::Result<()> {
     use std::fmt::Write as _;
 
@@ -439,6 +550,13 @@ pub fn write_plan_domain_instructions(
              will compose all domains' work automatically."
         );
         let _ = writeln!(content);
+    }
+
+    // Cross-domain signatures (pre-extracted for token efficiency).
+    if let Some(sigs) = cross_domain_signatures
+        && !sigs.is_empty()
+    {
+        let _ = write!(content, "{sigs}");
     }
 
     // Dependencies
@@ -566,5 +684,294 @@ mod tests {
         // Fallback path: should include surrounding lines.
         assert!(result.contains("line1"));
         assert!(result.contains("line2"));
+    }
+
+    fn make_both_modified_conflict(
+        base_src: &str,
+        ours_src: &str,
+        theirs_src: &str,
+    ) -> ResolveConflictContext {
+        use phantom_core::conflict::{ConflictDetail, ConflictKind, ConflictSpan};
+        use phantom_core::id::{ChangesetId, SymbolId};
+
+        // Compute a span inside the first function body so that
+        // `find_enclosing_symbol` can locate it. We point at a byte
+        // range strictly within the function, not at the trailing newline.
+        let span_of = |src: &str| {
+            let start = src.find("fn ").unwrap_or(0);
+            let end = src.rfind('}').map(|p| p + 1).unwrap_or(src.len());
+            ConflictSpan::from_byte_range(src.as_bytes(), start..end)
+        };
+
+        ResolveConflictContext {
+            detail: ConflictDetail {
+                kind: ConflictKind::BothModifiedSymbol,
+                file: std::path::PathBuf::from("src/handler.rs"),
+                symbol_id: Some(SymbolId("crate::handler::target::function".into())),
+                ours_changeset: ChangesetId("cs-1".into()),
+                theirs_changeset: ChangesetId("cs-2".into()),
+                description: "both sides modified handler::target".into(),
+                base_span: Some(span_of(base_src)),
+                ours_span: Some(span_of(ours_src)),
+                theirs_span: Some(span_of(theirs_src)),
+            },
+            base_content: Some(base_src.to_string()),
+            ours_content: Some(ours_src.to_string()),
+            theirs_content: Some(theirs_src.to_string()),
+        }
+    }
+
+    #[test]
+    fn compact_format_for_both_modified_symbol() {
+        let base = "fn target() {\n    let x = 1;\n    let y = 2;\n}\n";
+        let ours = "fn target() {\n    let x = 10;\n    let y = 2;\n}\n";
+        let theirs = "fn target() {\n    let x = 1;\n    let y = 20;\n}\n";
+
+        let conflict = make_both_modified_conflict(base, ours, theirs);
+        let mut out = String::new();
+        let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc123");
+
+        assert!(ok, "should succeed for BothModifiedSymbol with all content");
+        // BASE shown once as a code block.
+        assert!(out.contains("#### BASE"));
+        assert!(out.contains("```rust"));
+        assert!(out.contains("fn target()"));
+        // OURS and THEIRS shown as diffs.
+        assert!(out.contains("#### OURS"));
+        assert!(out.contains("#### THEIRS"));
+        assert!(out.contains("```diff"));
+        // Should NOT contain three full code blocks.
+        let rust_block_count = out.matches("```rust").count();
+        assert_eq!(rust_block_count, 1, "BASE should be the only rust block");
+    }
+
+    #[test]
+    fn compact_format_falls_back_when_content_missing() {
+        use phantom_core::conflict::{ConflictDetail, ConflictKind, ConflictSpan};
+        use phantom_core::id::ChangesetId;
+
+        let conflict = ResolveConflictContext {
+            detail: ConflictDetail {
+                kind: ConflictKind::BothModifiedSymbol,
+                file: std::path::PathBuf::from("src/lib.rs"),
+                symbol_id: None,
+                ours_changeset: ChangesetId("cs-1".into()),
+                theirs_changeset: ChangesetId("cs-2".into()),
+                description: "conflict".into(),
+                base_span: Some(ConflictSpan {
+                    byte_range: 0..10,
+                    start_line: 1,
+                    end_line: 1,
+                }),
+                ours_span: None,
+                theirs_span: None,
+            },
+            base_content: Some("fn foo() {}".into()),
+            ours_content: None, // missing
+            theirs_content: Some("fn foo() { 1 }".into()),
+        };
+
+        let mut out = String::new();
+        let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc");
+        assert!(!ok, "should fall back when ours_content is missing");
+    }
+
+    #[test]
+    fn compact_format_identical_side_shows_message() {
+        let base = "fn target() {\n    let x = 1;\n}\n";
+        let ours = base; // identical
+        let theirs = "fn target() {\n    let x = 99;\n}\n";
+
+        let conflict = make_both_modified_conflict(base, ours, theirs);
+        let mut out = String::new();
+        let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc");
+
+        assert!(ok);
+        assert!(
+            out.contains("*(identical to BASE)*"),
+            "OURS should show identical message"
+        );
+        // THEIRS should still show a diff.
+        assert!(out.contains("```diff"));
+    }
+
+    #[test]
+    fn compact_format_deleted_side() {
+        use phantom_core::conflict::{ConflictDetail, ConflictKind, ConflictSpan};
+        use phantom_core::id::{ChangesetId, SymbolId};
+
+        let base = "fn target() {\n    let x = 1;\n}\n";
+        let ours = "fn target() {\n    let x = 10;\n}\n"; // modified
+        // theirs deleted the symbol — file still exists but symbol is gone
+        let theirs = "// empty\n";
+
+        let conflict = ResolveConflictContext {
+            detail: ConflictDetail {
+                kind: ConflictKind::ModifyDeleteSymbol,
+                file: std::path::PathBuf::from("src/handler.rs"),
+                symbol_id: Some(SymbolId("crate::handler::target::function".into())),
+                ours_changeset: ChangesetId("cs-1".into()),
+                theirs_changeset: ChangesetId("cs-2".into()),
+                description: "ours modified target but theirs deleted it".into(),
+                base_span: Some(ConflictSpan::from_byte_range(
+                    base.as_bytes(),
+                    0..base.rfind('}').unwrap() + 1,
+                )),
+                ours_span: Some(ConflictSpan::from_byte_range(
+                    ours.as_bytes(),
+                    0..ours.rfind('}').unwrap() + 1,
+                )),
+                theirs_span: None, // deleted
+            },
+            base_content: Some(base.into()),
+            ours_content: Some(ours.into()),
+            theirs_content: Some(theirs.into()),
+        };
+
+        let mut out = String::new();
+        let ok = write_compact_conflict(&mut out, "rust", &conflict, "abc");
+        assert!(ok);
+        assert!(
+            out.contains("*(symbol deleted)*"),
+            "THEIRS should show deleted message"
+        );
+    }
+
+    #[test]
+    fn full_resolve_file_uses_compact_for_symbol_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_id = phantom_core::id::AgentId("test".to_string());
+        let changeset_id = phantom_core::id::ChangesetId("cs-1".to_string());
+        let base_commit = phantom_core::id::GitOid([0u8; 20]);
+
+        let base = "fn target() {\n    let x = 1;\n    let y = 2;\n}\n";
+        let ours = "fn target() {\n    let x = 10;\n    let y = 2;\n}\n";
+        let theirs = "fn target() {\n    let x = 1;\n    let y = 20;\n}\n";
+
+        let conflicts = vec![make_both_modified_conflict(base, ours, theirs)];
+
+        write_resolve_context_file(
+            dir.path(),
+            &agent_id,
+            &changeset_id,
+            &base_commit,
+            &conflicts,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
+        // Should use compact format: one rust block + diff blocks.
+        assert!(content.contains("```diff"), "should contain diff blocks");
+        let rust_blocks = content.matches("```rust").count();
+        assert_eq!(rust_blocks, 1, "should have exactly one rust code block (BASE)");
+    }
+
+    #[test]
+    fn full_resolve_file_falls_back_for_raw_text() {
+        use phantom_core::conflict::{ConflictDetail, ConflictKind};
+        use phantom_core::id::ChangesetId;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent_id = phantom_core::id::AgentId("test".to_string());
+        let changeset_id = phantom_core::id::ChangesetId("cs-1".to_string());
+        let base_commit = phantom_core::id::GitOid([0u8; 20]);
+
+        let conflicts = vec![ResolveConflictContext {
+            detail: ConflictDetail {
+                kind: ConflictKind::RawTextConflict,
+                file: std::path::PathBuf::from("config.toml"),
+                symbol_id: None,
+                ours_changeset: ChangesetId("cs-1".into()),
+                theirs_changeset: ChangesetId("cs-2".into()),
+                description: "text conflict".into(),
+                base_span: None,
+                ours_span: None,
+                theirs_span: None,
+            },
+            base_content: Some("key = 1\n".into()),
+            ours_content: Some("key = 2\n".into()),
+            theirs_content: Some("key = 3\n".into()),
+        }];
+
+        write_resolve_context_file(
+            dir.path(),
+            &agent_id,
+            &changeset_id,
+            &base_commit,
+            &conflicts,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
+        // Should NOT use compact format — falls back to three blocks.
+        assert!(
+            !content.contains("```diff"),
+            "RawTextConflict should not use diff format"
+        );
+        // Should have the three-block fallback (BASE, OURS, THEIRS headings).
+        assert!(content.contains("#### BASE"));
+        assert!(content.contains("#### OURS"));
+        assert!(content.contains("#### THEIRS"));
+    }
+
+    #[test]
+    fn resolve_rules_file_contains_all_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.md");
+        write_resolve_rules_file(&path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        // All 9 rules present.
+        for i in 1..=9 {
+            assert!(
+                content.contains(&format!("{}.", i)),
+                "missing rule {i}"
+            );
+        }
+        assert!(content.contains("After Resolution"));
+        assert!(content.contains("automatically submitted and materialized"));
+    }
+
+    #[test]
+    fn resolve_context_file_excludes_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_id = phantom_core::id::AgentId("test".to_string());
+        let changeset_id = phantom_core::id::ChangesetId("cs-1".to_string());
+        let base_commit = phantom_core::id::GitOid([0u8; 20]);
+
+        write_resolve_context_file(
+            dir.path(),
+            &agent_id,
+            &changeset_id,
+            &base_commit,
+            &[],
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
+        assert!(content.contains("Phantom Conflict Resolution"));
+        assert!(content.contains("Agent: test"));
+        // Rules should NOT be in this file — they live in the system prompt.
+        assert!(!content.contains("Resolution Rules"));
+        assert!(!content.contains("After Resolution"));
+    }
+
+    #[test]
+    fn context_file_has_dynamic_sections_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_id = phantom_core::id::AgentId("a1".to_string());
+        let changeset_id = phantom_core::id::ChangesetId("cs-1".to_string());
+        let base_commit = phantom_core::id::GitOid([0u8; 20]);
+
+        write_context_file(dir.path(), &agent_id, &changeset_id, &base_commit, Some("do stuff"))
+            .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
+        let commands_pos = content.find("## Commands").unwrap();
+        let task_pos = content.find("## Task").unwrap();
+        let info_pos = content.find("## Agent Info").unwrap();
+        // Static commands section should precede dynamic task and agent info.
+        assert!(commands_pos < task_pos, "Commands should come before Task");
+        assert!(task_pos < info_pos, "Task should come before Agent Info");
     }
 }

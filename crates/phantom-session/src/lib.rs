@@ -8,3 +8,4 @@ pub mod adapter;
 pub mod context_file;
 pub mod post_session;
 pub mod pty;
+pub mod signatures;

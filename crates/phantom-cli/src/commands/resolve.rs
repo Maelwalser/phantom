@@ -141,7 +141,14 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
         upper_dir.clone()
     };
 
-    // Write the specialized conflict-resolution context file.
+    // Write the static resolution rules to a system prompt file (cached across sessions).
+    let rules_path = ctx
+        .phantom_dir
+        .join("instructions")
+        .join(context_file::RESOLVE_RULES_FILE);
+    context_file::write_resolve_rules_file(&rules_path)?;
+
+    // Write the dynamic conflict context file (agent info + code blocks only).
     context_file::write_resolve_context_file(
         &work_dir,
         &agent_id,
@@ -173,7 +180,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
         task,
         &work_dir,
         true, // auto_materialize
-        None,
+        Some(&rules_path),
     )?;
 
     let log_file = ctx

@@ -13,6 +13,7 @@ phantom-orchestrator = { workspace = true }
 phantom-overlay = { workspace = true }
 phantom-semantic = { workspace = true }
 anyhow = { workspace = true }
+diffy = { workspace = true }
 chrono = { workspace = true }
 libc = { workspace = true }
 nix = { workspace = true }

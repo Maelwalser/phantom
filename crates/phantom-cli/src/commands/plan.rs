@@ -365,10 +365,19 @@ async fn dispatch_domain(
         upper_dir.clone()
     };
 
+    // Extract cross-domain signatures for token-efficient context injection.
+    let cross_domain_sigs =
+        phantom_session::signatures::extract_cross_domain_signatures(&ctx.repo_root, domain, plan);
+    let sigs_ref = if cross_domain_sigs.is_empty() {
+        None
+    } else {
+        Some(cross_domain_sigs.as_str())
+    };
+
     // Generate the domain instruction file.
     let instructions_dir = plan_dir.join("instructions");
     let instructions_path = instructions_dir.join(format!("{}.md", domain.agent_id));
-    context_file::write_plan_domain_instructions(&instructions_path, domain, plan)?;
+    context_file::write_plan_domain_instructions(&instructions_path, domain, plan, sigs_ref)?;
 
     // Write context file into overlay.
     context_file::write_context_file(
