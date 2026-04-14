@@ -4,6 +4,7 @@ use chrono::Utc;
 use phantom_core::id::{AgentId, ChangesetId, SymbolId};
 use phantom_events::EventQuery;
 
+use super::agent_color::AgentPalette;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
@@ -54,17 +55,19 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let mut palette = AgentPalette::new();
+    let dim = console::Style::new().dim();
+
     for event in &events {
-        let ts = event.timestamp.format("%Y-%m-%d %H:%M:%S");
+        let ts = dim.apply_to(event.timestamp.format("%Y-%m-%d %H:%M:%S"));
+        let agent_style = palette.style_for(&event.agent_id.0).clone();
+        let agent = agent_style.apply_to(&event.agent_id.0);
         if args.verbose {
             let kind_summary = format_event_kind(&event.kind);
-            println!(
-                "[{ts}] {} {} {kind_summary}",
-                event.changeset_id, event.agent_id
-            );
+            println!("{ts}  {agent}  {kind_summary}");
         } else {
             let label = event_kind_label(&event.kind);
-            println!("[{ts}] {} {label}", event.changeset_id);
+            println!("{ts}  {agent}  {label}");
         }
     }
 

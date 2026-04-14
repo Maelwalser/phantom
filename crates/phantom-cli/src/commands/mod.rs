@@ -1,3 +1,4 @@
+pub mod agent_color;
 pub mod agent_monitor;
 pub mod background;
 pub mod changes;

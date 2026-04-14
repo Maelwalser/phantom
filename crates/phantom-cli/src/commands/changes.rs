@@ -3,7 +3,9 @@
 use phantom_core::id::AgentId;
 use phantom_core::EventKind;
 use phantom_events::EventQuery;
+use phantom_orchestrator::git::{GitOps, git_oid_to_oid};
 
+use super::agent_color::AgentPalette;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
@@ -46,13 +48,17 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let git = ctx.open_git().ok();
+
+    let mut palette = AgentPalette::new();
+    let dim = console::Style::new().dim();
+
     for event in &events {
-        let ts = event.timestamp.format("%Y-%m-%d %H:%M:%S");
-        let (label, detail) = format_change(&event.kind);
-        println!(
-            "  {ts}  {label:<14} {}  {}  {detail}",
-            event.changeset_id, event.agent_id
-        );
+        let ts = dim.apply_to(event.timestamp.format("%Y-%m-%d %H:%M:%S"));
+        let agent_style = palette.style_for(&event.agent_id.0).clone();
+        let agent = agent_style.apply_to(&event.agent_id.0);
+        let (label, detail) = format_change(&event.kind, git.as_ref());
+        println!("  {ts}  {label:<14} {agent}  {detail}");
     }
 
     if let Some(ref agent) = args.agent {
@@ -64,8 +70,11 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Format a submit or materialization event into a label and detail string.
-fn format_change(kind: &EventKind) -> (&'static str, String) {
+/// Format a submit or materialization event into a styled label and detail string.
+fn format_change(
+    kind: &EventKind,
+    git: Option<&GitOps>,
+) -> (console::StyledObject<&'static str>, String) {
     match kind {
         EventKind::ChangesetSubmitted { operations } => {
             let count = operations.len();
@@ -74,13 +83,25 @@ fn format_change(kind: &EventKind) -> (&'static str, String) {
             } else {
                 format!("{count} operations")
             };
-            ("SUBMITTED", summary)
+            (console::style("SUBMITTED").yellow(), summary)
         }
         EventKind::ChangesetMaterialized { new_commit } => {
-            let hex = new_commit.to_hex();
-            let short = &hex[..12.min(hex.len())];
-            ("MATERIALIZED", format!("commit {short}"))
+            let message = git.and_then(|g| {
+                let oid = git_oid_to_oid(new_commit).ok()?;
+                let commit = g.repo().find_commit(oid).ok()?;
+                commit.summary().map(String::from)
+            });
+
+            let detail = match message {
+                Some(msg) => msg,
+                None => {
+                    let hex = new_commit.to_hex();
+                    let short = &hex[..12.min(hex.len())];
+                    format!("commit {short}")
+                }
+            };
+            (console::style("MATERIALIZED").green(), detail)
         }
-        _ => ("UNKNOWN", String::new()),
+        _ => (console::style("UNKNOWN").dim(), String::new()),
     }
 }
