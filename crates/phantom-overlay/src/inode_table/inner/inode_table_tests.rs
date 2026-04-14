@@ -76,3 +76,57 @@ fn rename_directory_does_not_affect_siblings() {
         "sibling 'ab' must not be affected by renaming 'a'"
     );
 }
+
+#[test]
+fn rename_directory_does_not_panic_on_dotted_sibling() {
+    // "dir.txt" shares a byte-prefix with "dir/" but is NOT a child.
+    // PathBuf component ordering places "dir.txt" inside the BTreeMap
+    // range ["dir/".."dir0") because '.' (0x2E) < '0' (0x30).
+    // The rename must not panic on strip_prefix failure.
+    let table = InodeTable::new();
+    let dir = PathBuf::from("dir");
+    let child = PathBuf::from("dir/child.rs");
+    let dotted_sibling = PathBuf::from("dir.txt");
+
+    let dir_ino = table.get_or_create_inode(&dir);
+    let child_ino = table.get_or_create_inode(&child);
+    let sib_ino = table.get_or_create_inode(&dotted_sibling);
+
+    let new_dir = PathBuf::from("newdir");
+    table.rename(&dir, &new_dir);
+
+    // Directory and child are rekeyed.
+    assert_eq!(table.get_path(dir_ino), Some(PathBuf::from("newdir")));
+    assert_eq!(table.get_path(child_ino), Some(PathBuf::from("newdir/child.rs")));
+
+    // Dotted sibling must be completely untouched.
+    assert_eq!(
+        table.get_path(sib_ino),
+        Some(PathBuf::from("dir.txt")),
+        "sibling 'dir.txt' must not be affected by renaming 'dir'"
+    );
+}
+
+#[test]
+fn rename_directory_does_not_affect_hyphenated_sibling() {
+    // "foo-baz" has '-' (0x2D) which is < '0' (0x30), so it also
+    // falls inside the BTreeMap range when renaming "foo".
+    let table = InodeTable::new();
+    let dir = PathBuf::from("foo");
+    let child = PathBuf::from("foo/bar");
+    let hyphen_sibling = PathBuf::from("foo-baz");
+
+    table.get_or_create_inode(&dir);
+    let child_ino = table.get_or_create_inode(&child);
+    let sib_ino = table.get_or_create_inode(&hyphen_sibling);
+
+    let new_dir = PathBuf::from("qux");
+    table.rename(&dir, &new_dir);
+
+    assert_eq!(table.get_path(child_ino), Some(PathBuf::from("qux/bar")));
+    assert_eq!(
+        table.get_path(sib_ino),
+        Some(PathBuf::from("foo-baz")),
+        "sibling 'foo-baz' must not be affected by renaming 'foo'"
+    );
+}

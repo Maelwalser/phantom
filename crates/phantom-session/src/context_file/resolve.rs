@@ -16,6 +16,11 @@ use super::{lang_from_path, CONTEXT_FILE};
 const WHOLE_FILE_BYTE_BUDGET: usize = 32_768;
 const BYTES_PER_TOKEN_ESTIMATE: usize = 4;
 
+/// Maximum byte size for content passed to `diffy::create_patch`.
+/// Myers diff is O(ND); beyond this threshold, diffing can lock the CPU
+/// and the LLM cannot process the output anyway.
+const MAX_DIFF_BYTE_SIZE: usize = 250_000;
+
 /// Context for a single conflict, with the three-way file content.
 pub struct ResolveConflictContext {
     /// The conflict detail from the event log.
@@ -143,13 +148,20 @@ pub fn write_resolve_context_file(
                 | phantom_core::ConflictKind::BothModifiedDependencyVersion
         );
 
-        let used_compact = if is_symbol_conflict {
-            write_compact_conflict(&mut content, lang, conflict, base_short, &parser)
-        } else if is_text_conflict {
-            write_compact_raw_text_conflict(&mut content, lang, conflict, base_short)
-        } else {
-            false
-        };
+        let mut used_compact = false;
+
+        if is_symbol_conflict {
+            used_compact =
+                write_compact_conflict(&mut content, lang, conflict, base_short, &parser);
+        }
+
+        // Graceful degradation: if AST parsing failed (unsupported language,
+        // parse error, missing span), try raw text diff before the expensive
+        // three-block fallback.
+        if !used_compact && (is_symbol_conflict || is_text_conflict) {
+            used_compact =
+                write_compact_raw_text_conflict(&mut content, lang, conflict, base_short);
+        }
 
         if !used_compact {
             // Fallback: three full code blocks.
@@ -324,6 +336,13 @@ fn write_compact_raw_text_conflict(
         _ => return false,
     };
 
+    if base_content.len() > MAX_DIFF_BYTE_SIZE
+        || ours_content.len() > MAX_DIFF_BYTE_SIZE
+        || theirs_content.len() > MAX_DIFF_BYTE_SIZE
+    {
+        return false;
+    }
+
     // Diffs include 3-line context around each change — the full BASE is redundant
     // and would waste tokens. The agent can use the Read tool if broader context is needed.
     write_diff_section(
@@ -408,12 +427,14 @@ fn extract_span_lines_fallback(
 ) -> String {
     let start = span.start_line.saturating_sub(10).max(1) - 1; // zero-indexed
     let count = span.end_line + 10 - start;
-    content
-        .lines()
-        .skip(start)
-        .take(count)
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = String::with_capacity(count * 40);
+    for (i, line) in content.lines().skip(start).take(count).enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// Truncate content to fit within the token budget, breaking at the last

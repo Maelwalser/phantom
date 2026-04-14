@@ -154,12 +154,16 @@ mod inner {
             *end_bytes.last_mut().unwrap() = b'/' + 1; // 0x2F → 0x30
             let end_key = PathBuf::from(OsString::from_vec(end_bytes));
 
+            // PathBuf::Ord compares by components, not raw bytes.
+            // Siblings like "dir.txt" can fall inside the range because
+            // '.' (0x2E) < '0' (0x30) at the component level.  Use
+            // filter_map so non-children are silently skipped.
             let children: Vec<(PathBuf, PathBuf)> = inner
                 .path_to_ino
                 .range(start_key..end_key)
-                .map(|(p, _)| {
-                    let suffix = p.strip_prefix(old_path).unwrap();
-                    (p.clone(), new_path.join(suffix))
+                .filter_map(|(p, _)| {
+                    let suffix = p.strip_prefix(old_path).ok()?;
+                    Some((p.clone(), new_path.join(suffix)))
                 })
                 .collect();
             for (old_child, new_child) in children {

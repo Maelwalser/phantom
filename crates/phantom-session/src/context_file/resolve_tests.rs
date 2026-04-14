@@ -457,6 +457,88 @@ fn resolve_rules_file_contains_all_rules() {
 }
 
 #[test]
+fn raw_text_compact_falls_back_for_oversized_content() {
+    use phantom_core::conflict::{ConflictDetail, ConflictKind};
+    use phantom_core::id::ChangesetId;
+
+    let big = "x".repeat(300_000);
+    let conflict = ResolveConflictContext {
+        detail: ConflictDetail {
+            kind: ConflictKind::RawTextConflict,
+            file: std::path::PathBuf::from("package-lock.json"),
+            symbol_id: None,
+            ours_changeset: ChangesetId("cs-1".into()),
+            theirs_changeset: ChangesetId("cs-2".into()),
+            description: "conflict in large file".into(),
+            base_span: None,
+            ours_span: None,
+            theirs_span: None,
+        },
+        base_content: Some(big.clone()),
+        ours_content: Some(big.clone()),
+        theirs_content: Some(big),
+    };
+
+    let mut out = String::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "json", &conflict, "abc");
+    assert!(!ok, "should fall back for oversized content (>250KB)");
+}
+
+#[test]
+fn symbol_conflict_cascades_to_raw_text_on_parse_failure() {
+    use phantom_core::conflict::{ConflictDetail, ConflictKind};
+    use phantom_core::id::ChangesetId;
+
+    let dir = tempfile::tempdir().unwrap();
+    let agent_id = phantom_core::id::AgentId("test".to_string());
+    let changeset_id = phantom_core::id::ChangesetId("cs-1".to_string());
+    let base_commit = phantom_core::id::GitOid([0u8; 20]);
+
+    let base = "key = 1\n";
+    let ours = "key = 2\n";
+    let theirs = "key = 3\n";
+
+    // Use BothModifiedSymbol with an unsupported file extension so
+    // write_compact_conflict fails, then verify raw text diff is used.
+    let conflicts = vec![ResolveConflictContext {
+        detail: ConflictDetail {
+            kind: ConflictKind::BothModifiedSymbol,
+            file: std::path::PathBuf::from("config.unknown"),
+            symbol_id: None,
+            ours_changeset: ChangesetId("cs-1".into()),
+            theirs_changeset: ChangesetId("cs-2".into()),
+            description: "both modified config".into(),
+            base_span: None,
+            ours_span: None,
+            theirs_span: None,
+        },
+        base_content: Some(base.into()),
+        ours_content: Some(ours.into()),
+        theirs_content: Some(theirs.into()),
+    }];
+
+    write_resolve_context_file(
+        dir.path(),
+        &agent_id,
+        &changeset_id,
+        &base_commit,
+        &conflicts,
+    )
+    .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
+    // Should cascade to raw text diff, not the three-block fallback.
+    assert!(
+        content.contains("```diff"),
+        "should cascade to raw text diff"
+    );
+    assert!(
+        !content.contains("#### BASE"),
+        "should not fall through to three-block dump"
+    );
+}
+
+#[test]
 fn resolve_context_file_excludes_rules() {
     let dir = tempfile::tempdir().unwrap();
     let agent_id = phantom_core::id::AgentId("test".to_string());
