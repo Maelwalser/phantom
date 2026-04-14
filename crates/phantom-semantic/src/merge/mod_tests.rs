@@ -320,6 +320,39 @@ fn both_sides_add_at_different_positions() {
 }
 
 #[test]
+fn adjacent_insertions_at_zero_byte_boundary_preserve_order() {
+    // One side adds a function after `first` (prepend=false, anchored to prev
+    // sibling end) and a use statement before `first` (prepend=true, anchored
+    // to next sibling start).  When both anchors resolve to the same byte
+    // position, the non-prepend content must appear before the prepend content.
+    let base = b"fn first() { 1 }\nfn second() { 2 }\n";
+    // Ours adds a helper between first and second, plus a use before first.
+    let ours = b"use std::io;\nfn first() { 1 }\nfn helper() { 0 }\nfn second() { 2 }\n";
+    let theirs = base;
+
+    let result = merger()
+        .three_way_merge(base, ours, theirs, Path::new("test.rs"))
+        .unwrap();
+
+    match result {
+        MergeResult::Clean(merged) => {
+            let text = String::from_utf8_lossy(&merged);
+            assert!(text.contains("std::io"), "should include use statement");
+            assert!(text.contains("helper"), "should include helper function");
+            let pos_use = text.find("std::io").unwrap();
+            let pos_first = text.find("first").unwrap();
+            let pos_helper = text.find("helper").unwrap();
+            let pos_second = text.find("second").unwrap();
+            assert!(
+                pos_use < pos_first && pos_first < pos_helper && pos_helper < pos_second,
+                "order should be: use < first < helper < second, got: {text:?}"
+            );
+        }
+        MergeResult::Conflict(c) => panic!("expected clean merge, got conflicts: {c:?}"),
+    }
+}
+
+#[test]
 fn multiple_functions_added_after_same_anchor_preserve_order() {
     // Two new functions added sequentially after the same anchor — their
     // relative order must be preserved in the merged output.

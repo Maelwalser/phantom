@@ -299,10 +299,10 @@ pub(super) fn reconstruct_merged_file(
     insertions.sort_by(|a, b| {
         b.after_output_pos
             .cmp(&a.after_output_pos)
-            // At same position: non-prepend (anchored to prev sibling end)
-            // before prepend (anchored to next sibling start) in iteration
-            // order, so prepend content ends up earlier in the output.
-            .then(a.prepend.cmp(&b.prepend))
+            // At same position: prepend (anchored to next sibling start)
+            // spliced first so it gets pushed right by the non-prepend
+            // splice, yielding [non-prepend][prepend] in output order.
+            .then(b.prepend.cmp(&a.prepend))
             // Within same position and prepend: higher original_index
             // spliced first → pushed right by later splices → source order
             // is preserved in the output.
