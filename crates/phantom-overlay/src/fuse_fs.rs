@@ -144,6 +144,11 @@ mod inner {
         /// (the old destination is being overwritten by POSIX rename
         /// semantics).
         fn rename(&self, old_path: &PathBuf, new_path: &PathBuf) {
+            // POSIX: renaming a path to itself is a no-op.
+            if old_path == new_path {
+                return;
+            }
+
             let mut inner = self.inner.write().unwrap();
 
             // The destination is being overwritten (POSIX rename semantics).
@@ -904,37 +909,48 @@ mod inner {
 
             let child_path = parent_path.join(name);
             let mut layer = self.layer.write().unwrap();
-            let is_passthrough = layer.is_passthrough(&child_path);
 
-            let target_path = if is_passthrough {
-                layer.lower_dir().join(&child_path)
-            } else {
-                layer.upper_dir().join(&child_path)
-            };
-
-            if target_path.is_dir() {
-                // Use remove_dir (not remove_dir_all) — POSIX rmdir fails on non-empty.
-                match std::fs::remove_dir(&target_path) {
-                    Ok(()) => {
-                        if !is_passthrough {
-                            // Add whiteout so the dir is hidden even if it exists in lower layer.
-                            let _ = layer.delete_file(&child_path);
-                        }
-                        self.inodes.unlink(&child_path);
-                        drop(layer);
-                        reply.ok();
-                    }
-                    Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) => {
-                        reply.error(Errno::ENOTEMPTY);
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "rmdir failed");
-                        reply.error(Errno::EIO);
-                    }
-                }
-            } else {
-                reply.error(Errno::ENOENT);
+            // Passthrough directories (e.g. .git) must not be removed via the overlay.
+            if layer.is_passthrough(&child_path) {
+                reply.error(Errno::EPERM);
+                return;
             }
+
+            // Check the merged view — the directory must exist in the overlay.
+            if !layer.exists(&child_path) {
+                reply.error(Errno::ENOENT);
+                return;
+            }
+
+            // POSIX: rmdir must fail with ENOTEMPTY if the directory is non-empty.
+            // Evaluate the merged view (upper + lower minus whiteouts).
+            match layer.read_dir(&child_path) {
+                Ok(entries) if !entries.is_empty() => {
+                    reply.error(Errno::ENOTEMPTY);
+                    return;
+                }
+                Err(_) => {
+                    reply.error(Errno::EIO);
+                    return;
+                }
+                Ok(_) => {} // empty — proceed
+            }
+
+            // Remove the upper-layer copy if it exists.
+            let upper_path = layer.upper_dir().join(&child_path);
+            if upper_path.is_dir()
+                && let Err(e) = std::fs::remove_dir(&upper_path)
+            {
+                warn!(error = %e, "rmdir: failed to remove upper directory");
+                reply.error(Errno::EIO);
+                return;
+            }
+
+            // Write whiteout to hide any lower-layer copy.
+            let _ = layer.delete_file(&child_path);
+            self.inodes.unlink(&child_path);
+            drop(layer);
+            reply.ok();
         }
 
         fn release(
@@ -1059,6 +1075,24 @@ mod inner {
             assert_eq!(names.len(), 52);
             let unique: std::collections::HashSet<&String> = names.iter().collect();
             assert_eq!(unique.len(), 52, "readdir produced duplicate entries");
+        }
+
+        #[test]
+        fn rename_self_is_noop() {
+            let table = InodeTable::new();
+            let path = PathBuf::from("some/file.txt");
+            let ino = table.get_or_create_inode(&path);
+
+            // Rename to self must not corrupt the inode table.
+            table.rename(&path, &path);
+
+            // The inode must still be reachable via path lookup.
+            assert_eq!(table.get_or_create_inode(&path), ino, "inode changed after self-rename");
+            assert_eq!(
+                table.get_path(ino),
+                Some(path),
+                "path lookup broken after self-rename"
+            );
         }
     }
 }
