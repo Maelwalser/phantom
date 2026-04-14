@@ -1,30 +1,33 @@
 use super::*;
 
 #[test]
-fn truncate_to_token_budget_under_budget_is_identity() {
+fn write_truncated_under_budget_is_identity() {
     let text = "fn main() {}\n";
-    assert_eq!(truncate_to_token_budget(text), text);
+    let mut out = String::new();
+    write_truncated(&mut out, text);
+    assert_eq!(out, text);
 }
 
 #[test]
-fn truncate_to_token_budget_over_budget_cuts_at_line() {
+fn write_truncated_over_budget_cuts_at_line() {
     // Build a string larger than WHOLE_FILE_BYTE_BUDGET.
     let line = "x".repeat(100) + "\n";
     let count = (WHOLE_FILE_BYTE_BUDGET / line.len()) + 10;
     let text: String = line.repeat(count);
     assert!(text.len() > WHOLE_FILE_BYTE_BUDGET);
 
-    let result = truncate_to_token_budget(&text);
-    assert!(result.len() < text.len());
-    assert!(result.contains("// ... truncated (~"));
-    assert!(result.contains("more tokens)"));
+    let mut out = String::new();
+    write_truncated(&mut out, &text);
+    assert!(out.len() < text.len());
+    assert!(out.contains("// ... truncated (~"));
+    assert!(out.contains("more tokens)"));
     // The cut should be at a newline boundary — no partial lines.
-    let before_comment = result.split("// ... truncated").next().unwrap();
+    let before_comment = out.split("// ... truncated").next().unwrap();
     assert!(before_comment.ends_with('\n'));
 }
 
 #[test]
-fn extract_span_context_uses_semantic_for_rust() {
+fn write_span_context_uses_semantic_for_rust() {
     let src = "struct Foo {}\n\nfn target() {\n    let x = 1;\n    let y = 2;\n}\n\nfn other() {}\n";
     let span = phantom_core::conflict::ConflictSpan {
         byte_range: 28..39, // inside "fn target()"
@@ -32,7 +35,8 @@ fn extract_span_context_uses_semantic_for_rust() {
         end_line: 4,
     };
     let parser = phantom_semantic::Parser::new();
-    let result = extract_span_context(src, &span, Path::new("test.rs"), &parser);
+    let mut result = String::new();
+    write_span_context(&mut result, src, &span, Path::new("test.rs"), &parser);
     // Should return the entire fn target() body, not just ±10 lines.
     assert!(result.contains("fn target()"));
     assert!(result.contains("let x = 1;"));
@@ -43,7 +47,7 @@ fn extract_span_context_uses_semantic_for_rust() {
 }
 
 #[test]
-fn extract_span_context_falls_back_for_unsupported_lang() {
+fn write_span_context_falls_back_for_unsupported_lang() {
     let src = "line1\nline2\nline3\nline4\nline5\n";
     let span = phantom_core::conflict::ConflictSpan {
         byte_range: 6..11,
@@ -51,7 +55,8 @@ fn extract_span_context_falls_back_for_unsupported_lang() {
         end_line: 2,
     };
     let parser = phantom_semantic::Parser::new();
-    let result = extract_span_context(src, &span, Path::new("config.toml"), &parser);
+    let mut result = String::new();
+    write_span_context(&mut result, src, &span, Path::new("config.toml"), &parser);
     // Fallback path: should include surrounding lines.
     assert!(result.contains("line1"));
     assert!(result.contains("line2"));

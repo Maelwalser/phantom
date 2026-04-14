@@ -398,62 +398,64 @@ fn write_diff_section(
     writeln!(out).unwrap();
 }
 
-/// Extract the enclosing AST node for a conflict span, falling back to ±10
-/// line padding for unsupported languages or when no symbol encloses the span.
-fn extract_span_context(
+/// Write the enclosing AST node for a conflict span directly to `out`,
+/// falling back to ±10 line padding for unsupported languages or when no
+/// symbol encloses the span.
+fn write_span_context(
+    out: &mut String,
     content: &str,
     span: &phantom_core::conflict::ConflictSpan,
     file_path: &Path,
     parser: &phantom_semantic::Parser,
-) -> String {
+) {
     if parser.supports_language(file_path)
         && let Ok(symbols) = parser.parse_file(file_path, content.as_bytes())
         && let Some(enclosing) = find_enclosing_symbol(&symbols, &span.byte_range)
     {
         let start = enclosing.byte_range.start;
         let end = enclosing.byte_range.end.min(content.len());
-        return content[start..end].to_string();
+        out.push_str(&content[start..end]);
+        return;
     }
-    extract_span_lines_fallback(content, span)
+    write_span_lines_fallback(out, content, span);
 }
 
-/// Fallback: extract lines around a conflict span with ±10 line padding.
-///
-/// Uses iterator chaining to avoid collecting the entire file into memory —
-/// only the ~20 lines around the span are allocated.
-fn extract_span_lines_fallback(
+/// Fallback: write lines around a conflict span with ±10 line padding
+/// directly to `out`.
+fn write_span_lines_fallback(
+    out: &mut String,
     content: &str,
     span: &phantom_core::conflict::ConflictSpan,
-) -> String {
+) {
     let start = span.start_line.saturating_sub(10).max(1) - 1; // zero-indexed
     let count = span.end_line + 10 - start;
-    let mut out = String::with_capacity(count * 40);
     for (i, line) in content.lines().skip(start).take(count).enumerate() {
         if i > 0 {
             out.push('\n');
         }
         out.push_str(line);
     }
-    out
 }
 
-/// Truncate content to fit within the token budget, breaking at the last
-/// complete line before the byte limit.
-fn truncate_to_token_budget(text: &str) -> String {
+/// Write content to `out`, truncating at the token budget boundary if needed.
+/// Breaks at the last complete line before the byte limit.
+fn write_truncated(out: &mut String, text: &str) {
+    use std::fmt::Write;
+
     if text.len() <= WHOLE_FILE_BYTE_BUDGET {
-        return text.to_string();
+        out.push_str(text);
+    } else {
+        let cut = text[..WHOLE_FILE_BYTE_BUDGET]
+            .rfind('\n')
+            .unwrap_or(WHOLE_FILE_BYTE_BUDGET);
+        out.push_str(&text[..cut]);
+        let remaining_tokens = (text.len() - cut) / BYTES_PER_TOKEN_ESTIMATE;
+        write!(out, "\n// ... truncated (~{remaining_tokens} more tokens)").unwrap();
     }
-    let cut = text[..WHOLE_FILE_BYTE_BUDGET]
-        .rfind('\n')
-        .unwrap_or(WHOLE_FILE_BYTE_BUDGET);
-    let remaining_tokens = (text.len() - cut) / BYTES_PER_TOKEN_ESTIMATE;
-    format!(
-        "{}\n// ... truncated (~{remaining_tokens} more tokens)",
-        &text[..cut]
-    )
 }
 
 /// Write a fenced code block, trimming to span if available.
+/// Streams content directly into `out` without intermediate String allocations.
 fn write_code_block(
     out: &mut String,
     lang: &str,
@@ -466,12 +468,12 @@ fn write_code_block(
 
     match content {
         Some(text) => {
-            let display = match span {
-                Some(s) => extract_span_context(text, s, file_path, parser),
-                None => truncate_to_token_budget(text),
-            };
             writeln!(out, "```{lang}").unwrap();
-            writeln!(out, "{display}").unwrap();
+            match span {
+                Some(s) => write_span_context(out, text, s, file_path, parser),
+                None => write_truncated(out, text),
+            }
+            out.push('\n');
             writeln!(out, "```").unwrap();
         }
         None => {
