@@ -129,8 +129,8 @@ pub fn write_plan_domain_instructions(
     let _ = writeln!(
         content,
         "When all requirements are met and verification passes, your work will \
-         be automatically submitted and materialized. Do not run `phantom submit` \
-         or `phantom materialize` manually."
+         be automatically submitted and merged to trunk. Do not run `phantom submit` \
+         manually."
     );
 
     // Ensure parent directory exists.

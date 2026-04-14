@@ -181,7 +181,6 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
         &changeset.id,
         task,
         &work_dir,
-        true, // auto_materialize
         Some(&rules_path),
     )?;
 

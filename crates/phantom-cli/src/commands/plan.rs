@@ -27,9 +27,9 @@ pub struct PlanArgs {
     /// Show the plan without dispatching
     #[arg(long)]
     pub dry_run: bool,
-    /// Don't auto-materialize (just auto-submit)
+    /// Don't auto-submit (agents will wait for manual submit)
     #[arg(long)]
-    pub no_materialize: bool,
+    pub no_submit: bool,
 }
 
 pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
@@ -98,7 +98,6 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
 
     // Step 6: Dispatch agents.
     let mut plan = plan;
-    let auto_materialize = !args.no_materialize;
     let mut dispatched_agents = Vec::new();
     let mut overlays = ctx.open_overlays_restored()?;
 
@@ -110,7 +109,6 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
             &plan,
             domain,
             &plan_dir,
-            auto_materialize,
         )
         .await?;
         dispatched_agents.push(AgentId(domain.agent_id.clone()));
@@ -308,7 +306,6 @@ async fn dispatch_domain(
     plan: &Plan,
     domain: &PlanDomain,
     plan_dir: &Path,
-    auto_materialize: bool,
 ) -> anyhow::Result<()> {
     let agent_id = AgentId(domain.agent_id.clone());
     let git = ctx.open_git()?;
@@ -396,7 +393,6 @@ async fn dispatch_domain(
         &cs_id,
         &domain.description,
         &work_dir,
-        auto_materialize,
         Some(&instructions_path),
     )?;
 

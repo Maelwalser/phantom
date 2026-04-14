@@ -30,8 +30,7 @@ You are working inside a Phantom overlay. Your changes are isolated from
 trunk and other agents.
 
 ## Commands
-- `phantom submit {agent_id}` -- submit your changes
-- `phantom materialize {changeset_id}` -- merge to trunk
+- `phantom submit {agent_id}` -- submit your changes and merge to trunk
 - `phantom status` -- view all agents and changesets
 
 ## Agent Info

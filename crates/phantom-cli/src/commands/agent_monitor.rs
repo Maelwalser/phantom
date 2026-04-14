@@ -1,6 +1,6 @@
 //! `phantom _agent-monitor` -- hidden subcommand that spawns and monitors a
-//! background agent process, then runs post-completion automation (submit +
-//! materialize).
+//! background agent process, then runs post-completion automation (submit,
+//! which includes materialization to trunk).
 //!
 //! Spawned by `phantom <agent> --background`. The monitor is the parent of the
 //! claude process so it can `waitpid` to get the real exit code.
@@ -35,9 +35,6 @@ pub struct AgentMonitorArgs {
     /// Repository root
     #[arg(long)]
     pub repo_root: String,
-    /// Automatically materialize after submitting
-    #[arg(long)]
-    pub auto_materialize: bool,
     /// Path to a system prompt file to append to the claude invocation
     #[arg(long)]
     pub system_prompt_file: Option<String>,
@@ -116,9 +113,8 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     };
     events.append(launch_event).await?;
 
-    // Run post-completion flow: always auto-submit on success, optionally auto-materialize.
-    let result =
-        run_post_completion(&agent_id, &changeset_id, exit_code, args.auto_materialize).await;
+    // Run post-completion flow: always auto-submit on success.
+    let result = run_post_completion(&agent_id, &changeset_id, exit_code).await;
 
     // Write status file regardless of success/failure.
     let status = match &result {
@@ -203,16 +199,15 @@ fn spawn_and_wait_claude(
     Ok((claude_pid, exit_code))
 }
 
-/// Run the post-completion flow: record completion, then auto-submit (and
-/// optionally auto-materialize) on success.
+/// Run the post-completion flow: record completion, then auto-submit on
+/// success (submit now includes materialization).
 ///
-/// Returns `Ok(true)` if the changeset was materialized, `Ok(false)` if it was
-/// only submitted (or the agent had no changes).
+/// Returns `Ok(true)` if the changeset was submitted and materialized,
+/// `Ok(false)` if the agent had no changes.
 async fn run_post_completion(
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
     exit_code: Option<i32>,
-    auto_materialize: bool,
 ) -> anyhow::Result<bool> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
@@ -247,7 +242,7 @@ async fn run_post_completion(
         );
     }
 
-    // Background agents always auto-submit on success.
+    // Background agents always auto-submit on success (submit includes materialization).
     phantom_session::post_session::post_session_flow(
         phantom_session::post_session::PostSessionContext {
             phantom_dir: &ctx.phantom_dir,
@@ -256,11 +251,10 @@ async fn run_post_completion(
             overlays: &mut overlays,
             agent_id,
             changeset_id,
-            auto_submit: true, // always true for background agents
-            auto_materialize,
+            auto_submit: true,
         },
     )
     .await?;
 
-    Ok(auto_materialize)
+    Ok(true)
 }

@@ -1,20 +1,21 @@
 //! Post-session automation: submit + materialize flow.
 //!
 //! Shared logic used by both interactive sessions and background agent monitors
-//! to auto-submit and auto-materialize changesets after an agent finishes work.
+//! to auto-submit changesets after an agent finishes work. Submit now includes
+//! materialization (merge to trunk + ripple to other agents).
 
 use std::path::Path;
 
 use phantom_core::id::{AgentId, ChangesetId};
 use phantom_core::traits::EventStore;
-use phantom_orchestrator::materializer::MaterializeResult;
+use phantom_orchestrator::materializer::{MaterializeResult, Materializer};
 use phantom_orchestrator::submit_service;
 use phantom_overlay::OverlayManager;
 use phantom_semantic::SemanticMerger;
 
 use crate::context_file;
 
-/// Context for post-session submit and materialize automation.
+/// Context for post-session submit automation.
 ///
 /// Groups the parameters that [`post_session_flow`] needs, keeping the function
 /// independent of the CLI layer while providing a named, self-documenting API.
@@ -26,13 +27,12 @@ pub struct PostSessionContext<'a> {
     pub agent_id: &'a AgentId,
     pub changeset_id: &'a ChangesetId,
     pub auto_submit: bool,
-    pub auto_materialize: bool,
 }
 
-/// Handle post-session submit and materialize automation.
+/// Handle post-session submit automation.
 ///
 /// Checks the overlay for modifications and optionally submits and materializes
-/// the changeset.
+/// the changeset in a single step.
 pub async fn post_session_flow(ctx: PostSessionContext<'_>) -> anyhow::Result<()> {
     let layer = ctx.overlays.get_layer(ctx.agent_id)?;
 
@@ -46,72 +46,17 @@ pub async fn post_session_flow(ctx: PostSessionContext<'_>) -> anyhow::Result<()
     println!("{} file(s) modified in overlay.", modified.len());
 
     let agent_id = ctx.agent_id;
-    let changeset_id = ctx.changeset_id;
 
     if !ctx.auto_submit {
-        println!(
-            "Run `phantom submit {agent_id}` to submit, then `phantom materialize {changeset_id}` to merge."
-        );
+        println!("Run `phantom submit {agent_id}` to submit and merge to trunk.");
         return Ok(());
     }
 
-    // Auto-submit
+    // Auto-submit (which now includes materialization).
     println!("Auto-submitting changeset...");
-    match submit_overlay(ctx.phantom_dir, ctx.repo_root, ctx.events, ctx.overlays, agent_id).await?
-    {
+    match submit_and_materialize_overlay(ctx.phantom_dir, ctx.repo_root, ctx.events, ctx.overlays, agent_id).await? {
         Some(cs_id) => {
             println!("Changeset {cs_id} submitted.");
-
-            if ctx.auto_materialize {
-                println!("Auto-materializing...");
-                let output = materialize_changeset(
-                    ctx.phantom_dir,
-                    ctx.repo_root,
-                    ctx.events,
-                    ctx.overlays,
-                    &cs_id,
-                    &agent_id.0,
-                )
-                .await?;
-                match output.result {
-                    MaterializeResult::Success {
-                        new_commit,
-                        text_fallback_files,
-                    } => {
-                        let hex = new_commit.to_hex();
-                        let short = &hex[..12.min(hex.len())];
-                        println!("Materialized {cs_id} -> commit {short}");
-                        if !text_fallback_files.is_empty() {
-                            eprintln!(
-                                "  Warning: {} file(s) merged via line-based fallback (no syntax validation)",
-                                text_fallback_files.len()
-                            );
-                        }
-                    }
-                    MaterializeResult::Conflict { details } => {
-                        eprintln!("Materialization failed with {} conflict(s):", details.len());
-                        for detail in &details {
-                            eprintln!(
-                                "  [{:?}] {} -- {}",
-                                detail.kind,
-                                detail.file.display(),
-                                detail.description
-                            );
-                        }
-                        eprintln!();
-                        eprintln!(
-                            "The changeset has been submitted but could not be materialized."
-                        );
-                        eprintln!(
-                            "Run `phantom resolve {agent_id}` to attempt resolution, or \
-                             `phantom rollback --changeset {cs_id}` to drop it."
-                        );
-                        anyhow::bail!("materialization failed due to conflicts");
-                    }
-                }
-            } else {
-                println!("Run `phantom materialize {cs_id}` to merge to trunk.");
-            }
         }
         None => {
             println!("No changes to submit (files may have been reverted).");
@@ -133,11 +78,11 @@ pub fn cleanup_context_files(work_dir: &Path, overlays: &OverlayManager, agent_i
 // Internal helpers wrapping orchestrator services
 // ---------------------------------------------------------------------------
 
-/// Submit an agent's overlay work as a changeset.
+/// Submit an agent's overlay work and materialize it to trunk.
 ///
-/// Returns `Some(changeset_id)` if changes were found and submitted,
+/// Returns `Some(changeset_id)` if changes were found and processed,
 /// or `None` if the overlay has no modifications.
-async fn submit_overlay(
+async fn submit_and_materialize_overlay(
     phantom_dir: &Path,
     repo_root: &Path,
     events: &dyn EventStore,
@@ -156,7 +101,17 @@ async fn submit_overlay(
         .map_err(|e| anyhow::anyhow!("failed to open git repo: {e}"))?;
     let analyzer = SemanticMerger::new();
 
-    let output = submit_service::submit_overlay(
+    let materializer = Materializer::new(
+        phantom_orchestrator::git::GitOps::open(repo_root)
+            .map_err(|e| anyhow::anyhow!("failed to open git repo for materialization: {e}"))?,
+    );
+
+    // Build the list of active overlays for ripple checking.
+    let active_overlays = build_active_overlays(events, overlays, agent_id).await?;
+
+    let message = &agent_id.0;
+
+    let output = submit_service::submit_and_materialize(
         &git,
         events,
         &analyzer,
@@ -164,6 +119,9 @@ async fn submit_overlay(
         layer,
         upper_dir,
         phantom_dir,
+        &materializer,
+        &active_overlays,
+        message,
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -172,55 +130,77 @@ async fn submit_overlay(
         Some(out) => {
             println!(
                 "  {} additions, {} modifications, {} deletions across {} file(s)",
-                out.additions,
-                out.modifications,
-                out.deletions,
-                out.modified_files.len()
+                out.submit.additions,
+                out.submit.modifications,
+                out.submit.deletions,
+                out.submit.modified_files.len()
             );
-            for f in &out.modified_files {
+            for f in &out.submit.modified_files {
                 println!("    {}", f.display());
             }
-            Ok(Some(out.changeset_id))
+
+            match out.materialize.result {
+                MaterializeResult::Success {
+                    new_commit,
+                    text_fallback_files,
+                } => {
+                    let hex = new_commit.to_hex();
+                    let short = &hex[..12.min(hex.len())];
+                    println!("Materialized {} -> commit {short}", out.submit.changeset_id);
+                    if !text_fallback_files.is_empty() {
+                        eprintln!(
+                            "  Warning: {} file(s) merged via line-based fallback (no syntax validation)",
+                            text_fallback_files.len()
+                        );
+                    }
+                }
+                MaterializeResult::Conflict { details } => {
+                    eprintln!("Submission failed with {} conflict(s):", details.len());
+                    for detail in &details {
+                        eprintln!(
+                            "  [{:?}] {} -- {}",
+                            detail.kind,
+                            detail.file.display(),
+                            detail.description
+                        );
+                    }
+                    eprintln!();
+                    eprintln!(
+                        "The changeset has been submitted but could not be merged."
+                    );
+                    eprintln!(
+                        "Run `phantom resolve {agent_id}` to attempt resolution, or \
+                         `phantom rollback --changeset {}` to drop it.",
+                        out.submit.changeset_id
+                    );
+                    anyhow::bail!("submission failed due to conflicts");
+                }
+            }
+
+            Ok(Some(out.submit.changeset_id))
         }
         None => Ok(None),
     }
 }
 
-/// Materialize a changeset to trunk.
-async fn materialize_changeset(
-    phantom_dir: &Path,
-    repo_root: &Path,
+/// Build the list of active overlays for ripple checking, excluding the
+/// submitting agent.
+async fn build_active_overlays(
     events: &dyn EventStore,
     overlays: &OverlayManager,
-    changeset_id: &ChangesetId,
-    message: &str,
-) -> anyhow::Result<phantom_orchestrator::materialization_service::MaterializeOutput> {
+    exclude_agent: &AgentId,
+) -> anyhow::Result<Vec<phantom_orchestrator::materialization_service::ActiveOverlay>> {
     use phantom_core::event::EventKind;
     use phantom_events::Projection;
-    use phantom_orchestrator::materialization_service::{self, ActiveOverlay};
-    use phantom_orchestrator::materializer::Materializer;
+    use phantom_orchestrator::materialization_service::ActiveOverlay;
 
     let all_events = events.query_all().await?;
     let projection = Projection::from_events(&all_events);
 
-    let changeset = projection
-        .changeset(changeset_id)
-        .ok_or_else(|| anyhow::anyhow!("changeset '{changeset_id}' not found"))?
-        .clone();
-
-    let upper_dir = overlays.upper_dir(&changeset.agent_id)?.to_path_buf();
-
-    let materializer = Materializer::new(
-        phantom_orchestrator::git::GitOps::open(repo_root)
-            .map_err(|e| anyhow::anyhow!("failed to open git repo for materialization: {e}"))?,
-    );
-    let analyzer = SemanticMerger::new();
-
-    // Build the list of active overlays for ripple checking.
     let active_overlays: Vec<ActiveOverlay> = projection
         .active_agents()
         .into_iter()
-        .filter(|a| *a != changeset.agent_id)
+        .filter(|a| a != exclude_agent)
         .filter_map(|a| {
             let agent_cs =
                 all_events
@@ -243,18 +223,5 @@ async fn materialize_changeset(
         })
         .collect();
 
-    let output = materialization_service::materialize_and_ripple(
-        &changeset,
-        &upper_dir,
-        events,
-        &analyzer,
-        &materializer,
-        phantom_dir,
-        &active_overlays,
-        message,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    Ok(output)
+    Ok(active_overlays)
 }

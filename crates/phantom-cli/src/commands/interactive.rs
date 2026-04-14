@@ -22,8 +22,8 @@ pub use phantom_session::context_file::write_context_file;
 
 /// Run an interactive CLI session inside the agent's overlay.
 ///
-/// Blocks until the spawned process exits, then optionally auto-submits and
-/// auto-materializes the changeset.
+/// Blocks until the spawned process exits, then optionally auto-submits the
+/// changeset (which includes materialization to trunk).
 pub async fn run_interactive_session(
     ctx: &PhantomContext,
     agent_id: &AgentId,
@@ -90,7 +90,7 @@ pub async fn run_interactive_session(
     }
 
     // Cleanup context file if auto-submitting.
-    let auto_submit = args.auto_submit || args.auto_materialize;
+    let auto_submit = args.auto_submit;
     if auto_submit {
         let overlays = ctx.open_overlays_restored().ok();
         if let Some(ref overlays) = overlays {
@@ -123,7 +123,6 @@ pub async fn run_interactive_session(
         agent_id,
         changeset_id,
         auto_submit,
-        auto_materialize: args.auto_materialize,
     })
     .await
 }

@@ -44,7 +44,7 @@ struct Cli {
 enum Commands {
     /// Initialize Phantom in an existing git repository
     Init,
-    /// Submit an agent's work as a changeset
+    /// Submit an agent's work: merge to trunk and ripple to other agents
     #[command(visible_alias = "sub")]
     Submit(commands::submit::SubmitArgs),
     /// Show status of overlays and changesets
@@ -52,9 +52,6 @@ enum Commands {
     Status(commands::status::StatusArgs),
     /// Decompose a feature into parallel agent tasks
     Plan(commands::plan::PlanArgs),
-    /// Materialize a changeset to trunk
-    #[command(visible_alias = "mat")]
-    Materialize(commands::materialize::MaterializeArgs),
     /// Auto-resolve merge conflicts by launching an AI agent
     #[command(visible_alias = "res")]
     Resolve(commands::resolve::ResolveArgs),
@@ -107,7 +104,6 @@ async fn main() {
         Some(Commands::Plan(args)) => commands::plan::run(args).await,
         Some(Commands::Submit(args)) => commands::submit::run(args).await,
         Some(Commands::Status(args)) => commands::status::run(args).await,
-        Some(Commands::Materialize(args)) => commands::materialize::run(args).await,
         Some(Commands::Resolve(args)) => commands::resolve::run(args).await,
         Some(Commands::Rollback(args)) => commands::rollback::run(args).await,
         Some(Commands::Log(args)) => commands::log::run(args).await,

@@ -23,8 +23,7 @@ phantom init                         # Initialize in a git repo
 phantom <agent-name>                 # Create/resume agent overlay (interactive)
 phantom <agent-name> --background    # Run agent in background
 phantom plan "add caching layer"     # Decompose feature into parallel agents
-phantom submit <agent>               # Submit overlay as changeset
-phantom materialize <target>         # Commit changeset to trunk (agent name or cs-id)
+phantom submit <agent>               # Submit overlay, merge to trunk, ripple to agents
 phantom resolve <agent>              # Auto-resolve conflicts via AI agent
 phantom status                       # Show overlays, changesets, queue
 phantom log [filter]                 # Query event log (agent name or cs-id)
@@ -58,7 +57,7 @@ tests/integration/          # End-to-end tests with real git repos
 ### phantom-core (`crates/phantom-core/`)
 Zero dependencies on other phantom crates. Defines all shared types:
 - **IDs**: `ChangesetId`, `AgentId`, `EventId`, `SymbolId`, `ContentHash` (BLAKE3), `GitOid` (20-byte, no git2 dependency), `PlanId`
-- **Changeset**: status lifecycle (`InProgress → Submitted → Merging → Materialized/Conflicted/Resolving/Dropped`), `SemanticOperation` (AddSymbol/ModifySymbol/DeleteSymbol/AddFile/DeleteFile/RawDiff), `TestResult`
+- **Changeset**: status lifecycle (`InProgress → Materialized/Conflicted/Resolving/Dropped`), `SemanticOperation` (AddSymbol/ModifySymbol/DeleteSymbol/AddFile/DeleteFile/RawDiff), `TestResult`
 - **Event**: `EventKind` enum with 17+ variants including `TaskCreated`, `ChangesetSubmitted`, `ChangesetMaterialized`, `LiveRebased`, `PlanCreated`, `AgentLaunched/Completed`, `Unknown` (forward-compat via `serde(other)`)
 - **Conflict**: `ConflictDetail` with `ConflictKind` (BothModifiedSymbol, ModifyDeleteSymbol, BothModifiedDependencyVersion, RawTextConflict, BinaryFile) and `ConflictSpan` (byte ranges + line numbers)
 - **Traits**: `EventStore` (async), `SymbolIndex`, `SemanticAnalyzer` (extract_symbols, diff_symbols, three_way_merge)
@@ -91,8 +90,8 @@ Tree-sitter-based parsing and Weave-style entity matching.
 ### phantom-orchestrator (`crates/phantom-orchestrator/`)
 - `GitOps`: libgit2 wrapper — `head_oid()`, `read_file_at_commit()`, `changed_files()`, `commit_tree()`, etc. Handles `GitOid ↔ git2::Oid` conversion.
 - `Materializer`: applies changeset to trunk with semantic merge check. Three-way merge per file, atomic commit.
-- `submit_service`: extracts semantic operations from overlay, runs conflict pre-check against current trunk, appends events
-- `materialization_service`: full materialize-and-ripple pipeline — materialize, classify trunk changes per agent, live rebase shadowed files, emit notifications and audit events
+- `submit_service`: unified submit-and-materialize pipeline — extracts semantic operations from overlay, appends `ChangesetSubmitted` event, calls materialization service to merge and commit to trunk
+- `materialization_service`: materialize-and-ripple orchestration — materialize, classify trunk changes per agent, live rebase shadowed files, emit notifications and audit events
 - `RippleChecker`: detects file overlap between materialized changeset and active agent overlays
 - `live_rebase`: three-way merge of shadowed files in agent upper layers. Atomic write (tmp + rename). Persists `current_base` per agent.
 - `scheduler`: task queue and scheduling
@@ -102,7 +101,7 @@ Tree-sitter-based parsing and Weave-style entity matching.
 - `pty`: PTY-based process spawning with raw-mode terminal, SIGINT handling, rolling 8KB output buffer for session ID extraction
 - `context_file`: generates `.phantom-task.md` inside overlay with agent metadata, task description, and available commands. Submodules: `task.rs` (standard task context), `plan.rs` (plan domain instructions), `resolve.rs` (three-way conflict resolution context)
 - `signatures`: session signature validation/handling
-- `post_session`: auto-submit + auto-materialize flow after agent finishes
+- `post_session`: auto-submit flow after agent finishes (submit includes materialization)
 
 ### phantom-testkit (`crates/phantom-testkit/`)
 - `TestContext`: creates temp git repos for integration tests
@@ -128,14 +127,13 @@ The CLI uses external subcommand parsing: `phantom <agent-name>` is caught by `E
 
 Hidden internal commands: `_fuse-mount` (FUSE daemon), `_agent-monitor` (background agent watcher).
 
-Key aliases: `st` (status), `sub` (submit), `mat` (materialize), `res` (resolve), `rb` (rollback), `l` (log), `c` (changes), `b` (background), `rm` (destroy).
+Key aliases: `st` (status), `sub` (submit), `res` (resolve), `rb` (rollback), `l` (log), `c` (changes), `b` (background), `rm` (destroy).
 
 ## Data Flow
 
 1. **Task creation**: `phantom <agent>` → creates overlay dirs + FUSE mount → emits `TaskCreated` event → spawns CLI session (interactive or background)
 2. **Agent work**: agent reads/writes inside FUSE overlay (upper layer captures writes, lower falls through to trunk)
-3. **Submit**: `phantom submit` → scans `modified_files()` → tree-sitter extracts symbols from base and current → diffs to `SemanticOperation` list → pre-checks conflicts against trunk → appends `ChangesetSubmitted` + `ChangesetMergeChecked` events
-4. **Materialize**: `phantom materialize` → three-way semantic merge per file → atomic git commit → ripple check → live rebase shadowed files in other agents' uppers → write `TrunkNotification` files → emit audit events
+3. **Submit**: `phantom submit` → scans `modified_files()` → tree-sitter extracts symbols from base and current → diffs to `SemanticOperation` list → appends `ChangesetSubmitted` event → three-way semantic merge per file → atomic git commit → ripple check → live rebase shadowed files in other agents' uppers → write `TrunkNotification` files → emit audit events
 5. **Conflict resolution**: `phantom resolve` → finds conflicted changeset → extracts base/ours/theirs → generates conflict-specific `.phantom-task.md` → launches background AI agent
 
 ## Coding Conventions
@@ -167,7 +165,7 @@ Key aliases: `st` (status), `sub` (submit), `mat` (materialize), `res` (resolve)
 - Background agent execution with monitoring
 - `phantom plan` — AI-driven task decomposition into parallel agents
 - `phantom resolve` — AI-driven conflict resolution
-- All core CLI commands (init, task, submit, materialize, status, log, changes, rollback, destroy, down, background, plan, resolve)
+- All core CLI commands (init, task, submit, status, log, changes, rollback, destroy, down, background, plan, resolve)
 - Integration tests for all major scenarios
 
 ### Not Yet Implemented

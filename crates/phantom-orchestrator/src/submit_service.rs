@@ -1,26 +1,28 @@
-//! Submit service — extract semantic operations from an agent's overlay and
-//! pre-check for conflicts against trunk.
+//! Submit service — extract semantic operations from an agent's overlay,
+//! commit them to trunk via semantic merge, and ripple changes to other agents.
 //!
-//! This module extracts the submission and conflict pre-checking logic that was
-//! previously inline in the CLI's `submit` command.
+//! This module provides the unified submit-and-materialize pipeline: in a
+//! single call it extracts semantic operations, records the submission event,
+//! performs the three-way merge, commits to trunk, and runs ripple/live-rebase
+//! on active agent overlays.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
-use phantom_core::changeset::SemanticOperation;
-use phantom_core::conflict::{ConflictDetail, ConflictKind};
-use phantom_core::event::{Event, EventKind, MergeCheckResult};
-use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid, SymbolId};
+use phantom_core::changeset::{Changeset, ChangesetStatus, SemanticOperation};
+use phantom_core::event::{Event, EventKind};
+use phantom_core::id::{AgentId, ChangesetId, EventId};
 use phantom_core::traits::{EventStore, SemanticAnalyzer};
 use phantom_overlay::OverlayLayer;
 
 use crate::error::OrchestratorError;
 use crate::git::GitOps;
+use crate::materialization_service::{self, ActiveOverlay, MaterializeOutput};
+use crate::materializer::Materializer;
 use crate::ripple;
 
-/// Output of a successful submission.
+/// Output of the submission step (semantic operation extraction).
 #[derive(Debug)]
 pub struct SubmitOutput {
     /// The changeset ID that was submitted.
@@ -35,15 +37,27 @@ pub struct SubmitOutput {
     pub modified_files: Vec<PathBuf>,
 }
 
-/// Submit an agent's overlay changes as a changeset.
+/// Combined output of the unified submit-and-materialize pipeline.
+#[derive(Debug)]
+pub struct SubmitAndMaterializeOutput {
+    /// Submission stats (semantic operations extracted).
+    pub submit: SubmitOutput,
+    /// Materialization result (merge, commit, ripple effects).
+    pub materialize: MaterializeOutput,
+}
+
+/// Submit an agent's overlay changes and materialize them to trunk in one step.
 ///
-/// Extracts semantic operations from each modified file, pre-checks for
-/// conflicts against trunk, appends the submission and merge-check events to
-/// the event store, and removes any stale trunk notification.
+/// This is the unified pipeline that:
+/// 1. Extracts semantic operations from each modified file
+/// 2. Appends a `ChangesetSubmitted` event (audit record)
+/// 3. Runs the three-way semantic merge and commits to trunk
+/// 4. Runs ripple checking and live rebase on other active agents
 ///
-/// Returns `Ok(Some(output))` if changes were found and submitted, or
+/// Returns `Ok(Some(output))` if changes were found and processed, or
 /// `Ok(None)` if the overlay has no modifications.
-pub async fn submit_overlay(
+#[allow(clippy::too_many_arguments)]
+pub async fn submit_and_materialize(
     git: &GitOps,
     events: &dyn EventStore,
     analyzer: &dyn SemanticAnalyzer,
@@ -51,7 +65,10 @@ pub async fn submit_overlay(
     layer: &OverlayLayer,
     upper_dir: &Path,
     phantom_dir: &Path,
-) -> Result<Option<SubmitOutput>, OrchestratorError> {
+    materializer: &Materializer,
+    active_overlays: &[ActiveOverlay],
+    message: &str,
+) -> Result<Option<SubmitAndMaterializeOutput>, OrchestratorError> {
     let modified = layer
         .modified_files()
         .map_err(|e| OrchestratorError::Overlay(e.to_string()))?;
@@ -83,8 +100,8 @@ pub async fn submit_overlay(
         })?;
 
     // If a conflict resolution updated the base, use the new base so that
-    // the post-resolution submit and materialize don't re-detect the same
-    // symbol conflict against a stale base commit.
+    // the post-resolution submit doesn't re-detect the same symbol conflict
+    // against a stale base commit.
     let base_commit = agent_events
         .iter()
         .rev()
@@ -101,6 +118,18 @@ pub async fn submit_overlay(
             None
         })
         .unwrap_or(base_commit);
+
+    // Extract task description from events for the changeset.
+    let task = agent_events
+        .iter()
+        .find_map(|e| {
+            if let EventKind::TaskCreated { task, .. } = &e.kind {
+                Some(task.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
 
     let mut all_ops: Vec<SemanticOperation> = Vec::new();
     let mut additions = 0u32;
@@ -177,16 +206,14 @@ pub async fn submit_overlay(
         }
     }
 
-    // Early conflict pre-check.
-    let merge_check = precheck_conflicts(git, analyzer, &base_commit, &all_ops, &changeset_id);
-
+    // Record the submission event (audit trail of what the agent produced).
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
         changeset_id: changeset_id.clone(),
         agent_id: agent_id.clone(),
         kind: EventKind::ChangesetSubmitted {
-            operations: all_ops,
+            operations: all_ops.clone(),
         },
     };
     events
@@ -194,105 +221,49 @@ pub async fn submit_overlay(
         .await
         .map_err(|e| OrchestratorError::EventStore(e.to_string()))?;
 
-    // Record the merge pre-check result.
-    let check_event = Event {
-        id: EventId(0),
-        timestamp: Utc::now(),
-        changeset_id: changeset_id.clone(),
-        agent_id: agent_id.clone(),
-        kind: EventKind::ChangesetMergeChecked {
-            result: merge_check,
-        },
-    };
-    events
-        .append(check_event)
-        .await
-        .map_err(|e| OrchestratorError::EventStore(e.to_string()))?;
-
     // Remove stale trunk notification.
     ripple::remove_trunk_notification(phantom_dir, agent_id);
 
-    Ok(Some(SubmitOutput {
-        changeset_id,
+    let submit_output = SubmitOutput {
+        changeset_id: changeset_id.clone(),
         additions,
         modifications,
         deletions,
-        modified_files: modified,
-    }))
-}
-
-/// Compare the agent's submitted operations against the current trunk state
-/// to detect potential symbol-level conflicts early.
-///
-/// If trunk has advanced since the agent's base commit, this checks whether
-/// any symbols the agent modified were also modified on trunk. Returns a
-/// [`MergeCheckResult`] that is recorded as an audit event.
-fn precheck_conflicts(
-    git: &GitOps,
-    analyzer: &dyn SemanticAnalyzer,
-    base_commit: &GitOid,
-    operations: &[SemanticOperation],
-    changeset_id: &ChangesetId,
-) -> MergeCheckResult {
-    let head = match git.head_oid() {
-        Ok(h) => h,
-        Err(_) => return MergeCheckResult::Clean,
+        modified_files: modified.clone(),
     };
 
-    if head == *base_commit {
-        return MergeCheckResult::Clean;
-    }
+    // Build a Changeset struct for the materializer.
+    let changeset = Changeset {
+        id: changeset_id,
+        agent_id: agent_id.clone(),
+        task,
+        base_commit,
+        files_touched: modified,
+        operations: all_ops,
+        test_result: None,
+        created_at: Utc::now(),
+        status: ChangesetStatus::Submitted,
+        agent_pid: None,
+        agent_launched_at: None,
+        agent_completed_at: None,
+        agent_exit_code: None,
+    };
 
-    let agent_by_file = group_ops_by_file(operations);
-    let mut symbol_conflicts = Vec::new();
+    // Materialize: three-way merge, commit to trunk, ripple to other agents.
+    let materialize_output = materialization_service::materialize_and_ripple(
+        &changeset,
+        upper_dir,
+        events,
+        analyzer,
+        materializer,
+        phantom_dir,
+        active_overlays,
+        message,
+    )
+    .await?;
 
-    for (file, agent_syms) in &agent_by_file {
-        if agent_syms.is_empty() {
-            continue;
-        }
-
-        let base = match git.read_file_at_commit(base_commit, file) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let trunk = match git.read_file_at_commit(&head, file) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        if base == trunk {
-            continue;
-        }
-
-        let base_symbols = analyzer.extract_symbols(file, &base).unwrap_or_default();
-        let trunk_symbols = analyzer.extract_symbols(file, &trunk).unwrap_or_default();
-        let trunk_ops = analyzer.diff_symbols(&base_symbols, &trunk_symbols);
-        let trunk_names: HashSet<String> = trunk_ops
-            .iter()
-            .filter_map(|op| op.symbol_name().map(String::from))
-            .collect();
-
-        for agent_sym in agent_syms {
-            if trunk_names.contains(agent_sym.as_str()) {
-                symbol_conflicts.push(ConflictDetail {
-                    kind: ConflictKind::BothModifiedSymbol,
-                    file: file.clone(),
-                    symbol_id: Some(SymbolId(agent_sym.clone())),
-                    ours_changeset: ChangesetId("trunk".into()),
-                    theirs_changeset: changeset_id.clone(),
-                    description: format!("symbol '{}' modified by both trunk and agent", agent_sym),
-                    ours_span: None,
-                    theirs_span: None,
-                    base_span: None,
-                });
-            }
-        }
-    }
-
-    if symbol_conflicts.is_empty() {
-        MergeCheckResult::Clean
-    } else {
-        MergeCheckResult::Conflicted(symbol_conflicts)
-    }
+    Ok(Some(SubmitAndMaterializeOutput {
+        submit: submit_output,
+        materialize: materialize_output,
+    }))
 }
-
-use crate::ops::group_ops_by_file;

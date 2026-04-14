@@ -1,12 +1,12 @@
 //! E2E CLI tests for merge conflict detection and resolution.
 //!
 //! Test 1 (`conflict_and_resolve_workflow`):
-//! Two agents modify the same symbol → materialize conflicts →
-//! `phantom resolve` recognizes the conflict.
+//! Two agents modify the same symbol → submit (which includes materialization)
+//! conflicts on the second agent → `phantom resolve` recognizes the conflict.
 //!
 //! Test 2 (`resolve_updates_base_and_materialize_succeeds`):
-//! After `phantom resolve` updates the base commit, re-submitting and
-//! re-materializing the resolved changeset succeeds instead of re-conflicting.
+//! After `phantom resolve` updates the base commit, re-submitting the resolved
+//! changeset succeeds instead of re-conflicting.
 
 use std::fs;
 use std::path::Path;
@@ -92,29 +92,19 @@ fn conflict_and_resolve_workflow() {
     )
     .unwrap();
 
-    // 4. Submit both agents
+    // 4. Submit agent-a → should succeed (first to merge, no conflict)
     phantom(dir.path())
         .args(["submit", "agent-a"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("submitted"));
+        .stdout(
+            predicate::str::contains("submitted")
+                .and(predicate::str::contains("Materialized")),
+        );
 
+    // 5. Submit agent-b → should fail with conflict (same symbol modified)
     phantom(dir.path())
         .args(["submit", "agent-b"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("submitted"));
-
-    // 5. Materialize agent-a → should succeed (first to merge, no conflict)
-    phantom(dir.path())
-        .args(["materialize", "agent-a"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Materialized"));
-
-    // 6. Materialize agent-b → should fail with conflict (same symbol modified)
-    phantom(dir.path())
-        .args(["materialize", "agent-b"])
         .assert()
         .failure()
         .stderr(
@@ -122,7 +112,7 @@ fn conflict_and_resolve_workflow() {
                 .or(predicate::str::contains("Conflict")),
         );
 
-    // 7. Verify `phantom resolve agent-b` finds the conflicted changeset.
+    // 6. Verify `phantom resolve agent-b` finds the conflicted changeset.
     //    The resolve command prints conflict info before spawning the background
     //    agent. The spawn may fail in tests (no `claude` binary), but we verify
     //    the conflict was detected and the output references the right agent.
@@ -143,21 +133,21 @@ fn conflict_and_resolve_workflow() {
         "resolve should reference the conflict for agent-b.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    // 8. Verify that resolve for an agent with no conflicts fails cleanly.
+    // 7. Verify that resolve for an agent with no conflicts fails cleanly.
     phantom(dir.path())
         .args(["resolve", "agent-a"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no conflicted changeset"));
 
-    // 9. Verify status still works after the conflict scenario.
+    // 8. Verify status still works after the conflict scenario.
     phantom(dir.path())
         .arg("status")
         .assert()
         .success()
         .stdout(predicate::str::contains("Total events:"));
 
-    // 10. Verify the log captured all the events including the conflict.
+    // 9. Verify the log captured all the events including the conflict.
     phantom(dir.path())
         .arg("log")
         .assert()
@@ -170,8 +160,8 @@ fn conflict_and_resolve_workflow() {
 }
 
 /// After `phantom resolve` updates the changeset's base_commit to current
-/// trunk HEAD, re-submitting and re-materializing the (now resolved) overlay
-/// should succeed — the materializer sees base == trunk and applies cleanly.
+/// trunk HEAD, re-submitting the (now resolved) overlay should succeed — the
+/// materializer sees base == trunk and applies cleanly.
 #[test]
 fn resolve_updates_base_and_materialize_succeeds() {
     let dir = init_repo_with_source();
@@ -206,23 +196,15 @@ fn resolve_updates_base_and_materialize_succeeds() {
     )
     .unwrap();
 
-    // 4. Submit + materialize agent-a (succeeds)
+    // 4. Submit agent-a (succeeds — includes materialization)
     phantom(dir.path())
         .args(["submit", "agent-a"])
         .assert()
         .success();
-    phantom(dir.path())
-        .args(["materialize", "agent-a"])
-        .assert()
-        .success();
 
-    // 5. Submit + materialize agent-b (conflicts)
+    // 5. Submit agent-b (conflicts — same symbol modified on trunk)
     phantom(dir.path())
         .args(["submit", "agent-b"])
-        .assert()
-        .success();
-    phantom(dir.path())
-        .args(["materialize", "agent-b"])
         .assert()
         .failure();
 
@@ -251,16 +233,12 @@ fn resolve_updates_base_and_materialize_succeeds() {
         .args(["submit", "agent-b"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("submitted"));
+        .stdout(
+            predicate::str::contains("submitted")
+                .and(predicate::str::contains("Materialized")),
+        );
 
-    // 9. Re-materialize agent-b — should succeed now (base == trunk after resolve).
-    phantom(dir.path())
-        .args(["materialize", "agent-b"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Materialized"));
-
-    // 10. Verify the merged content landed on trunk.
+    // 9. Verify the merged content landed on trunk.
     let trunk_content =
         fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
     assert!(

@@ -8,7 +8,6 @@ pub mod fuse_mount;
 pub mod init;
 pub mod interactive;
 pub mod log;
-pub mod materialize;
 pub mod plan;
 pub mod resolve;
 pub mod rollback;

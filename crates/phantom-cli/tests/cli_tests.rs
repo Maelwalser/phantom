@@ -47,7 +47,6 @@ fn phantom_help_lists_all_subcommands() {
         .stdout(predicate::str::contains("init"))
         .stdout(predicate::str::contains("submit"))
         .stdout(predicate::str::contains("status"))
-        .stdout(predicate::str::contains("materialize"))
         .stdout(predicate::str::contains("rollback"))
         .stdout(predicate::str::contains("log"))
         .stdout(predicate::str::contains("destroy"));

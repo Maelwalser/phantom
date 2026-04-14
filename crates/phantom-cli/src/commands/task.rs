@@ -31,13 +31,10 @@ pub struct TaskArgs {
     /// Create the overlay without launching a CLI session (for scripted agents)
     #[arg(long, short = 'b', requires = "task")]
     pub background: bool,
-    /// Automatically submit the changeset when the session exits.
+    /// Automatically submit and merge to trunk when the session exits.
     /// Always enabled for background agents.
-    #[arg(long)]
+    #[arg(long, alias = "auto-materialize")]
     pub auto_submit: bool,
-    /// Automatically materialize after submitting (implies --auto-submit)
-    #[arg(long)]
-    pub auto_materialize: bool,
     /// Custom command to run instead of `claude` (e.g. for testing)
     #[arg(long, conflicts_with = "background")]
     pub command: Option<String>,
@@ -179,7 +176,6 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             &changeset_id,
             task,
             &work_dir,
-            args.auto_materialize,
             None,
         )?;
 
@@ -437,7 +433,6 @@ pub(crate) fn spawn_agent_monitor(
     changeset_id: &ChangesetId,
     task: &str,
     work_dir: &Path,
-    auto_materialize: bool,
     system_prompt_file: Option<&Path>,
 ) -> anyhow::Result<()> {
     let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
@@ -456,10 +451,6 @@ pub(crate) fn spawn_agent_monitor(
         .arg(work_dir.as_os_str())
         .arg("--repo-root")
         .arg(repo_root);
-
-    if auto_materialize {
-        cmd.arg("--auto-materialize");
-    }
 
     if let Some(path) = system_prompt_file {
         cmd.arg("--system-prompt-file").arg(path);
