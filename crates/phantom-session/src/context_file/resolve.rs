@@ -43,8 +43,8 @@ pub fn write_resolve_rules_file(path: &Path) -> anyhow::Result<()> {
    then OURS and THEIRS as unified diffs showing what each side changed
    relative to BASE. Your working directory has the THEIRS version —
    integrate the OURS changes. Do not re-read the file; use the content shown here.
-   For other conflict types you see three full
-   code blocks (BASE, OURS, THEIRS).
+   For raw text and dependency conflicts you see BASE as full text, then
+   OURS and THEIRS as unified diffs. For binary files you see three labeled blocks.
 2. Your goal: produce a merged version that preserves the intent of BOTH sides.
 3. NEVER silently drop code from either side unless one side explicitly deleted it.
 4. For BothModifiedSymbol conflicts: merge both sets of changes into the symbol.
@@ -135,8 +135,19 @@ pub fn write_resolve_context_file(
                 | phantom_core::ConflictKind::ModifyDeleteSymbol
         );
 
-        let used_compact = is_symbol_conflict
-            && write_compact_conflict(&mut content, lang, conflict, base_short);
+        let is_text_conflict = matches!(
+            conflict.detail.kind,
+            phantom_core::ConflictKind::RawTextConflict
+                | phantom_core::ConflictKind::BothModifiedDependencyVersion
+        );
+
+        let used_compact = if is_symbol_conflict {
+            write_compact_conflict(&mut content, lang, conflict, base_short)
+        } else if is_text_conflict {
+            write_compact_raw_text_conflict(&mut content, lang, conflict, base_short)
+        } else {
+            false
+        };
 
         if !used_compact {
             // Fallback: three full code blocks.
@@ -281,6 +292,56 @@ fn write_compact_conflict(
         "agent applied these changes \u{2014} this is what is in your working directory; do not re-read the file",
         &base_symbol,
         theirs_symbol.as_deref(),
+    );
+
+    true
+}
+
+/// Attempt to write a conflict in compact diff format for raw text conflicts.
+///
+/// Shows BASE content once (truncated to token budget), then OURS and THEIRS
+/// as unified diffs against BASE. Works for any text file regardless of
+/// tree-sitter support. Returns `true` if compact format was written.
+fn write_compact_raw_text_conflict(
+    out: &mut String,
+    lang: &str,
+    conflict: &ResolveConflictContext,
+    base_short: &str,
+) -> bool {
+    use std::fmt::Write;
+
+    let (base_content, ours_content, theirs_content) = match (
+        conflict.base_content.as_deref(),
+        conflict.ours_content.as_deref(),
+        conflict.theirs_content.as_deref(),
+    ) {
+        (Some(b), Some(o), Some(t)) => (b, o, t),
+        _ => return false,
+    };
+
+    let base_display = truncate_to_token_budget(base_content);
+
+    writeln!(out, "#### BASE (common ancestor at {base_short})").unwrap();
+    writeln!(out, "```{lang}").unwrap();
+    writeln!(out, "{base_display}").unwrap();
+    writeln!(out, "```").unwrap();
+    writeln!(out).unwrap();
+
+    // Write OURS and THEIRS as diffs against the full base (not the truncated version).
+    write_diff_section(
+        out,
+        "OURS",
+        "trunk applied these changes",
+        base_content,
+        Some(ours_content),
+    );
+
+    write_diff_section(
+        out,
+        "THEIRS",
+        "agent applied these changes \u{2014} this is what is in your working directory; do not re-read the file",
+        base_content,
+        Some(theirs_content),
     );
 
     true

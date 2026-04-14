@@ -247,7 +247,7 @@ fn full_resolve_file_uses_compact_for_symbol_conflicts() {
 }
 
 #[test]
-fn full_resolve_file_falls_back_for_raw_text() {
+fn full_resolve_file_uses_compact_for_raw_text() {
     use phantom_core::conflict::{ConflictDetail, ConflictKind};
     use phantom_core::id::ChangesetId;
 
@@ -283,15 +283,158 @@ fn full_resolve_file_falls_back_for_raw_text() {
     .unwrap();
 
     let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
-    // Should NOT use compact format — falls back to three blocks.
+    // Should use compact diff format — BASE once, OURS/THEIRS as diffs.
     assert!(
-        !content.contains("```diff"),
-        "RawTextConflict should not use diff format"
+        content.contains("```diff"),
+        "RawTextConflict should use diff format"
     );
-    // Should have the three-block fallback (BASE, OURS, THEIRS headings).
     assert!(content.contains("#### BASE"));
     assert!(content.contains("#### OURS"));
     assert!(content.contains("#### THEIRS"));
+    // Should have exactly one toml code block (BASE).
+    let toml_blocks = content.matches("```toml").count();
+    assert_eq!(toml_blocks, 1, "should have exactly one toml code block (BASE)");
+}
+
+#[test]
+fn compact_format_for_raw_text_conflict() {
+    use phantom_core::conflict::{ConflictDetail, ConflictKind};
+    use phantom_core::id::ChangesetId;
+
+    let base = "line1\nline2\nline3\n";
+    let ours = "line1\nmodified_ours\nline3\n";
+    let theirs = "line1\nline2\nmodified_theirs\n";
+
+    let conflict = ResolveConflictContext {
+        detail: ConflictDetail {
+            kind: ConflictKind::RawTextConflict,
+            file: std::path::PathBuf::from("README.md"),
+            symbol_id: None,
+            ours_changeset: ChangesetId("cs-1".into()),
+            theirs_changeset: ChangesetId("cs-2".into()),
+            description: "raw text conflict in README".into(),
+            base_span: None,
+            ours_span: None,
+            theirs_span: None,
+        },
+        base_content: Some(base.into()),
+        ours_content: Some(ours.into()),
+        theirs_content: Some(theirs.into()),
+    };
+
+    let mut out = String::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "markdown", &conflict, "abc123");
+
+    assert!(ok, "should succeed for RawTextConflict with all content");
+    assert!(out.contains("#### BASE"));
+    assert!(out.contains("```markdown"));
+    assert!(out.contains("#### OURS"));
+    assert!(out.contains("#### THEIRS"));
+    assert!(out.contains("```diff"));
+    // BASE shown once as a code block.
+    let md_blocks = out.matches("```markdown").count();
+    assert_eq!(md_blocks, 1, "BASE should be the only markdown block");
+    // Diffs should contain the actual changes.
+    assert!(out.contains("modified_ours"));
+    assert!(out.contains("modified_theirs"));
+}
+
+#[test]
+fn compact_format_for_dependency_version_conflict() {
+    use phantom_core::conflict::{ConflictDetail, ConflictKind};
+    use phantom_core::id::ChangesetId;
+
+    let base = "[dependencies]\nfoo = \"1.0\"\n";
+    let ours = "[dependencies]\nfoo = \"1.1\"\n";
+    let theirs = "[dependencies]\nfoo = \"2.0\"\n";
+
+    let conflict = ResolveConflictContext {
+        detail: ConflictDetail {
+            kind: ConflictKind::BothModifiedDependencyVersion,
+            file: std::path::PathBuf::from("Cargo.toml"),
+            symbol_id: None,
+            ours_changeset: ChangesetId("cs-1".into()),
+            theirs_changeset: ChangesetId("cs-2".into()),
+            description: "both modified foo version".into(),
+            base_span: None,
+            ours_span: None,
+            theirs_span: None,
+        },
+        base_content: Some(base.into()),
+        ours_content: Some(ours.into()),
+        theirs_content: Some(theirs.into()),
+    };
+
+    let mut out = String::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "toml", &conflict, "abc123");
+
+    assert!(ok, "should succeed for BothModifiedDependencyVersion");
+    assert!(out.contains("```diff"));
+    assert!(out.contains("1.1"));
+    assert!(out.contains("2.0"));
+}
+
+#[test]
+fn raw_text_compact_falls_back_when_content_missing() {
+    use phantom_core::conflict::{ConflictDetail, ConflictKind};
+    use phantom_core::id::ChangesetId;
+
+    let conflict = ResolveConflictContext {
+        detail: ConflictDetail {
+            kind: ConflictKind::RawTextConflict,
+            file: std::path::PathBuf::from("config.yaml"),
+            symbol_id: None,
+            ours_changeset: ChangesetId("cs-1".into()),
+            theirs_changeset: ChangesetId("cs-2".into()),
+            description: "conflict".into(),
+            base_span: None,
+            ours_span: None,
+            theirs_span: None,
+        },
+        base_content: Some("key: value\n".into()),
+        ours_content: None, // missing
+        theirs_content: Some("key: other\n".into()),
+    };
+
+    let mut out = String::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "yaml", &conflict, "abc");
+    assert!(!ok, "should fall back when ours_content is missing");
+}
+
+#[test]
+fn raw_text_identical_side_shows_message() {
+    use phantom_core::conflict::{ConflictDetail, ConflictKind};
+    use phantom_core::id::ChangesetId;
+
+    let base = "line1\nline2\n";
+    let ours = base; // identical
+    let theirs = "line1\nchanged\n";
+
+    let conflict = ResolveConflictContext {
+        detail: ConflictDetail {
+            kind: ConflictKind::RawTextConflict,
+            file: std::path::PathBuf::from("notes.md"),
+            symbol_id: None,
+            ours_changeset: ChangesetId("cs-1".into()),
+            theirs_changeset: ChangesetId("cs-2".into()),
+            description: "raw text conflict".into(),
+            base_span: None,
+            ours_span: None,
+            theirs_span: None,
+        },
+        base_content: Some(base.into()),
+        ours_content: Some(ours.into()),
+        theirs_content: Some(theirs.into()),
+    };
+
+    let mut out = String::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "markdown", &conflict, "abc");
+    assert!(ok);
+    assert!(
+        out.contains("*(identical to BASE)*"),
+        "OURS should show identical message"
+    );
+    assert!(out.contains("```diff"), "THEIRS should show a diff");
 }
 
 #[test]
