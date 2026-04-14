@@ -44,6 +44,7 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
         since,
         limit: Some(args.limit),
         kind_prefixes: Vec::new(),
+        order: phantom_events::QueryOrder::Desc,
     };
 
     let events = events_store.query(&query).await?;

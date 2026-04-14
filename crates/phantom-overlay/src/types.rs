@@ -1,7 +1,7 @@
 //! Shared types and path classification helpers for the overlay crate.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// File type for directory entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,4 +56,28 @@ pub(crate) fn first_component(rel_path: &Path) -> Option<&str> {
         .components()
         .next()
         .and_then(|c| c.as_os_str().to_str())
+}
+
+/// Collect strict child paths under `old_prefix` and compute their new paths
+/// under `new_prefix`.
+///
+/// Returns `(old_child, new_child)` pairs. Used by both [`InodeTable::rename`]
+/// and [`OverlayLayer::reconcile_whiteouts_after_rename`] to avoid duplicating
+/// the child reparenting logic.
+pub(crate) fn reparent_children<'a>(
+    paths: impl Iterator<Item = &'a PathBuf>,
+    old_prefix: &Path,
+    new_prefix: &Path,
+) -> Vec<(PathBuf, PathBuf)> {
+    paths
+        .filter_map(|p| {
+            p.strip_prefix(old_prefix).ok().and_then(|suffix| {
+                if suffix.as_os_str().is_empty() {
+                    None // not a strict child
+                } else {
+                    Some((p.clone(), new_prefix.join(suffix)))
+                }
+            })
+        })
+        .collect()
 }

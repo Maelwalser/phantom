@@ -6,12 +6,35 @@
 use chrono::{DateTime, Utc};
 use phantom_core::id::{AgentId, ChangesetId, SymbolId};
 
-use crate::error::EventStoreError;
-use crate::store::{SqliteEventStore, row_to_event};
+/// Result ordering for [`EventQuery`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryOrder {
+    /// Oldest first (chronological).
+    Asc,
+    /// Newest first.
+    Desc,
+}
+
+impl Default for QueryOrder {
+    fn default() -> Self {
+        Self::Desc
+    }
+}
+
+impl QueryOrder {
+    /// SQL keyword for this ordering direction.
+    pub(crate) fn as_sql(&self) -> &'static str {
+        match self {
+            Self::Asc => "ASC",
+            Self::Desc => "DESC",
+        }
+    }
+}
 
 /// A flexible query filter for events.
 ///
 /// Set any combination of fields to narrow results. `None` fields are ignored.
+/// Results are ordered by [`QueryOrder::Desc`] (newest first) by default.
 #[derive(Debug, Default, Clone)]
 pub struct EventQuery {
     /// Filter by agent.
@@ -28,73 +51,6 @@ pub struct EventQuery {
     /// with any of these prefixes (e.g. `"ChangesetSubmitted"`,
     /// `"ChangesetMaterialized"`). Empty means no kind filter.
     pub kind_prefixes: Vec<String>,
-}
-
-impl SqliteEventStore {
-    /// Execute a flexible query against the event store.
-    pub async fn query(&self, q: &EventQuery) -> Result<Vec<phantom_core::Event>, EventStoreError> {
-        let mut conditions = vec!["dropped = 0".to_string()];
-        let mut param_values: Vec<String> = Vec::new();
-
-        if let Some(ref agent) = q.agent_id {
-            param_values.push(agent.0.clone());
-            conditions.push(format!("agent_id = ${}", param_values.len()));
-        }
-
-        if let Some(ref cs) = q.changeset_id {
-            param_values.push(cs.0.clone());
-            conditions.push(format!("changeset_id = ${}", param_values.len()));
-        }
-
-        if let Some(ref sym) = q.symbol_id {
-            param_values.push(sym.0.clone());
-            conditions.push(format!("kind LIKE '%' || ${} || '%'", param_values.len()));
-        }
-
-        if let Some(ref since) = q.since {
-            param_values.push(since.to_rfc3339());
-            conditions.push(format!("timestamp >= ${}", param_values.len()));
-        }
-
-        if !q.kind_prefixes.is_empty() {
-            let or_parts: Vec<String> = q
-                .kind_prefixes
-                .iter()
-                .map(|prefix| {
-                    param_values.push(format!("{{\"{prefix}\""));
-                    format!("kind LIKE ${} || '%'", param_values.len())
-                })
-                .collect();
-            conditions.push(format!("({})", or_parts.join(" OR ")));
-        }
-
-        let where_clause = conditions.join(" AND ");
-        let limit_clause = q.limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
-
-        let sql = format!(
-            "SELECT id, timestamp, changeset_id, agent_id, kind
-             FROM events
-             WHERE {where_clause}
-             ORDER BY id DESC{limit_clause}"
-        );
-
-        let mut query = sqlx::query(&sql);
-        for param in &param_values {
-            query = query.bind(param);
-        }
-
-        let rows = query.fetch_all(&self.pool).await?;
-        rows.iter().map(row_to_event).collect()
-    }
-
-    /// Mark all events belonging to a changeset as dropped.
-    ///
-    /// Returns the number of rows affected.
-    pub async fn mark_dropped(&self, changeset_id: &ChangesetId) -> Result<u64, EventStoreError> {
-        let result = sqlx::query("UPDATE events SET dropped = 1 WHERE changeset_id = $1")
-            .bind(&changeset_id.0)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected())
-    }
+    /// Result ordering. Defaults to [`QueryOrder::Desc`] (newest first).
+    pub order: QueryOrder,
 }

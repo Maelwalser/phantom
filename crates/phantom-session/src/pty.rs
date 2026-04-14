@@ -154,10 +154,10 @@ fn nb_write_all(fd: RawFd, shutdown_fd: RawFd, data: &[u8]) -> bool {
             Err(_) => return false,
             Ok(_) => {}
         }
-        if let Some(revents) = fds[1].revents() {
-            if revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR) {
-                return false;
-            }
+        if let Some(revents) = fds[1].revents()
+            && revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR)
+        {
+            return false;
         }
     }
     true

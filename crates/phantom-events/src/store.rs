@@ -19,11 +19,7 @@ use phantom_core::id::{AgentId, ChangesetId, EventId};
 use phantom_core::traits::EventStore;
 
 use crate::error::EventStoreError;
-
-/// Current schema version for the event store database.
-///
-/// Increment this when adding migrations in [`SqliteEventStore::run_migrations`].
-const CURRENT_SCHEMA_VERSION: u32 = 2;
+use crate::schema;
 
 /// Configuration for [`SqliteEventStore`].
 pub struct EventStoreConfig {
@@ -82,6 +78,63 @@ pub(crate) fn row_to_event(row: &SqliteRow) -> Result<Event, EventStoreError> {
     })
 }
 
+/// Tracks SQL WHERE conditions and their bound parameter values.
+///
+/// Eliminates manual `$N` placeholder counting when building dynamic queries.
+struct QueryBuilder {
+    conditions: Vec<String>,
+    params: Vec<String>,
+}
+
+impl QueryBuilder {
+    fn new() -> Self {
+        Self {
+            conditions: vec!["dropped = 0".into()],
+            params: Vec::new(),
+        }
+    }
+
+    /// Register a parameter value and return its positional placeholder (e.g. `$3`).
+    fn bind(&mut self, value: String) -> String {
+        self.params.push(value);
+        format!("${}", self.params.len())
+    }
+
+    /// Add a WHERE condition.
+    fn push(&mut self, condition: String) {
+        self.conditions.push(condition);
+    }
+
+    fn where_clause(&self) -> String {
+        self.conditions.join(" AND ")
+    }
+
+    /// Execute the query against `pool`, returning parsed events.
+    async fn fetch(
+        &self,
+        pool: &SqlitePool,
+        order: &str,
+        limit: Option<u64>,
+    ) -> Result<Vec<Event>, EventStoreError> {
+        let where_clause = self.where_clause();
+        let limit_clause = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
+        let sql = format!(
+            "SELECT id, timestamp, changeset_id, agent_id, kind
+             FROM events
+             WHERE {where_clause}
+             ORDER BY id {order}{limit_clause}"
+        );
+
+        let mut query = sqlx::query(&sql);
+        for param in &self.params {
+            query = query.bind(param);
+        }
+
+        let rows = query.fetch_all(pool).await?;
+        rows.iter().map(row_to_event).collect()
+    }
+}
+
 /// An append-only event store backed by a SQLite database in WAL mode.
 ///
 /// Uses sqlx's async connection pool, eliminating the need for a blocking
@@ -116,8 +169,8 @@ impl SqliteEventStore {
             .connect_with(options)
             .await?;
         let store = Self { pool };
-        store.ensure_schema().await?;
-        store.run_migrations().await?;
+        schema::ensure_schema(&store.pool).await?;
+        schema::run_migrations(&store.pool).await?;
         debug!(?path, "opened event store");
         Ok(store)
     }
@@ -135,102 +188,10 @@ impl SqliteEventStore {
             .connect_with(options)
             .await?;
         let store = Self { pool };
-        store.ensure_schema().await?;
-        store.run_migrations().await?;
+        schema::ensure_schema(&store.pool).await?;
+        schema::run_migrations(&store.pool).await?;
         debug!("opened in-memory event store");
         Ok(store)
-    }
-
-    /// Create the events table, schema_meta table, and indexes if they do not exist.
-    async fn ensure_schema(&self) -> Result<(), EventStoreError> {
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS schema_meta (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // Seed initial schema version if not present.
-        sqlx::query(
-            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('schema_version', '1')",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS events (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp    TEXT NOT NULL,
-                changeset_id TEXT NOT NULL,
-                agent_id     TEXT NOT NULL,
-                kind         TEXT NOT NULL,
-                dropped      INTEGER NOT NULL DEFAULT 0
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_changeset ON events(changeset_id)")
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id)")
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
-    /// Read the current schema version from the database.
-    async fn schema_version(&self) -> Result<u32, EventStoreError> {
-        let row: (String,) =
-            sqlx::query_as("SELECT value FROM schema_meta WHERE key = 'schema_version'")
-                .fetch_one(&self.pool)
-                .await?;
-        row.0.parse().map_err(|_| EventStoreError::SchemaMismatch {
-            expected: CURRENT_SCHEMA_VERSION,
-            found: 0,
-        })
-    }
-
-    /// Run forward migrations up to [`CURRENT_SCHEMA_VERSION`].
-    async fn run_migrations(&self) -> Result<(), EventStoreError> {
-        let version = self.schema_version().await?;
-
-        if version < 2 {
-            // Migration 1 → 2: add kind_version column for envelope versioning.
-            sqlx::query(
-                "ALTER TABLE events ADD COLUMN kind_version INTEGER NOT NULL DEFAULT 1",
-            )
-            .execute(&self.pool)
-            .await
-            // Column may already exist if a previous migration was interrupted
-            // after the ALTER but before the version update.
-            .or_else(|e| {
-                if e.to_string().contains("duplicate column") {
-                    Ok(Default::default())
-                } else {
-                    Err(e)
-                }
-            })?;
-
-            sqlx::query("UPDATE schema_meta SET value = '2' WHERE key = 'schema_version'")
-                .execute(&self.pool)
-                .await?;
-        }
-
-        if version > CURRENT_SCHEMA_VERSION {
-            return Err(EventStoreError::SchemaMismatch {
-                expected: CURRENT_SCHEMA_VERSION,
-                found: version,
-            });
-        }
-
-        Ok(())
     }
 
     /// Append an event, returning the auto-generated [`EventId`].
@@ -254,26 +215,76 @@ impl SqliteEventStore {
         Ok(EventId(id))
     }
 
-    /// Read events from a query with the given WHERE clause and positional parameters.
+    /// Execute a flexible query against the event store.
+    ///
+    /// Results are ordered by `id DESC` (newest first) by default, suitable
+    /// for "show me the N most recent events" use cases like `phantom log`.
+    pub async fn query(&self, q: &crate::query::EventQuery) -> Result<Vec<Event>, EventStoreError> {
+        let mut qb = QueryBuilder::new();
+
+        if let Some(ref agent) = q.agent_id {
+            let p = qb.bind(agent.0.clone());
+            qb.push(format!("agent_id = {p}"));
+        }
+
+        if let Some(ref cs) = q.changeset_id {
+            let p = qb.bind(cs.0.clone());
+            qb.push(format!("changeset_id = {p}"));
+        }
+
+        if let Some(ref sym) = q.symbol_id {
+            let p = qb.bind(sym.0.clone());
+            qb.push(format!("kind LIKE '%' || {p} || '%'"));
+        }
+
+        if let Some(ref since) = q.since {
+            let p = qb.bind(since.to_rfc3339());
+            qb.push(format!("timestamp >= {p}"));
+        }
+
+        if !q.kind_prefixes.is_empty() {
+            let or_parts: Vec<String> = q
+                .kind_prefixes
+                .iter()
+                .map(|prefix| {
+                    let p = qb.bind(format!("{{\"{prefix}\""));
+                    format!("kind LIKE {p} || '%'")
+                })
+                .collect();
+            qb.push(format!("({})", or_parts.join(" OR ")));
+        }
+
+        qb.fetch(&self.pool, q.order.as_sql(), q.limit).await
+    }
+
+    /// Mark all events belonging to a changeset as dropped.
+    ///
+    /// Returns the number of rows affected.
+    pub async fn mark_dropped(&self, changeset_id: &ChangesetId) -> Result<u64, EventStoreError> {
+        let result = sqlx::query("UPDATE events SET dropped = 1 WHERE changeset_id = $1")
+            .bind(&changeset_id.0)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Read events matching a simple WHERE clause with positional parameters.
+    ///
+    /// Results are always ordered by `id ASC` (chronological), as expected
+    /// by the [`EventStore`] trait methods.
     pub(crate) async fn query_events(
         &self,
         where_clause: &str,
         params: &[String],
     ) -> Result<Vec<Event>, EventStoreError> {
-        let sql = format!(
-            "SELECT id, timestamp, changeset_id, agent_id, kind
-             FROM events
-             WHERE {where_clause}
-             ORDER BY id ASC"
-        );
-
-        let mut query = sqlx::query(&sql);
-        for param in params {
-            query = query.bind(param);
+        let mut qb = QueryBuilder::new();
+        // Replace the default "dropped = 0" with the caller's full clause
+        // which already includes the dropped filter.
+        qb.conditions = vec![where_clause.to_string()];
+        for p in params {
+            qb.params.push(p.clone());
         }
-
-        let rows = query.fetch_all(&self.pool).await?;
-        rows.iter().map(row_to_event).collect()
+        qb.fetch(&self.pool, "ASC", None).await
     }
 }
 

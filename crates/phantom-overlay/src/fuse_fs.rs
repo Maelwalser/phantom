@@ -5,11 +5,10 @@
 
 #[cfg(target_os = "linux")]
 mod inner {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::ffi::OsStr;
     use std::fs::OpenOptions;
     use std::os::unix::fs::{FileExt, PermissionsExt};
-    use std::path::PathBuf;
     use std::sync::RwLock;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,6 +21,7 @@ mod inner {
     use phantom_core::AgentId;
     use tracing::{debug, warn};
 
+    use crate::inode_table::InodeTable;
     use crate::layer::OverlayLayer;
 
     /// An open file descriptor tracked by the FUSE filesystem.
@@ -35,213 +35,6 @@ mod inner {
 
     /// TTL for attribute and entry caching (1 second).
     const TTL: Duration = Duration::from_secs(1);
-
-    /// All mutable inode state protected by a single `RwLock`.
-    /// Read-only lookups (`get_path`, `is_unlinked`) take the read lock;
-    /// mutations (`get_or_create_inode`, `unlink`, `rename`, `forget`)
-    /// take the write lock.
-    struct InodeTableInner {
-        ino_to_path: HashMap<u64, PathBuf>,
-        path_to_ino: HashMap<PathBuf, u64>,
-        /// Kernel-side lookup reference count per inode.  Incremented on
-        /// every `lookup`, `create`, `mkdir`, and `readdir` reply that
-        /// hands an inode to the kernel; decremented by `forget`.
-        lookup_count: HashMap<u64, u64>,
-        /// Inodes that have been unlinked from the directory tree but still
-        /// have a non-zero kernel lookup count.  The `ino_to_path` entry is
-        /// kept alive so that open file descriptors can still resolve the
-        /// inode.  `forget()` performs final cleanup when the count drops
-        /// to zero.
-        unlinked: HashSet<u64>,
-    }
-
-    /// Bidirectional map between inode numbers and filesystem paths.
-    ///
-    /// Tracks kernel lookup counts so that inodes can be evicted via the
-    /// FUSE `forget` callback, preventing unbounded growth when large
-    /// directory trees are traversed.
-    ///
-    /// All mutable state lives behind a single `RwLock`. Read-only
-    /// lookups share the read lock; mutations take the write lock.
-    struct InodeTable {
-        next_ino: AtomicU64,
-        inner: RwLock<InodeTableInner>,
-    }
-
-    impl InodeTable {
-        fn new() -> Self {
-            let mut ino_to_path = HashMap::new();
-            let mut path_to_ino = HashMap::new();
-            ino_to_path.insert(1, PathBuf::from(""));
-            path_to_ino.insert(PathBuf::from(""), 1);
-
-            Self {
-                // inode 1 is the root directory.
-                next_ino: AtomicU64::new(2),
-                inner: RwLock::new(InodeTableInner {
-                    ino_to_path,
-                    path_to_ino,
-                    lookup_count: HashMap::new(),
-                    unlinked: HashSet::new(),
-                }),
-            }
-        }
-
-        fn get_path(&self, ino: u64) -> Option<PathBuf> {
-            self.inner.read().unwrap().ino_to_path.get(&ino).cloned()
-        }
-
-        /// Return the inode for `path`, creating a new one if necessary.
-        ///
-        /// Each call increments the kernel lookup count for the returned
-        /// inode.  The caller is responsible for only calling this when an
-        /// inode is actually being handed to the kernel (lookup reply,
-        /// create reply, readdir entry, etc.).
-        ///
-        /// NOTE: This takes a write lock unconditionally because the
-        /// lookup_count must be incremented atomically with the lookup.
-        /// A read-then-write approach would introduce a TOCTOU race.
-        /// If profiling shows this is a bottleneck under high concurrency
-        /// (e.g. LSP indexing), consider migrating to `DashMap` or
-        /// per-shard locking.
-        fn get_or_create_inode(&self, path: &PathBuf) -> u64 {
-            let mut inner = self.inner.write().unwrap();
-            if let Some(&ino) = inner.path_to_ino.get(path) {
-                *inner.lookup_count.entry(ino).or_insert(0) += 1;
-                return ino;
-            }
-            let ino = self.next_ino.fetch_add(1, Ordering::Relaxed);
-            inner.path_to_ino.insert(path.clone(), ino);
-            inner.ino_to_path.insert(ino, path.clone());
-            *inner.lookup_count.entry(ino).or_insert(0) += 1;
-            ino
-        }
-
-        /// Unlink a path from the directory tree without dropping the inode.
-        ///
-        /// Removes the `path -> ino` mapping so the name is gone from the
-        /// directory, but keeps the `ino -> path` entry alive so that open
-        /// file descriptors can still resolve the inode to its backing
-        /// storage path.  The inode is marked as unlinked; `forget()` will
-        /// perform final cleanup when the kernel drops all references.
-        fn unlink(&self, path: &PathBuf) {
-            let mut inner = self.inner.write().unwrap();
-            if let Some(ino) = inner.path_to_ino.remove(path) {
-                inner.unlinked.insert(ino);
-            }
-        }
-
-        /// Returns `true` if the inode has been unlinked from the directory
-        /// tree but still has outstanding kernel references.
-        fn is_unlinked(&self, ino: u64) -> bool {
-            self.inner.read().unwrap().unlinked.contains(&ino)
-        }
-
-        /// Re-key an inode (and all child inodes for directory renames) from
-        /// `old_path` to `new_path`.
-        ///
-        /// If the destination already has an inode mapping it is evicted
-        /// (the old destination is being overwritten by POSIX rename
-        /// semantics).
-        fn rename(&self, old_path: &PathBuf, new_path: &PathBuf) {
-            // POSIX: renaming a path to itself is a no-op.
-            if old_path == new_path {
-                return;
-            }
-
-            let mut inner = self.inner.write().unwrap();
-
-            // The destination is being overwritten (POSIX rename semantics).
-            // Remove from path_to_ino so lookup no longer finds it, but
-            // keep ino_to_path alive for any open file descriptors.
-            if let Some(dest_ino) = inner.path_to_ino.remove(new_path) {
-                inner.unlinked.insert(dest_ino);
-            }
-
-            // Re-key the source itself.
-            if let Some(ino) = inner.path_to_ino.remove(old_path) {
-                inner.path_to_ino.insert(new_path.clone(), ino);
-                inner.ino_to_path.insert(ino, new_path.clone());
-            }
-
-            // Re-key child paths (directory rename).
-            let old_prefix = {
-                let mut p = old_path.clone();
-                p.push("");
-                p
-            };
-            let children: Vec<(PathBuf, u64)> = inner
-                .path_to_ino
-                .iter()
-                .filter(|(path, _)| path.starts_with(&old_prefix))
-                .map(|(path, &ino)| (path.clone(), ino))
-                .collect();
-            for (child_path, ino) in children {
-                if let Ok(suffix) = child_path.strip_prefix(old_path) {
-                    let new_child = new_path.join(suffix);
-                    inner.path_to_ino.remove(&child_path);
-                    inner.path_to_ino.insert(new_child.clone(), ino);
-                    inner.ino_to_path.insert(ino, new_child);
-                }
-            }
-        }
-
-        /// Decrement the kernel lookup count for `ino` by `nlookup`.
-        /// When the count reaches zero the inode is evicted from the
-        /// translation maps, freeing the memory.  The root inode (1) is
-        /// never evicted.
-        ///
-        /// For unlinked inodes, `path_to_ino` was already removed by
-        /// `unlink()` — only `ino_to_path` remains and is cleaned up here.
-        /// For normal (non-unlinked) inodes, both maps are cleaned up.
-        fn forget(&self, ino: u64, nlookup: u64) {
-            if ino == 1 {
-                // Root inode is permanent.
-                return;
-            }
-
-            let mut inner = self.inner.write().unwrap();
-            if let Some(count) = inner.lookup_count.get_mut(&ino) {
-                *count = count.saturating_sub(nlookup);
-                if *count == 0 {
-                    inner.lookup_count.remove(&ino);
-                    if inner.unlinked.remove(&ino) {
-                        // Was unlinked — path_to_ino entry already removed;
-                        // only ino_to_path remains.
-                        inner.ino_to_path.remove(&ino);
-                    } else {
-                        // Normal forget — clean up both maps.
-                        if let Some(path) = inner.ino_to_path.remove(&ino) {
-                            inner.path_to_ino.remove(&path);
-                        }
-                    }
-                }
-            }
-        }
-
-        /// Remove all unlinked inodes that have no remaining kernel
-        /// references (lookup count is zero or absent).
-        ///
-        /// Call this during overlay teardown to reclaim memory for inodes
-        /// whose `forget` was never dispatched (e.g. after an unclean
-        /// unmount or agent crash).
-        fn purge_unlinked(&self) -> usize {
-            let mut inner = self.inner.write().unwrap();
-            let stale: Vec<u64> = inner
-                .unlinked
-                .iter()
-                .filter(|&&ino| inner.lookup_count.get(&ino).is_none_or(|&count| count == 0))
-                .copied()
-                .collect();
-            let purged = stale.len();
-            for ino in stale {
-                inner.unlinked.remove(&ino);
-                inner.ino_to_path.remove(&ino);
-                inner.lookup_count.remove(&ino);
-            }
-            purged
-        }
-    }
 
     /// Snapshotted directory listing for a single `opendir` handle.
     ///
@@ -460,10 +253,12 @@ mod inner {
             all_entries.sort_by(|a, b| a.2.cmp(&b.2));
 
             let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
-            self.open_dirs
-                .write()
-                .unwrap()
-                .insert(fh, DirSnapshot { entries: all_entries });
+            self.open_dirs.write().unwrap().insert(
+                fh,
+                DirSnapshot {
+                    entries: all_entries,
+                },
+            );
             reply.opened(FileHandle(fh), FopenFlags::empty());
         }
 
@@ -969,132 +764,8 @@ mod inner {
     }
 
     #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        /// Helper: simulate paginated readdir over a snapshot, collecting all
-        /// returned entries.  Mimics the kernel calling readdir repeatedly with
-        /// the last cookie returned.
-        fn collect_readdir(snapshot: &DirSnapshot, page_size: usize) -> Vec<String> {
-            let mut result = Vec::new();
-            let mut offset: u64 = 0;
-            loop {
-                let start = offset as usize;
-                let mut added = 0;
-                for (idx, (_ino, _ft, name)) in snapshot.entries.iter().enumerate().skip(start) {
-                    let cookie = (idx as u64) + 1;
-                    result.push(name.clone());
-                    offset = cookie;
-                    added += 1;
-                    if added >= page_size {
-                        break;
-                    }
-                }
-                if added == 0 {
-                    break;
-                }
-            }
-            result
-        }
-
-        #[test]
-        fn readdir_sequential_returns_all_entries() {
-            let snapshot = DirSnapshot {
-                entries: vec![
-                    (1, FileType::Directory, ".".into()),
-                    (1, FileType::Directory, "..".into()),
-                    (2, FileType::RegularFile, "a.txt".into()),
-                    (3, FileType::RegularFile, "b.txt".into()),
-                    (4, FileType::RegularFile, "c.txt".into()),
-                ],
-            };
-
-            // Page size of 2 forces multiple readdir rounds.
-            let names = collect_readdir(&snapshot, 2);
-            assert_eq!(names, vec![".", "..", "a.txt", "b.txt", "c.txt"]);
-        }
-
-        #[test]
-        fn readdir_single_page_returns_all() {
-            let snapshot = DirSnapshot {
-                entries: vec![
-                    (1, FileType::Directory, ".".into()),
-                    (1, FileType::Directory, "..".into()),
-                    (2, FileType::RegularFile, "only.txt".into()),
-                ],
-            };
-
-            let names = collect_readdir(&snapshot, 100);
-            assert_eq!(names, vec![".", "..", "only.txt"]);
-        }
-
-        #[test]
-        fn readdir_empty_directory() {
-            let snapshot = DirSnapshot {
-                entries: vec![
-                    (1, FileType::Directory, ".".into()),
-                    (1, FileType::Directory, "..".into()),
-                ],
-            };
-
-            let names = collect_readdir(&snapshot, 1);
-            assert_eq!(names, vec![".", ".."]);
-        }
-
-        #[test]
-        fn readdir_page_size_one_returns_all() {
-            let snapshot = DirSnapshot {
-                entries: vec![
-                    (1, FileType::Directory, ".".into()),
-                    (1, FileType::Directory, "..".into()),
-                    (10, FileType::RegularFile, "x".into()),
-                    (11, FileType::RegularFile, "y".into()),
-                    (12, FileType::RegularFile, "z".into()),
-                ],
-            };
-
-            // Page size 1 = worst-case pagination.
-            let names = collect_readdir(&snapshot, 1);
-            assert_eq!(names, vec![".", "..", "x", "y", "z"]);
-        }
-
-        #[test]
-        fn readdir_no_duplicate_entries() {
-            let entries: Vec<(u64, FileType, String)> = (0..50)
-                .map(|i| (i + 2, FileType::RegularFile, format!("file_{i:04}.txt")))
-                .collect();
-            let mut all: Vec<(u64, FileType, String)> = vec![
-                (1, FileType::Directory, ".".into()),
-                (1, FileType::Directory, "..".into()),
-            ];
-            all.extend(entries);
-            let snapshot = DirSnapshot { entries: all };
-
-            let names = collect_readdir(&snapshot, 7);
-            // Verify no duplicates and correct count.
-            assert_eq!(names.len(), 52);
-            let unique: std::collections::HashSet<&String> = names.iter().collect();
-            assert_eq!(unique.len(), 52, "readdir produced duplicate entries");
-        }
-
-        #[test]
-        fn rename_self_is_noop() {
-            let table = InodeTable::new();
-            let path = PathBuf::from("some/file.txt");
-            let ino = table.get_or_create_inode(&path);
-
-            // Rename to self must not corrupt the inode table.
-            table.rename(&path, &path);
-
-            // The inode must still be reachable via path lookup.
-            assert_eq!(table.get_or_create_inode(&path), ino, "inode changed after self-rename");
-            assert_eq!(
-                table.get_path(ino),
-                Some(path),
-                "path lookup broken after self-rename"
-            );
-        }
-    }
+    #[path = "fuse_fs_tests.rs"]
+    mod tests;
 }
 
 #[cfg(target_os = "linux")]

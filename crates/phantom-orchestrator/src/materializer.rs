@@ -11,13 +11,13 @@
 //! 3. **Conflict** — one or more files have symbol-level conflicts; the
 //!    changeset is rejected and a conflict event is recorded.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use tracing::debug;
 
-use phantom_core::changeset::{Changeset, SemanticOperation};
+use phantom_core::changeset::Changeset;
 use phantom_core::conflict::ConflictDetail;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{EventId, GitOid};
@@ -157,162 +157,26 @@ impl Materializer {
         let mut merged_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
         let mut text_fallback_files: Vec<PathBuf> = Vec::new();
 
-        // Group the agent's submitted operations by file for symbol-level
-        // pre-check. When the agent's changes and trunk's changes affect
-        // disjoint symbols, we skip the expensive semantic three-way merge
-        // and use the faster text-based merge instead.
         let agent_ops_by_file = group_ops_by_file(&changeset.operations);
 
         for file in &changeset.files_touched {
             self.validate_path(file, ctx.trunk_path)?;
 
-            let theirs_path = ctx.upper_dir.join(file);
-
-            // File in agent's overlay — read the agent's version
-            let theirs = if theirs_path.exists() {
-                std::fs::read(&theirs_path)?
-            } else {
-                // Agent deleted this file (or it's a whiteout)
-                continue;
-            };
-
-            // Check if the file existed at the base commit
-            let base = match self.git.read_file_at_commit(&changeset.base_commit, file) {
-                Ok(content) => Some(content),
-                Err(OrchestratorError::NotFound(_)) => None,
-                Err(e) => return Err(e),
-            };
-
-            match base {
-                None => {
-                    // New file — didn't exist at base. Check if it appeared on trunk since.
-                    match self.git.read_file_at_commit(ctx.head, file) {
-                        Ok(ours) => {
-                            // File was added on trunk too — need merge with empty base
-                            let result = ctx
-                                .analyzer
-                                .three_way_merge(&[], &ours, &theirs, file)
-                                .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
-                            match result {
-                                MergeResult::Clean(content) => {
-                                    if !ctx.analyzer.supports_language(file) {
-                                        text_fallback_files.push(file.clone());
-                                    }
-                                    merged_files.push((file.clone(), content));
-                                }
-                                MergeResult::Conflict(conflicts) => {
-                                    all_conflicts.extend(conflicts);
-                                }
-                            }
-                        }
-                        Err(OrchestratorError::NotFound(_)) => {
-                            // New file not on trunk either — just add it
-                            merged_files.push((file.clone(), theirs));
-                        }
-                        Err(e) => return Err(e),
+            let agent_file_ops = agent_ops_by_file.get(file);
+            match self.merge_single_file(file, changeset, ctx, agent_file_ops)? {
+                MergeFileOutcome::Merged {
+                    content,
+                    text_fallback,
+                } => {
+                    if text_fallback {
+                        text_fallback_files.push(file.clone());
                     }
+                    merged_files.push((file.clone(), content));
                 }
-                Some(base_content) => {
-                    // File existed at base — read trunk's current version
-                    let ours = match self.git.read_file_at_commit(ctx.head, file) {
-                        Ok(content) => content,
-                        Err(OrchestratorError::NotFound(_)) => {
-                            // File was deleted on trunk since base
-                            all_conflicts.push(ConflictDetail {
-                                kind: phantom_core::conflict::ConflictKind::ModifyDeleteSymbol,
-                                file: file.clone(),
-                                symbol_id: None,
-                                ours_changeset: phantom_core::id::ChangesetId("trunk".into()),
-                                theirs_changeset: changeset.id.clone(),
-                                description: format!(
-                                    "file {} was deleted on trunk but modified by agent",
-                                    file.display()
-                                ),
-                                ours_span: None,
-                                theirs_span: None,
-                                base_span: None,
-                            });
-                            continue;
-                        }
-                        Err(e) => return Err(e),
-                    };
-
-                    // If trunk version hasn't changed from base, no merge needed
-                    if ours == base_content {
-                        merged_files.push((file.clone(), theirs));
-                        continue;
-                    }
-
-                    // Use submitted operations for symbol-level pre-check.
-                    // When the agent's operations for this file don't overlap
-                    // with trunk's symbol changes, we can skip the expensive
-                    // semantic three-way merge and use a faster text merge.
-                    let symbols_disjoint = if let Some(agent_syms) = agent_ops_by_file.get(file) {
-                        if agent_syms.is_empty() {
-                            false
-                        } else {
-                            let base_syms = ctx
-                                .analyzer
-                                .extract_symbols(file, &base_content)
-                                .unwrap_or_default();
-                            let trunk_syms = ctx
-                                .analyzer
-                                .extract_symbols(file, &ours)
-                                .unwrap_or_default();
-                            let trunk_ops = ctx.analyzer.diff_symbols(&base_syms, &trunk_syms);
-                            let trunk_names: HashSet<String> = trunk_ops
-                                .iter()
-                                .filter_map(|op| op.symbol_name().map(String::from))
-                                .collect();
-                            !agent_syms.iter().any(|s| trunk_names.contains(s.as_str()))
-                        }
-                    } else {
-                        false
-                    };
-
-                    // Track files that lack semantic analysis support — these
-                    // will be merged via line-based text fallback with no syntax
-                    // validation.
-                    let is_unsupported = !ctx.analyzer.supports_language(file);
-
-                    if symbols_disjoint {
-                        debug!(file = %file.display(), "symbol-disjoint — using text merge");
-                        if let MergeResult::Clean(content) =
-                            self.git.text_merge(&base_content, &ours, &theirs)?
-                        {
-                            if is_unsupported {
-                                text_fallback_files.push(file.clone());
-                            }
-                            merged_files.push((file.clone(), content));
-                            continue;
-                        }
-                        // Text merge failed despite disjoint symbols (e.g.
-                        // additions at the exact same line). Fall through to
-                        // semantic merge which may resolve it.
-                        debug!(
-                            file = %file.display(),
-                            "text merge conflict despite disjoint symbols, falling back to semantic merge"
-                        );
-                    }
-
-                    // Three-way semantic merge
-                    let result = ctx
-                        .analyzer
-                        .three_way_merge(&base_content, &ours, &theirs, file)
-                        .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
-
-                    match result {
-                        MergeResult::Clean(content) => {
-                            if is_unsupported {
-                                text_fallback_files.push(file.clone());
-                            }
-                            merged_files.push((file.clone(), content));
-                        }
-                        MergeResult::Conflict(conflicts) => {
-                            all_conflicts.extend(conflicts);
-                        }
-                    }
+                MergeFileOutcome::Conflicted(conflicts) => {
+                    all_conflicts.extend(conflicts);
                 }
+                MergeFileOutcome::Skipped => {}
             }
         }
 
@@ -324,16 +188,10 @@ impl Materializer {
             });
         }
 
-        // Commit directly from in-memory content. This builds the tree
-        // object from blobs without writing to the working directory first,
-        // eliminating the TOCTOU window between writing files to disk and
-        // staging them via index.add_path().
         let merged_oids = git::create_blobs_from_content(self.git.repo(), &merged_files)?;
         let new_commit =
             self.commit_from_oids(&merged_oids, ctx.head, ctx.message, &changeset.agent_id.0)?;
 
-        // Update working tree to match the new commit (best-effort
-        // convenience). The commit is already correct regardless.
         if let Err(e) = self
             .git
             .repo()
@@ -358,6 +216,156 @@ impl Materializer {
             new_commit,
             text_fallback_files,
         })
+    }
+
+    /// Merge a single file during the merge-apply path.
+    ///
+    /// Handles: reading agent/base/trunk versions, new-file vs existing-file
+    /// logic, symbol-disjoint text merge optimization, and semantic three-way merge.
+    fn merge_single_file(
+        &self,
+        file: &Path,
+        changeset: &Changeset,
+        ctx: &MergeContext<'_>,
+        agent_file_ops: Option<&HashSet<String>>,
+    ) -> Result<MergeFileOutcome, OrchestratorError> {
+        let theirs_path = ctx.upper_dir.join(file);
+
+        // Read agent's version from overlay.
+        let theirs = if theirs_path.exists() {
+            std::fs::read(&theirs_path)?
+        } else {
+            return Ok(MergeFileOutcome::Skipped);
+        };
+
+        // Read base version.
+        let base = match self.git.read_file_at_commit(&changeset.base_commit, file) {
+            Ok(content) => Some(content),
+            Err(OrchestratorError::NotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+
+        match base {
+            None => self.merge_new_file(file, ctx, &theirs),
+            Some(base_content) => {
+                self.merge_existing_file(file, changeset, ctx, &base_content, &theirs, agent_file_ops)
+            }
+        }
+    }
+
+    /// Handle merge of a file that didn't exist at the base commit.
+    fn merge_new_file(
+        &self,
+        file: &Path,
+        ctx: &MergeContext<'_>,
+        theirs: &[u8],
+    ) -> Result<MergeFileOutcome, OrchestratorError> {
+        match self.git.read_file_at_commit(ctx.head, file) {
+            Ok(ours) => {
+                // File added on trunk too — merge with empty base.
+                let result = ctx
+                    .analyzer
+                    .three_way_merge(&[], &ours, theirs, file)
+                    .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
+                Ok(merge_result_to_outcome(result, file, ctx.analyzer))
+            }
+            Err(OrchestratorError::NotFound(_)) => {
+                // New file not on trunk either — just add it.
+                Ok(MergeFileOutcome::Merged {
+                    content: theirs.to_vec(),
+                    text_fallback: false,
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Handle merge of a file that existed at the base commit.
+    fn merge_existing_file(
+        &self,
+        file: &Path,
+        changeset: &Changeset,
+        ctx: &MergeContext<'_>,
+        base_content: &[u8],
+        theirs: &[u8],
+        agent_file_ops: Option<&HashSet<String>>,
+    ) -> Result<MergeFileOutcome, OrchestratorError> {
+        // Read trunk's current version.
+        let ours = match self.git.read_file_at_commit(ctx.head, file) {
+            Ok(content) => content,
+            Err(OrchestratorError::NotFound(_)) => {
+                // File deleted on trunk since base.
+                return Ok(MergeFileOutcome::Conflicted(vec![ConflictDetail {
+                    kind: phantom_core::conflict::ConflictKind::ModifyDeleteSymbol,
+                    file: file.to_path_buf(),
+                    symbol_id: None,
+                    ours_changeset: phantom_core::id::ChangesetId("trunk".into()),
+                    theirs_changeset: changeset.id.clone(),
+                    description: format!(
+                        "file {} was deleted on trunk but modified by agent",
+                        file.display()
+                    ),
+                    ours_span: None,
+                    theirs_span: None,
+                    base_span: None,
+                }]));
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Trunk unchanged from base — use agent's version directly.
+        if ours == base_content {
+            return Ok(MergeFileOutcome::Merged {
+                content: theirs.to_vec(),
+                text_fallback: false,
+            });
+        }
+
+        // Symbol-level disjoint check: skip expensive semantic merge when
+        // agent and trunk modified different symbols.
+        let symbols_disjoint = match agent_file_ops {
+            Some(agent_syms) if !agent_syms.is_empty() => {
+                let base_syms = ctx
+                    .analyzer
+                    .extract_symbols(file, base_content)
+                    .unwrap_or_default();
+                let trunk_syms = ctx
+                    .analyzer
+                    .extract_symbols(file, &ours)
+                    .unwrap_or_default();
+                let trunk_ops = ctx.analyzer.diff_symbols(&base_syms, &trunk_syms);
+                let trunk_names: HashSet<String> = trunk_ops
+                    .iter()
+                    .filter_map(|op| op.symbol_name().map(String::from))
+                    .collect();
+                !agent_syms.iter().any(|s| trunk_names.contains(s.as_str()))
+            }
+            _ => false,
+        };
+
+        if symbols_disjoint {
+            debug!(file = %file.display(), "symbol-disjoint — using text merge");
+            if let MergeResult::Clean(content) =
+                self.git.text_merge(base_content, &ours, theirs)?
+            {
+                return Ok(MergeFileOutcome::Merged {
+                    content,
+                    text_fallback: !ctx.analyzer.supports_language(file),
+                });
+            }
+            debug!(
+                file = %file.display(),
+                "text merge conflict despite disjoint symbols, falling back to semantic merge"
+            );
+        }
+
+        // Three-way semantic merge.
+        let result = ctx
+            .analyzer
+            .three_way_merge(base_content, &ours, theirs, file)
+            .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
+
+        Ok(merge_result_to_outcome(result, file, ctx.analyzer))
     }
 
     /// Validate that a relative path does not escape the trunk directory.
@@ -465,20 +473,31 @@ impl Materializer {
     }
 }
 
-/// Group semantic operations by file path, collecting the symbol names
-/// modified in each file. Used by the materializer to compare the agent's
-/// submitted operations against trunk changes for a fast symbol-level
-/// overlap check.
-fn group_ops_by_file(operations: &[SemanticOperation]) -> HashMap<PathBuf, HashSet<String>> {
-    let mut map: HashMap<PathBuf, HashSet<String>> = HashMap::new();
-    for op in operations {
-        if let Some(name) = op.symbol_name() {
-            map.entry(op.file_path().to_path_buf())
-                .or_default()
-                .insert(name.to_string());
-        }
+use crate::ops::group_ops_by_file;
+
+/// Outcome of merging a single file during the merge-apply path.
+enum MergeFileOutcome {
+    /// File merged cleanly with this content.
+    Merged { content: Vec<u8>, text_fallback: bool },
+    /// File produced conflicts.
+    Conflicted(Vec<ConflictDetail>),
+    /// File was skipped (deleted or whiteout).
+    Skipped,
+}
+
+/// Convert a [`MergeResult`] into a [`MergeFileOutcome`], tracking text fallback.
+fn merge_result_to_outcome(
+    result: MergeResult,
+    file: &Path,
+    analyzer: &dyn SemanticAnalyzer,
+) -> MergeFileOutcome {
+    match result {
+        MergeResult::Clean(content) => MergeFileOutcome::Merged {
+            text_fallback: !analyzer.supports_language(file),
+            content,
+        },
+        MergeResult::Conflict(conflicts) => MergeFileOutcome::Conflicted(conflicts),
     }
-    map
 }
 
 /// Bundled context for a merge-apply operation, avoiding excessive parameter counts.
@@ -492,548 +511,5 @@ struct MergeContext<'a> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use std::collections::HashMap;
-    use std::sync::RwLock;
-
-    use chrono::{DateTime, Utc};
-    use phantom_core::changeset::{Changeset, ChangesetStatus};
-    use phantom_core::conflict::ConflictDetail;
-    use phantom_core::error::CoreError;
-    use phantom_core::event::Event;
-    use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid};
-    use phantom_core::symbol::SymbolEntry;
-    use phantom_core::traits::{EventStore, MergeResult, SemanticAnalyzer};
-
-    // -----------------------------------------------------------------------
-    // Mock EventStore
-    // -----------------------------------------------------------------------
-
-    struct MockEventStore {
-        events: RwLock<Vec<Event>>,
-    }
-
-    impl MockEventStore {
-        fn new() -> Self {
-            Self {
-                events: RwLock::new(Vec::new()),
-            }
-        }
-
-        fn events(&self) -> Vec<Event> {
-            self.events.read().unwrap().clone()
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl EventStore for MockEventStore {
-        async fn append(&self, event: Event) -> Result<EventId, CoreError> {
-            let mut events = self.events.write().unwrap();
-            let id = EventId(events.len() as u64 + 1);
-            events.push(Event { id, ..event });
-            Ok(id)
-        }
-
-        async fn query_by_changeset(&self, _id: &ChangesetId) -> Result<Vec<Event>, CoreError> {
-            Ok(vec![])
-        }
-
-        async fn query_by_agent(&self, _id: &AgentId) -> Result<Vec<Event>, CoreError> {
-            Ok(vec![])
-        }
-
-        async fn query_all(&self) -> Result<Vec<Event>, CoreError> {
-            Ok(self.events.read().unwrap().clone())
-        }
-
-        async fn query_since(&self, _since: DateTime<Utc>) -> Result<Vec<Event>, CoreError> {
-            Ok(vec![])
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Mock SemanticAnalyzer
-    // -----------------------------------------------------------------------
-
-    struct MockAnalyzer {
-        merge_results: HashMap<PathBuf, MergeResult>,
-    }
-
-    impl MockAnalyzer {
-        fn new() -> Self {
-            Self {
-                merge_results: HashMap::new(),
-            }
-        }
-
-        fn set_merge_result(&mut self, path: PathBuf, result: MergeResult) {
-            self.merge_results.insert(path, result);
-        }
-    }
-
-    impl SemanticAnalyzer for MockAnalyzer {
-        fn extract_symbols(
-            &self,
-            _path: &Path,
-            _content: &[u8],
-        ) -> Result<Vec<SymbolEntry>, CoreError> {
-            Ok(vec![])
-        }
-
-        fn diff_symbols(
-            &self,
-            _base: &[SymbolEntry],
-            _current: &[SymbolEntry],
-        ) -> Vec<phantom_core::changeset::SemanticOperation> {
-            vec![]
-        }
-
-        fn three_way_merge(
-            &self,
-            _base: &[u8],
-            _ours: &[u8],
-            _theirs: &[u8],
-            path: &Path,
-        ) -> Result<MergeResult, CoreError> {
-            match self.merge_results.get(path) {
-                Some(result) => Ok(result.clone()),
-                None => Ok(MergeResult::Clean(b"default merged content".to_vec())),
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Test helpers
-    // -----------------------------------------------------------------------
-
-    /// Create a temporary git repo with an initial commit.
-    fn init_repo(files: &[(&str, &[u8])]) -> (tempfile::TempDir, GitOps) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-
-        let mut index = repo.index().unwrap();
-        for &(path, content) in files {
-            let full = dir.path().join(path);
-            if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(&full, content).unwrap();
-            index.add_path(Path::new(path)).unwrap();
-        }
-        index.write().unwrap();
-
-        let tree_oid = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_oid).unwrap();
-        let sig = git2::Signature::now("test", "test@phantom").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "initial commit", &tree, &[])
-            .unwrap();
-
-        let ops = GitOps::open(dir.path()).unwrap();
-        (dir, ops)
-    }
-
-    /// Commit additional changes on trunk (simulating another agent's materialization).
-    fn advance_trunk(git: &GitOps, files: &[(&str, &[u8])]) -> GitOid {
-        let trunk_path = git.repo().workdir().unwrap().to_path_buf();
-        let upper = tempfile::TempDir::new().unwrap();
-        for &(path, content) in files {
-            let full = upper.path().join(path);
-            if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(&full, content).unwrap();
-        }
-        git.commit_overlay_changes(upper.path(), &trunk_path, "trunk advance", "other-agent")
-            .unwrap()
-    }
-
-    /// Create an upper directory with the given files.
-    fn make_upper(files: &[(&str, &[u8])]) -> tempfile::TempDir {
-        let dir = tempfile::TempDir::new().unwrap();
-        for &(path, content) in files {
-            let full = dir.path().join(path);
-            if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(&full, content).unwrap();
-        }
-        dir
-    }
-
-    fn make_changeset(id: &str, base: GitOid, files: Vec<PathBuf>) -> Changeset {
-        Changeset {
-            id: ChangesetId(id.into()),
-            agent_id: AgentId("agent-test".into()),
-            task: "test task".into(),
-            base_commit: base,
-            files_touched: files,
-            operations: vec![],
-            test_result: None,
-            created_at: Utc::now(),
-            status: ChangesetStatus::Submitted,
-            agent_pid: None,
-            agent_launched_at: None,
-            agent_completed_at: None,
-            agent_exit_code: None,
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Tests
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn direct_apply_trunk_not_advanced() {
-        let (_dir, git) = init_repo(&[("src/main.rs", b"fn main() {}")]);
-        let base = git.head_oid().unwrap();
-        let upper = make_upper(&[("src/main.rs", b"fn main() { println!(\"hi\"); }")]);
-        let event_store = MockEventStore::new();
-        let analyzer = MockAnalyzer::new();
-
-        let changeset = make_changeset("cs-1", base, vec![PathBuf::from("src/main.rs")]);
-
-        let materializer = Materializer::new(git);
-        let result = materializer
-            .materialize(
-                &changeset,
-                upper.path(),
-                &event_store,
-                &analyzer,
-                "test commit",
-            )
-            .await
-            .unwrap();
-
-        match result {
-            MaterializeResult::Success { new_commit, .. } => {
-                assert_ne!(new_commit, base);
-                let events = event_store.events();
-                assert_eq!(events.len(), 1);
-                match &events[0].kind {
-                    EventKind::ChangesetMaterialized { new_commit: nc } => {
-                        assert_eq!(*nc, new_commit);
-                    }
-                    other => panic!("expected ChangesetMaterialized, got {other:?}"),
-                }
-            }
-            MaterializeResult::Conflict { .. } => panic!("expected success"),
-        }
-    }
-
-    #[tokio::test]
-    async fn clean_merge_trunk_advanced() {
-        let (_dir, git) =
-            init_repo(&[("src/api.rs", b"fn api() {}"), ("src/db.rs", b"fn db() {}")]);
-        let base = git.head_oid().unwrap();
-
-        advance_trunk(&git, &[("src/db.rs", b"fn db() { /* updated */ }")]);
-
-        let upper = make_upper(&[("src/api.rs", b"fn api() { /* agent changes */ }")]);
-        let event_store = MockEventStore::new();
-        let analyzer = MockAnalyzer::new();
-
-        let changeset = make_changeset("cs-2", base, vec![PathBuf::from("src/api.rs")]);
-
-        let materializer = Materializer::new(git);
-        let result = materializer
-            .materialize(
-                &changeset,
-                upper.path(),
-                &event_store,
-                &analyzer,
-                "test commit",
-            )
-            .await
-            .unwrap();
-
-        match result {
-            MaterializeResult::Success { new_commit, .. } => {
-                assert_ne!(new_commit, base);
-                let events = event_store.events();
-                assert_eq!(events.len(), 1);
-                assert!(matches!(
-                    &events[0].kind,
-                    EventKind::ChangesetMaterialized { .. }
-                ));
-            }
-            MaterializeResult::Conflict { .. } => panic!("expected clean merge"),
-        }
-    }
-
-    #[tokio::test]
-    async fn conflict_detected() {
-        let (_dir, git) = init_repo(&[("src/lib.rs", b"fn original() {}")]);
-        let base = git.head_oid().unwrap();
-
-        advance_trunk(&git, &[("src/lib.rs", b"fn trunk_version() {}")]);
-
-        let upper = make_upper(&[("src/lib.rs", b"fn agent_version() {}")]);
-        let event_store = MockEventStore::new();
-
-        let mut analyzer = MockAnalyzer::new();
-        analyzer.set_merge_result(
-            PathBuf::from("src/lib.rs"),
-            MergeResult::Conflict(vec![ConflictDetail {
-                kind: phantom_core::conflict::ConflictKind::BothModifiedSymbol,
-                file: PathBuf::from("src/lib.rs"),
-                symbol_id: None,
-                ours_changeset: ChangesetId("trunk".into()),
-                theirs_changeset: ChangesetId("cs-3".into()),
-                description: "both modified same symbol".into(),
-                ours_span: None,
-                theirs_span: None,
-                base_span: None,
-            }]),
-        );
-
-        let changeset = make_changeset("cs-3", base, vec![PathBuf::from("src/lib.rs")]);
-
-        let materializer = Materializer::new(git);
-        let result = materializer
-            .materialize(
-                &changeset,
-                upper.path(),
-                &event_store,
-                &analyzer,
-                "test commit",
-            )
-            .await
-            .unwrap();
-
-        match result {
-            MaterializeResult::Conflict { details } => {
-                assert_eq!(details.len(), 1);
-                assert_eq!(
-                    details[0].kind,
-                    phantom_core::conflict::ConflictKind::BothModifiedSymbol
-                );
-                let events = event_store.events();
-                assert_eq!(events.len(), 1);
-                assert!(matches!(
-                    &events[0].kind,
-                    EventKind::ChangesetConflicted { .. }
-                ));
-            }
-            MaterializeResult::Success { .. } => panic!("expected conflict"),
-        }
-    }
-
-    #[tokio::test]
-    async fn new_file_not_in_base() {
-        let (_dir, git) = init_repo(&[("src/main.rs", b"fn main() {}")]);
-        let base = git.head_oid().unwrap();
-
-        advance_trunk(&git, &[("src/main.rs", b"fn main() { /* updated */ }")]);
-
-        let upper = make_upper(&[("src/new_module.rs", b"pub fn new_thing() {}")]);
-        let event_store = MockEventStore::new();
-        let analyzer = MockAnalyzer::new();
-
-        let changeset = make_changeset("cs-4", base, vec![PathBuf::from("src/new_module.rs")]);
-
-        let materializer = Materializer::new(git);
-        let result = materializer
-            .materialize(
-                &changeset,
-                upper.path(),
-                &event_store,
-                &analyzer,
-                "test commit",
-            )
-            .await
-            .unwrap();
-
-        match result {
-            MaterializeResult::Success { new_commit, .. } => {
-                let content = materializer
-                    .git
-                    .read_file_at_commit(&new_commit, Path::new("src/new_module.rs"))
-                    .unwrap();
-                assert_eq!(content, b"pub fn new_thing() {}");
-            }
-            MaterializeResult::Conflict { .. } => panic!("expected success for new file"),
-        }
-    }
-
-    #[tokio::test]
-    async fn multiple_files_partial_conflict() {
-        let (_dir, git) = init_repo(&[
-            ("file_a.rs", b"fn a() {}"),
-            ("file_b.rs", b"fn b() {}"),
-            ("file_c.rs", b"fn c() {}"),
-        ]);
-        let base = git.head_oid().unwrap();
-
-        advance_trunk(
-            &git,
-            &[
-                ("file_a.rs", b"fn a() { /* trunk */ }"),
-                ("file_b.rs", b"fn b() { /* trunk */ }"),
-                ("file_c.rs", b"fn c() { /* trunk */ }"),
-            ],
-        );
-
-        let upper = make_upper(&[
-            ("file_a.rs", b"fn a() { /* agent */ }"),
-            ("file_b.rs", b"fn b() { /* agent */ }"),
-            ("file_c.rs", b"fn c() { /* agent */ }"),
-        ]);
-        let event_store = MockEventStore::new();
-
-        let mut analyzer = MockAnalyzer::new();
-        analyzer.set_merge_result(
-            PathBuf::from("file_a.rs"),
-            MergeResult::Clean(b"fn a() { /* merged */ }".to_vec()),
-        );
-        analyzer.set_merge_result(
-            PathBuf::from("file_b.rs"),
-            MergeResult::Conflict(vec![ConflictDetail {
-                kind: phantom_core::conflict::ConflictKind::BothModifiedSymbol,
-                file: PathBuf::from("file_b.rs"),
-                symbol_id: None,
-                ours_changeset: ChangesetId("trunk".into()),
-                theirs_changeset: ChangesetId("cs-5".into()),
-                description: "conflict in file_b".into(),
-                ours_span: None,
-                theirs_span: None,
-                base_span: None,
-            }]),
-        );
-        analyzer.set_merge_result(
-            PathBuf::from("file_c.rs"),
-            MergeResult::Clean(b"fn c() { /* merged */ }".to_vec()),
-        );
-
-        let changeset = make_changeset(
-            "cs-5",
-            base,
-            vec![
-                PathBuf::from("file_a.rs"),
-                PathBuf::from("file_b.rs"),
-                PathBuf::from("file_c.rs"),
-            ],
-        );
-
-        let materializer = Materializer::new(git);
-        let result = materializer
-            .materialize(
-                &changeset,
-                upper.path(),
-                &event_store,
-                &analyzer,
-                "test commit",
-            )
-            .await
-            .unwrap();
-
-        match result {
-            MaterializeResult::Conflict { details } => {
-                assert_eq!(details.len(), 1);
-                assert_eq!(details[0].file, PathBuf::from("file_b.rs"));
-            }
-            MaterializeResult::Success { .. } => {
-                panic!("expected conflict due to file_b")
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn trunk_unchanged_file_uses_agent_version_directly() {
-        let (_dir, git) = init_repo(&[
-            ("src/api.rs", b"fn api() {}"),
-            ("src/other.rs", b"fn other() {}"),
-        ]);
-        let base = git.head_oid().unwrap();
-
-        advance_trunk(&git, &[("src/other.rs", b"fn other() { /* new */ }")]);
-
-        let upper = make_upper(&[("src/api.rs", b"fn api() { /* agent */ }")]);
-        let event_store = MockEventStore::new();
-        let analyzer = MockAnalyzer::new();
-
-        let changeset = make_changeset("cs-6", base, vec![PathBuf::from("src/api.rs")]);
-
-        let materializer = Materializer::new(git);
-        let result = materializer
-            .materialize(
-                &changeset,
-                upper.path(),
-                &event_store,
-                &analyzer,
-                "test commit",
-            )
-            .await
-            .unwrap();
-
-        match result {
-            MaterializeResult::Success { new_commit, .. } => {
-                let content = materializer
-                    .git
-                    .read_file_at_commit(&new_commit, Path::new("src/api.rs"))
-                    .unwrap();
-                assert_eq!(content, b"fn api() { /* agent */ }");
-            }
-            MaterializeResult::Conflict { .. } => panic!("expected success"),
-        }
-    }
-
-    #[tokio::test]
-    async fn rejects_path_traversal() {
-        let (_dir, git) = init_repo(&[("src/main.rs", b"fn main() {}")]);
-        let base = git.head_oid().unwrap();
-
-        advance_trunk(&git, &[("src/main.rs", b"fn main() { /* v2 */ }")]);
-
-        let upper = make_upper(&[("src/main.rs", b"fn main() { /* agent */ }")]);
-        let event_store = MockEventStore::new();
-        let analyzer = MockAnalyzer::new();
-
-        let changeset = make_changeset("cs-bad", base, vec![PathBuf::from("../../../etc/passwd")]);
-
-        let materializer = Materializer::new(git);
-        let result = materializer
-            .materialize(
-                &changeset,
-                upper.path(),
-                &event_store,
-                &analyzer,
-                "test commit",
-            )
-            .await;
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("parent traversal"), "error was: {err}");
-    }
-
-    #[tokio::test]
-    async fn rejects_absolute_path() {
-        let (_dir, git) = init_repo(&[("src/main.rs", b"fn main() {}")]);
-        let base = git.head_oid().unwrap();
-
-        advance_trunk(&git, &[("src/main.rs", b"fn main() { /* v2 */ }")]);
-
-        let upper = make_upper(&[("src/main.rs", b"fn main() { /* agent */ }")]);
-        let event_store = MockEventStore::new();
-        let analyzer = MockAnalyzer::new();
-
-        let changeset = make_changeset("cs-abs", base, vec![PathBuf::from("/etc/passwd")]);
-
-        let materializer = Materializer::new(git);
-        let result = materializer
-            .materialize(
-                &changeset,
-                upper.path(),
-                &event_store,
-                &analyzer,
-                "test commit",
-            )
-            .await;
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("absolute"), "error was: {err}");
-    }
-}
+#[path = "materializer_tests.rs"]
+mod tests;

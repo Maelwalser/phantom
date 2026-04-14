@@ -6,6 +6,8 @@
 pub mod error;
 #[cfg(feature = "fuse")]
 pub mod fuse_fs;
+#[cfg(feature = "fuse")]
+mod inode_table;
 pub mod layer;
 pub mod manager;
 pub mod trunk_view;

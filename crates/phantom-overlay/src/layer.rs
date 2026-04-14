@@ -11,11 +11,11 @@ use std::io::Read as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::error::OverlayError;
 use crate::trunk_view::{read_dir_entries, walk_files};
-use crate::types::{DirEntry, FileType, is_hidden, is_passthrough};
+use crate::types::{DirEntry, FileType, is_hidden, is_passthrough, reparent_children};
 use crate::whiteout::{INTERNAL_FILES, WHITEOUT_FILE, WhiteoutSet, load_whiteouts};
 
 /// Copy-on-write overlay layer.
@@ -28,6 +28,21 @@ pub struct OverlayLayer {
     lower: PathBuf,
     upper: PathBuf,
     whiteouts: HashSet<PathBuf>,
+}
+
+/// Result of classifying a relative path through the overlay layers.
+///
+/// Encodes the hidden → passthrough → whiteout → upper → lower decision tree
+/// in a single place so callers don't repeat it.
+enum ResolvedPath {
+    /// File exists in the upper (agent write) layer.
+    Upper(PathBuf),
+    /// File exists only in the lower (trunk) layer.
+    Lower(PathBuf),
+    /// Passthrough path — routed directly to the lower layer, bypassing COW.
+    Passthrough(PathBuf),
+    /// Path is hidden, whited-out, or absent from both layers.
+    NotFound,
 }
 
 impl OverlayLayer {
@@ -54,41 +69,62 @@ impl OverlayLayer {
         })
     }
 
+    /// Classify a relative path through the overlay layers.
+    ///
+    /// Encodes the shared decision tree: hidden paths → `NotFound`,
+    /// passthrough paths → `Passthrough`, whiteout'd paths → `NotFound`,
+    /// then upper-before-lower fallback.
+    fn classify(&self, rel_path: &Path) -> ResolvedPath {
+        if is_hidden(rel_path) {
+            return ResolvedPath::NotFound;
+        }
+
+        if is_passthrough(rel_path) {
+            let lower_path = self.lower.join(rel_path);
+            return if lower_path.exists() {
+                ResolvedPath::Passthrough(lower_path)
+            } else {
+                ResolvedPath::NotFound
+            };
+        }
+
+        if self.whiteouts.contains(rel_path) {
+            return ResolvedPath::NotFound;
+        }
+
+        let upper_path = self.upper.join(rel_path);
+        if upper_path.exists() {
+            return ResolvedPath::Upper(upper_path);
+        }
+
+        let lower_path = self.lower.join(rel_path);
+        if lower_path.exists() {
+            return ResolvedPath::Lower(lower_path);
+        }
+
+        ResolvedPath::NotFound
+    }
+
     /// Read a file's contents. Checks upper layer first, then lower.
     ///
     /// Passthrough paths (`.git/**`) are read directly from the lower layer.
     /// Returns an error if the path has been whiteout'd (deleted) or is hidden.
     pub fn read_file(&self, rel_path: &Path) -> Result<Vec<u8>, OverlayError> {
-        if is_hidden(rel_path) {
-            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
-        }
-
-        if is_passthrough(rel_path) {
-            let lower_path = self.lower.join(rel_path);
-            if lower_path.exists() {
-                trace!(path = %rel_path.display(), layer = "lower-passthrough", "reading file");
-                return Ok(fs::read(&lower_path)?);
+        match self.classify(rel_path) {
+            ResolvedPath::Upper(path) => {
+                trace!(path = %rel_path.display(), layer = "upper", "reading file");
+                Ok(fs::read(&path)?)
             }
-            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+            ResolvedPath::Lower(path) => {
+                trace!(path = %rel_path.display(), layer = "lower", "reading file");
+                Ok(fs::read(&path)?)
+            }
+            ResolvedPath::Passthrough(path) => {
+                trace!(path = %rel_path.display(), layer = "lower-passthrough", "reading file");
+                Ok(fs::read(&path)?)
+            }
+            ResolvedPath::NotFound => Err(OverlayError::PathNotFound(rel_path.to_path_buf())),
         }
-
-        if self.whiteouts.contains(rel_path) {
-            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
-        }
-
-        let upper_path = self.upper.join(rel_path);
-        if upper_path.exists() {
-            trace!(path = %rel_path.display(), layer = "upper", "reading file");
-            return Ok(fs::read(&upper_path)?);
-        }
-
-        let lower_path = self.lower.join(rel_path);
-        if lower_path.exists() {
-            trace!(path = %rel_path.display(), layer = "lower", "reading file");
-            return Ok(fs::read(&lower_path)?);
-        }
-
-        Err(OverlayError::PathNotFound(rel_path.to_path_buf()))
     }
 
     /// Write a file to the upper layer (or directly to lower for passthrough paths).
@@ -113,7 +149,7 @@ impl OverlayLayer {
         fs::write(&upper_path, data)?;
 
         if self.whiteouts.remove(rel_path) {
-            let _ = self.persist_whiteouts();
+            self.persist_whiteouts_or_warn();
         }
 
         Ok(())
@@ -171,7 +207,7 @@ impl OverlayLayer {
         }
 
         if self.whiteouts.remove(rel_path) {
-            let _ = self.persist_whiteouts();
+            self.persist_whiteouts_or_warn();
         }
 
         trace!(path = %rel_path.display(), new_size, layer = "upper", "truncate");
@@ -315,16 +351,7 @@ impl OverlayLayer {
     /// then lower, excluding whiteout'd and hidden entries.
     #[must_use]
     pub fn exists(&self, rel_path: &Path) -> bool {
-        if is_hidden(rel_path) {
-            return false;
-        }
-        if is_passthrough(rel_path) {
-            return self.lower.join(rel_path).exists();
-        }
-        if self.whiteouts.contains(rel_path) {
-            return false;
-        }
-        self.upper.join(rel_path).exists() || self.lower.join(rel_path).exists()
+        !matches!(self.classify(rel_path), ResolvedPath::NotFound)
     }
 
     /// Get filesystem metadata for a path.
@@ -332,33 +359,12 @@ impl OverlayLayer {
     /// Passthrough paths read metadata directly from the lower layer.
     /// Normal paths check upper first, then lower.
     pub fn getattr(&self, rel_path: &Path) -> Result<fs::Metadata, OverlayError> {
-        if is_hidden(rel_path) {
-            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        match self.classify(rel_path) {
+            ResolvedPath::Upper(path)
+            | ResolvedPath::Lower(path)
+            | ResolvedPath::Passthrough(path) => Ok(fs::metadata(&path)?),
+            ResolvedPath::NotFound => Err(OverlayError::PathNotFound(rel_path.to_path_buf())),
         }
-
-        if is_passthrough(rel_path) {
-            let lower_path = self.lower.join(rel_path);
-            if lower_path.exists() {
-                return Ok(fs::metadata(&lower_path)?);
-            }
-            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
-        }
-
-        if self.whiteouts.contains(rel_path) {
-            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
-        }
-
-        let upper_path = self.upper.join(rel_path);
-        if upper_path.exists() {
-            return Ok(fs::metadata(&upper_path)?);
-        }
-
-        let lower_path = self.lower.join(rel_path);
-        if lower_path.exists() {
-            return Ok(fs::metadata(&lower_path)?);
-        }
-
-        Err(OverlayError::PathNotFound(rel_path.to_path_buf()))
     }
 
     /// Return all files that have been written to the upper layer.
@@ -392,6 +398,16 @@ impl OverlayLayer {
         self.lower = new_lower;
     }
 
+    /// Persist the whiteout set, logging a warning on failure.
+    ///
+    /// Used in code paths where the primary operation has already succeeded
+    /// and whiteout persistence is a best-effort follow-up.
+    fn persist_whiteouts_or_warn(&self) {
+        if let Err(e) = self.persist_whiteouts() {
+            warn!(error = %e, "failed to persist whiteouts (best-effort)");
+        }
+    }
+
     /// Persist the whiteout set to `upper/.whiteouts.json`.
     pub fn persist_whiteouts(&self) -> Result<(), OverlayError> {
         let ws = WhiteoutSet {
@@ -411,7 +427,7 @@ impl OverlayLayer {
     pub fn remove_whiteout(&mut self, rel_path: &Path) {
         if self.whiteouts.remove(rel_path) {
             // Best-effort persist; errors are non-fatal here.
-            let _ = self.persist_whiteouts();
+            self.persist_whiteouts_or_warn();
         }
     }
 
@@ -422,33 +438,12 @@ impl OverlayLayer {
     /// instead of reading content. Used by the FUSE layer to open real file
     /// descriptors.
     pub fn resolve_path(&self, rel_path: &Path) -> Result<PathBuf, OverlayError> {
-        if is_hidden(rel_path) {
-            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        match self.classify(rel_path) {
+            ResolvedPath::Upper(path)
+            | ResolvedPath::Lower(path)
+            | ResolvedPath::Passthrough(path) => Ok(path),
+            ResolvedPath::NotFound => Err(OverlayError::PathNotFound(rel_path.to_path_buf())),
         }
-
-        if is_passthrough(rel_path) {
-            let lower_path = self.lower.join(rel_path);
-            if lower_path.exists() {
-                return Ok(lower_path);
-            }
-            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
-        }
-
-        if self.whiteouts.contains(rel_path) {
-            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
-        }
-
-        let upper_path = self.upper.join(rel_path);
-        if upper_path.exists() {
-            return Ok(upper_path);
-        }
-
-        let lower_path = self.lower.join(rel_path);
-        if lower_path.exists() {
-            return Ok(lower_path);
-        }
-
-        Err(OverlayError::PathNotFound(rel_path.to_path_buf()))
     }
 
     /// Ensure a file exists in the upper layer, performing a streaming COW copy
@@ -477,7 +472,7 @@ impl OverlayLayer {
         if upper_path.exists() {
             // Already in the upper layer.
             if self.whiteouts.remove(rel_path) {
-                let _ = self.persist_whiteouts();
+                self.persist_whiteouts_or_warn();
             }
             return Ok(upper_path);
         }
@@ -504,7 +499,7 @@ impl OverlayLayer {
         }
 
         if self.whiteouts.remove(rel_path) {
-            let _ = self.persist_whiteouts();
+            self.persist_whiteouts_or_warn();
         }
 
         Ok(upper_path)
@@ -554,16 +549,8 @@ impl OverlayLayer {
             return Err(OverlayError::Io(std::io::Error::from_raw_os_error(22))); // EINVAL
         }
 
-        // Passthrough: rename directly in lower layer.
         if old_passthrough {
-            let lower_old = self.lower.join(old);
-            let lower_new = self.lower.join(new);
-            if let Some(parent) = lower_new.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::rename(&lower_old, &lower_new)?;
-            debug!(old = %old.display(), new = %new.display(), "passthrough rename");
-            return Ok(());
+            return self.rename_passthrough(old, new);
         }
 
         // Source must exist in the overlay.
@@ -571,28 +558,61 @@ impl OverlayLayer {
             return Err(OverlayError::PathNotFound(old.to_path_buf()));
         }
 
+        // Snapshot child whiteouts BEFORE modifying the set — needed for migration.
+        let child_whiteouts = self.collect_child_whiteouts(old);
+
+        // Ensure destination parent directories exist in upper.
+        let upper_new = self.upper.join(new);
+        if let Some(parent) = upper_new.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Move or copy-up the source.
+        let mut whiteouts_changed = self.move_or_copy_up(old, new)?;
+
+        // Reconcile whiteouts after the filesystem move.
+        if self.reconcile_whiteouts_after_rename(old, new, child_whiteouts) {
+            whiteouts_changed = true;
+        }
+
+        if whiteouts_changed {
+            self.persist_whiteouts()?;
+        }
+
+        debug!(old = %old.display(), new = %new.display(), "rename");
+        Ok(())
+    }
+
+    /// Rename directly in the lower layer (passthrough paths like `.git/`).
+    fn rename_passthrough(&self, old: &Path, new: &Path) -> Result<(), OverlayError> {
+        let lower_old = self.lower.join(old);
+        let lower_new = self.lower.join(new);
+        if let Some(parent) = lower_new.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(&lower_old, &lower_new)?;
+        debug!(old = %old.display(), new = %new.display(), "passthrough rename");
+        Ok(())
+    }
+
+    /// Collect all strict child whiteouts under `prefix`.
+    fn collect_child_whiteouts(&self, prefix: &Path) -> Vec<PathBuf> {
+        // Reuse reparent_children with a dummy new_prefix to collect children.
+        reparent_children(self.whiteouts.iter(), prefix, prefix)
+            .into_iter()
+            .map(|(old, _)| old)
+            .collect()
+    }
+
+    /// Move the source to the destination, performing a COW copy-up if the
+    /// source only exists in the lower layer.
+    ///
+    /// Returns `true` if whiteouts were modified.
+    fn move_or_copy_up(&mut self, old: &Path, new: &Path) -> Result<bool, OverlayError> {
         let upper_old = self.upper.join(old);
         let upper_new = self.upper.join(new);
         let upper_old_exists = upper_old.exists();
         let lower_old_exists = self.lower.join(old).exists() && !self.whiteouts.contains(old);
-        let mut whiteouts_changed = false;
-
-        // Snapshot pre-existing child whiteouts under `old` BEFORE we modify
-        // the set. These need to be migrated to `new` after the rename.
-        let pre_existing_child_whiteouts: Vec<PathBuf> = self
-            .whiteouts
-            .iter()
-            .filter(|w| {
-                w.strip_prefix(old)
-                    .is_ok_and(|suffix| !suffix.as_os_str().is_empty())
-            })
-            .cloned()
-            .collect();
-
-        // Ensure destination parent directories exist in upper.
-        if let Some(parent) = upper_new.parent() {
-            fs::create_dir_all(parent)?;
-        }
 
         if upper_old_exists {
             // Source is in upper layer — move directly.
@@ -602,8 +622,8 @@ impl OverlayLayer {
             // the lower-layer ghost.
             if lower_old_exists {
                 self.whiteouts.insert(old.to_path_buf());
-                whiteouts_changed = true;
             }
+            Ok(lower_old_exists)
         } else {
             // Source is only in lower layer — copy up to new position.
             let lower_old = self.lower.join(old);
@@ -621,46 +641,44 @@ impl OverlayLayer {
                 fs::write(&upper_new, &content)?;
             }
 
-            // Whiteout the old path.
             self.whiteouts.insert(old.to_path_buf());
-            whiteouts_changed = true;
+            Ok(true)
+        }
+    }
+
+    /// Clean up destination whiteouts and migrate child whiteouts from old
+    /// prefix to new prefix after a rename.
+    ///
+    /// Returns `true` if any whiteouts were modified.
+    fn reconcile_whiteouts_after_rename(
+        &mut self,
+        old: &Path,
+        new: &Path,
+        pre_existing_child_whiteouts: Vec<PathBuf>,
+    ) -> bool {
+        let mut changed = false;
+
+        // The new path is now live — remove its whiteout.
+        if self.whiteouts.remove(new) {
+            changed = true;
         }
 
-        // Clean up destination whiteouts (the new path is now live).
-        if self.whiteouts.remove(new) {
-            whiteouts_changed = true;
-        }
-        // Also remove child whiteouts under the new path (strict children only).
-        let to_remove: Vec<PathBuf> = self
-            .whiteouts
-            .iter()
-            .filter(|w| {
-                w.strip_prefix(new)
-                    .is_ok_and(|suffix| !suffix.as_os_str().is_empty())
-            })
-            .cloned()
-            .collect();
+        // Remove child whiteouts under the new path (strict children only).
+        let to_remove = self.collect_child_whiteouts(new);
         for w in &to_remove {
             self.whiteouts.remove(w);
-            whiteouts_changed = true;
+            changed = true;
         }
 
-        // For directory renames, migrate pre-existing child whiteouts from
-        // old prefix to new prefix (captured before we modified the set).
-        for w in pre_existing_child_whiteouts {
-            if let Ok(suffix) = w.strip_prefix(old) {
-                self.whiteouts.remove(&w);
-                self.whiteouts.insert(new.join(suffix));
-                whiteouts_changed = true;
-            }
+        // Migrate pre-existing child whiteouts from old prefix to new prefix.
+        let migrations = reparent_children(pre_existing_child_whiteouts.iter(), old, new);
+        for (old_w, new_w) in migrations {
+            self.whiteouts.remove(&old_w);
+            self.whiteouts.insert(new_w);
+            changed = true;
         }
 
-        if whiteouts_changed {
-            self.persist_whiteouts()?;
-        }
-
-        debug!(old = %old.display(), new = %new.display(), "rename");
-        Ok(())
+        changed
     }
 
     /// Copy a directory from the overlay-merged view to the upper layer at a
@@ -678,13 +696,22 @@ impl OverlayLayer {
                 FileType::Directory => {
                     self.copy_up_dir(&child_old, &child_new)?;
                 }
-                FileType::File | FileType::Symlink => {
+                FileType::File => {
                     let content = self.read_file(&child_old)?;
                     let dst = self.upper.join(&child_new);
                     if let Some(parent) = dst.parent() {
                         fs::create_dir_all(parent)?;
                     }
                     fs::write(&dst, &content)?;
+                }
+                FileType::Symlink => {
+                    let src = self.resolve_path(&child_old)?;
+                    let link_target = fs::read_link(&src)?;
+                    let dst = self.upper.join(&child_new);
+                    if let Some(parent) = dst.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    std::os::unix::fs::symlink(&link_target, &dst)?;
                 }
             }
         }

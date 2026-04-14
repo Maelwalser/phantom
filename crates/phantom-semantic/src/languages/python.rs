@@ -2,11 +2,10 @@
 
 use std::path::Path;
 
-use phantom_core::id::{ContentHash, SymbolId};
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::LanguageExtractor;
+use super::{LanguageExtractor, build_scope, child_field_text, node_text, push_symbol};
 
 /// Extracts symbols from Python source files.
 pub struct PythonExtractor;
@@ -44,7 +43,7 @@ fn extract_py_node(
     match kind {
         "function_definition" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts);
+                let scope = build_scope(scope_parts, "module");
                 let sym_kind = if !scope_parts.is_empty() {
                     SymbolKind::Method
                 } else {
@@ -55,7 +54,7 @@ fn extract_py_node(
         }
         "class_definition" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts);
+                let scope = build_scope(scope_parts, "module");
                 push_symbol(
                     symbols,
                     &scope,
@@ -79,7 +78,7 @@ fn extract_py_node(
         }
         "import_statement" | "import_from_statement" => {
             let text = node_text(node, source);
-            let scope = build_scope(scope_parts);
+            let scope = build_scope(scope_parts, "module");
             push_symbol(
                 symbols,
                 &scope,
@@ -102,107 +101,6 @@ fn extract_py_node(
     }
 }
 
-fn build_scope(parts: &[String]) -> String {
-    if parts.is_empty() {
-        "module".to_string()
-    } else {
-        format!("module::{}", parts.join("::"))
-    }
-}
-
-fn child_field_text(node: Node<'_>, field: &str, source: &[u8]) -> Option<String> {
-    let child = node.child_by_field_name(field)?;
-    child.utf8_text(source).ok().map(|s| s.to_string())
-}
-
-fn node_text(node: Node<'_>, source: &[u8]) -> String {
-    node.utf8_text(source).unwrap_or("").to_string()
-}
-
-fn push_symbol(
-    symbols: &mut Vec<SymbolEntry>,
-    scope: &str,
-    name: &str,
-    kind: SymbolKind,
-    node: Node<'_>,
-    source: &[u8],
-    file_path: &Path,
-) {
-    let kind_str = format!("{kind:?}").to_lowercase();
-    let id = SymbolId(format!("{scope}::{name}::{kind_str}"));
-    let content = &source[node.start_byte()..node.end_byte()];
-    let content_hash = ContentHash::from_bytes(content);
-
-    symbols.push(SymbolEntry {
-        id,
-        kind,
-        name: name.to_string(),
-        scope: scope.to_string(),
-        file: file_path.to_path_buf(),
-        byte_range: node.start_byte()..node.end_byte(),
-        content_hash,
-    });
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse_py(source: &str) -> Vec<SymbolEntry> {
-        let mut parser = tree_sitter::Parser::new();
-        let extractor = PythonExtractor;
-        parser.set_language(&extractor.language()).unwrap();
-        let tree = parser.parse(source, None).unwrap();
-        extractor.extract_symbols(&tree, source.as_bytes(), Path::new("test.py"))
-    }
-
-    #[test]
-    fn extracts_functions_and_classes() {
-        let src = r#"
-def greet(name):
-    return f"Hello, {name}"
-
-class User:
-    def __init__(self, name):
-        self.name = name
-
-    def get_name(self):
-        return self.name
-"#;
-        let symbols = parse_py(src);
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Function && s.name == "greet")
-        );
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Class && s.name == "User")
-        );
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Method && s.name == "__init__")
-        );
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Method && s.name == "get_name")
-        );
-    }
-
-    #[test]
-    fn extracts_imports() {
-        let src = r#"
-import os
-from pathlib import Path
-"#;
-        let symbols = parse_py(src);
-        let imports: Vec<_> = symbols
-            .iter()
-            .filter(|s| s.kind == SymbolKind::Import)
-            .collect();
-        assert_eq!(imports.len(), 2);
-    }
-}
+#[path = "python_tests.rs"]
+mod tests;

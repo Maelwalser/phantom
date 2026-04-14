@@ -8,6 +8,9 @@ pub mod git;
 pub mod live_rebase;
 pub mod materialization_service;
 pub mod materializer;
+pub(crate) mod ops;
 pub mod ripple;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod scheduler;
 pub mod submit_service;

@@ -249,14 +249,16 @@ async fn run_post_completion(
 
     // Background agents always auto-submit on success.
     phantom_session::post_session::post_session_flow(
-        &ctx.phantom_dir,
-        &ctx.repo_root,
-        &events,
-        &mut overlays,
-        agent_id,
-        changeset_id,
-        true, // auto_submit — always true for background agents
-        auto_materialize,
+        phantom_session::post_session::PostSessionContext {
+            phantom_dir: &ctx.phantom_dir,
+            repo_root: &ctx.repo_root,
+            events: &events,
+            overlays: &mut overlays,
+            agent_id,
+            changeset_id,
+            auto_submit: true, // always true for background agents
+            auto_materialize,
+        },
     )
     .await?;
 

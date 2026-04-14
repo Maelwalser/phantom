@@ -2,11 +2,10 @@
 
 use std::path::Path;
 
-use phantom_core::id::{ContentHash, SymbolId};
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::LanguageExtractor;
+use super::{LanguageExtractor, child_field_text, node_text, push_symbol};
 
 /// Extracts symbols from Go source files.
 pub struct GoExtractor;
@@ -125,104 +124,6 @@ fn extract_go_node(
     }
 }
 
-fn child_field_text(node: Node<'_>, field: &str, source: &[u8]) -> Option<String> {
-    let child = node.child_by_field_name(field)?;
-    child.utf8_text(source).ok().map(|s| s.to_string())
-}
-
-fn node_text(node: Node<'_>, source: &[u8]) -> String {
-    node.utf8_text(source).unwrap_or("").to_string()
-}
-
-fn push_symbol(
-    symbols: &mut Vec<SymbolEntry>,
-    scope: &str,
-    name: &str,
-    kind: SymbolKind,
-    node: Node<'_>,
-    source: &[u8],
-    file_path: &Path,
-) {
-    let kind_str = format!("{kind:?}").to_lowercase();
-    let id = SymbolId(format!("{scope}::{name}::{kind_str}"));
-    let content = &source[node.start_byte()..node.end_byte()];
-    let content_hash = ContentHash::from_bytes(content);
-
-    symbols.push(SymbolEntry {
-        id,
-        kind,
-        name: name.to_string(),
-        scope: scope.to_string(),
-        file: file_path.to_path_buf(),
-        byte_range: node.start_byte()..node.end_byte(),
-        content_hash,
-    });
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse_go(source: &str) -> Vec<SymbolEntry> {
-        let mut parser = tree_sitter::Parser::new();
-        let extractor = GoExtractor;
-        parser.set_language(&extractor.language()).unwrap();
-        let tree = parser.parse(source, None).unwrap();
-        extractor.extract_symbols(&tree, source.as_bytes(), Path::new("test.go"))
-    }
-
-    #[test]
-    fn extracts_functions_and_structs() {
-        let src = r#"
-package main
-
-func main() {
-    fmt.Println("hello")
-}
-
-type Server struct {
-    port int
-}
-
-func (s *Server) Start() error {
-    return nil
-}
-"#;
-        let symbols = parse_go(src);
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Function && s.name == "main")
-        );
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Struct && s.name == "Server")
-        );
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Method && s.name == "Start")
-        );
-    }
-
-    #[test]
-    fn extracts_interface_and_imports() {
-        let src = r#"
-package main
-
-import "fmt"
-
-type Handler interface {
-    Handle() error
-}
-"#;
-        let symbols = parse_go(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Import));
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Interface && s.name == "Handler")
-        );
-    }
-}
+#[path = "go_tests.rs"]
+mod tests;

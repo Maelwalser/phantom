@@ -81,3 +81,7 @@ impl<'a> ReplayEngine<'a> {
             .collect())
     }
 }
+
+#[cfg(test)]
+#[path = "replay_tests.rs"]
+mod tests;

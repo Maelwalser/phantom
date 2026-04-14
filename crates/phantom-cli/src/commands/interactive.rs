@@ -115,15 +115,15 @@ pub async fn run_interactive_session(
     let events = ctx.open_events().await?;
     let mut overlays = ctx.open_overlays_restored()?;
 
-    post_session::post_session_flow(
-        &ctx.phantom_dir,
-        &ctx.repo_root,
-        &events,
-        &mut overlays,
+    post_session::post_session_flow(post_session::PostSessionContext {
+        phantom_dir: &ctx.phantom_dir,
+        repo_root: &ctx.repo_root,
+        events: &events,
+        overlays: &mut overlays,
         agent_id,
         changeset_id,
         auto_submit,
-        args.auto_materialize,
-    )
+        auto_materialize: args.auto_materialize,
+    })
     .await
 }

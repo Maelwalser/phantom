@@ -2,11 +2,10 @@
 
 use std::path::Path;
 
-use phantom_core::id::{ContentHash, SymbolId};
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::LanguageExtractor;
+use super::{LanguageExtractor, build_scope, child_field_text, node_text, push_symbol};
 
 /// Extracts symbols from TypeScript and JavaScript source files.
 pub struct TypeScriptExtractor {
@@ -73,7 +72,7 @@ fn extract_ts_node(
     match kind {
         "function_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts);
+                let scope = build_scope(scope_parts, "module");
                 push_symbol(
                     symbols,
                     &scope,
@@ -87,7 +86,7 @@ fn extract_ts_node(
         }
         "class_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts);
+                let scope = build_scope(scope_parts, "module");
                 push_symbol(
                     symbols,
                     &scope,
@@ -111,7 +110,7 @@ fn extract_ts_node(
         }
         "interface_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts);
+                let scope = build_scope(scope_parts, "module");
                 push_symbol(
                     symbols,
                     &scope,
@@ -125,7 +124,7 @@ fn extract_ts_node(
         }
         "method_definition" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts);
+                let scope = build_scope(scope_parts, "module");
                 push_symbol(
                     symbols,
                     &scope,
@@ -139,7 +138,7 @@ fn extract_ts_node(
         }
         "import_statement" => {
             let text = node_text(node, source);
-            let scope = build_scope(scope_parts);
+            let scope = build_scope(scope_parts, "module");
             push_symbol(
                 symbols,
                 &scope,
@@ -156,7 +155,7 @@ fn extract_ts_node(
                 extract_ts_node(decl, source, file_path, scope_parts, symbols);
             } else {
                 let text = node_text(node, source);
-                let scope = build_scope(scope_parts);
+                let scope = build_scope(scope_parts, "module");
                 push_symbol(
                     symbols,
                     &scope,
@@ -171,7 +170,7 @@ fn extract_ts_node(
         }
         "type_alias_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts);
+                let scope = build_scope(scope_parts, "module");
                 push_symbol(
                     symbols,
                     &scope,
@@ -185,7 +184,7 @@ fn extract_ts_node(
         }
         "enum_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts);
+                let scope = build_scope(scope_parts, "module");
                 push_symbol(
                     symbols,
                     &scope,
@@ -209,113 +208,6 @@ fn extract_ts_node(
     }
 }
 
-fn build_scope(parts: &[String]) -> String {
-    if parts.is_empty() {
-        "module".to_string()
-    } else {
-        format!("module::{}", parts.join("::"))
-    }
-}
-
-fn child_field_text(node: Node<'_>, field: &str, source: &[u8]) -> Option<String> {
-    let child = node.child_by_field_name(field)?;
-    child.utf8_text(source).ok().map(|s| s.to_string())
-}
-
-fn node_text(node: Node<'_>, source: &[u8]) -> String {
-    node.utf8_text(source).unwrap_or("").to_string()
-}
-
-fn push_symbol(
-    symbols: &mut Vec<SymbolEntry>,
-    scope: &str,
-    name: &str,
-    kind: SymbolKind,
-    node: Node<'_>,
-    source: &[u8],
-    file_path: &Path,
-) {
-    let kind_str = format!("{kind:?}").to_lowercase();
-    let id = SymbolId(format!("{scope}::{name}::{kind_str}"));
-    let content = &source[node.start_byte()..node.end_byte()];
-    let content_hash = ContentHash::from_bytes(content);
-
-    symbols.push(SymbolEntry {
-        id,
-        kind,
-        name: name.to_string(),
-        scope: scope.to_string(),
-        file: file_path.to_path_buf(),
-        byte_range: node.start_byte()..node.end_byte(),
-        content_hash,
-    });
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse_ts(source: &str) -> Vec<SymbolEntry> {
-        let mut parser = tree_sitter::Parser::new();
-        let extractor = TypeScriptExtractor::new();
-        parser.set_language(&extractor.language()).unwrap();
-        let tree = parser.parse(source, None).unwrap();
-        extractor.extract_symbols(&tree, source.as_bytes(), Path::new("test.ts"))
-    }
-
-    #[test]
-    fn extracts_function_and_class() {
-        let src = r#"
-function greet(name: string): string {
-    return `Hello, ${name}`;
-}
-
-class User {
-    getName(): string {
-        return this.name;
-    }
-}
-"#;
-        let symbols = parse_ts(src);
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Function && s.name == "greet")
-        );
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Class && s.name == "User")
-        );
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Method && s.name == "getName")
-        );
-    }
-
-    #[test]
-    fn extracts_imports_and_interfaces() {
-        let src = r#"
-import { useState } from 'react';
-
-interface Props {
-    name: string;
-}
-
-type Result<T> = { ok: true; value: T } | { ok: false; error: Error };
-"#;
-        let symbols = parse_ts(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Import));
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::Interface && s.name == "Props")
-        );
-        assert!(
-            symbols
-                .iter()
-                .any(|s| s.kind == SymbolKind::TypeAlias && s.name == "Result")
-        );
-    }
-}
+#[path = "typescript_tests.rs"]
+mod tests;

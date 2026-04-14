@@ -4,7 +4,7 @@
 //! This module extracts the submission and conflict pre-checking logic that was
 //! previously inline in the CLI's `submit` command.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -295,16 +295,4 @@ fn precheck_conflicts(
     }
 }
 
-/// Group semantic operations by file path, collecting the symbol names
-/// modified in each file.
-fn group_ops_by_file(operations: &[SemanticOperation]) -> HashMap<PathBuf, HashSet<String>> {
-    let mut map: HashMap<PathBuf, HashSet<String>> = HashMap::new();
-    for op in operations {
-        if let Some(name) = op.symbol_name() {
-            map.entry(op.file_path().to_path_buf())
-                .or_default()
-                .insert(name.to_string());
-        }
-    }
-    map
-}
+use crate::ops::group_ops_by_file;

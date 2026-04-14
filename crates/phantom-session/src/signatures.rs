@@ -80,11 +80,11 @@ pub fn extract_cross_domain_signatures(
             Err(_) => continue,
         };
 
+        let lang_tag = crate::context_file::lang_from_path(rel_path);
         let ext = rel_path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
-        let lang_tag = ext_to_lang_tag(ext);
 
         // Sort symbols: type definitions first, then functions/methods.
         let mut sorted_symbols = symbols;
@@ -233,18 +233,6 @@ fn strip_python_body(source: &str) -> String {
     source.lines().next().unwrap_or(source).to_string()
 }
 
-/// Map file extensions to markdown code block language tags.
-fn ext_to_lang_tag(ext: &str) -> &'static str {
-    match ext {
-        "rs" => "rust",
-        "ts" | "tsx" => "typescript",
-        "js" | "jsx" => "javascript",
-        "py" => "python",
-        "go" => "go",
-        _ => "",
-    }
-}
-
 /// Check if a file path looks like a test file.
 fn is_test_file(path: &Path) -> bool {
     let name = path
@@ -278,96 +266,5 @@ fn truncate_to_budget(section: &str, budget: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn strip_brace_body_rust_function() {
-        let src = "pub fn validate(token: &str) -> Result<Claims, Error> {\n    todo!()\n}";
-        let sig = strip_brace_body(src);
-        assert_eq!(sig, "pub fn validate(token: &str) -> Result<Claims, Error> { ... }");
-    }
-
-    #[test]
-    fn strip_brace_body_with_generics() {
-        let src = "fn process<T: Into<String>>(items: Vec<T>) -> HashMap<String, T> {\n    todo!()\n}";
-        let sig = strip_brace_body(src);
-        assert_eq!(
-            sig,
-            "fn process<T: Into<String>>(items: Vec<T>) -> HashMap<String, T> { ... }"
-        );
-    }
-
-    #[test]
-    fn strip_brace_body_typescript() {
-        let src = "function greet(name: string): string {\n    return `Hello, ${name}`;\n}";
-        let sig = strip_brace_body(src);
-        assert_eq!(sig, "function greet(name: string): string { ... }");
-    }
-
-    #[test]
-    fn strip_brace_body_go() {
-        let src = "func (s *Server) Start() error {\n\treturn nil\n}";
-        let sig = strip_brace_body(src);
-        assert_eq!(sig, "func (s *Server) Start() error { ... }");
-    }
-
-    #[test]
-    fn strip_brace_body_no_body() {
-        let src = "fn abstract_method(&self) -> bool;";
-        let sig = strip_brace_body(src);
-        assert_eq!(sig, "fn abstract_method(&self) -> bool;");
-    }
-
-    #[test]
-    fn strip_python_body_simple() {
-        let src = "def greet(name: str) -> str:\n    return f\"Hello, {name}\"";
-        let sig = strip_python_body(src);
-        assert_eq!(sig, "def greet(name: str) -> str:");
-    }
-
-    #[test]
-    fn strip_python_body_no_return_type() {
-        let src = "def __init__(self, name):\n    self.name = name";
-        let sig = strip_python_body(src);
-        assert_eq!(sig, "def __init__(self, name):");
-    }
-
-    #[test]
-    fn struct_kept_as_is() {
-        let src = "pub struct Config {\n    pub host: String,\n    pub port: u16,\n}";
-        let sig = extract_signature_text(src, SymbolKind::Struct, "rs");
-        assert_eq!(sig, src);
-    }
-
-    #[test]
-    fn impl_returns_empty() {
-        let sig = extract_signature_text("impl Foo { fn bar() {} }", SymbolKind::Impl, "rs");
-        assert!(sig.is_empty());
-    }
-
-    #[test]
-    fn import_returns_empty() {
-        let sig =
-            extract_signature_text("use std::collections::HashMap;", SymbolKind::Import, "rs");
-        assert!(sig.is_empty());
-    }
-
-    #[test]
-    fn is_test_file_detects_patterns() {
-        assert!(is_test_file(Path::new("src/auth_test.rs")));
-        assert!(is_test_file(Path::new("tests/test_utils.py")));
-        assert!(is_test_file(Path::new("src/auth.spec.ts")));
-        assert!(!is_test_file(Path::new("src/auth.rs")));
-        assert!(!is_test_file(Path::new("src/testing.rs")));
-    }
-
-    #[test]
-    fn ext_to_lang_tag_maps_correctly() {
-        assert_eq!(ext_to_lang_tag("rs"), "rust");
-        assert_eq!(ext_to_lang_tag("ts"), "typescript");
-        assert_eq!(ext_to_lang_tag("py"), "python");
-        assert_eq!(ext_to_lang_tag("go"), "go");
-        assert_eq!(ext_to_lang_tag("txt"), "");
-    }
-}
+#[path = "signatures_tests.rs"]
+mod tests;

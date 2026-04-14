@@ -14,23 +14,27 @@ use phantom_semantic::SemanticMerger;
 
 use crate::context_file;
 
+/// Context for post-session submit and materialize automation.
+///
+/// Groups the parameters that [`post_session_flow`] needs, keeping the function
+/// independent of the CLI layer while providing a named, self-documenting API.
+pub struct PostSessionContext<'a> {
+    pub phantom_dir: &'a Path,
+    pub repo_root: &'a Path,
+    pub events: &'a dyn EventStore,
+    pub overlays: &'a mut OverlayManager,
+    pub agent_id: &'a AgentId,
+    pub changeset_id: &'a ChangesetId,
+    pub auto_submit: bool,
+    pub auto_materialize: bool,
+}
+
 /// Handle post-session submit and materialize automation.
 ///
 /// Checks the overlay for modifications and optionally submits and materializes
-/// the changeset. Parameters are passed individually rather than through a
-/// context object so this function is independent of the CLI layer.
-#[allow(clippy::too_many_arguments)]
-pub async fn post_session_flow(
-    phantom_dir: &Path,
-    repo_root: &Path,
-    events: &dyn EventStore,
-    overlays: &mut OverlayManager,
-    agent_id: &AgentId,
-    changeset_id: &ChangesetId,
-    auto_submit: bool,
-    auto_materialize: bool,
-) -> anyhow::Result<()> {
-    let layer = overlays.get_layer(agent_id)?;
+/// the changeset.
+pub async fn post_session_flow(ctx: PostSessionContext<'_>) -> anyhow::Result<()> {
+    let layer = ctx.overlays.get_layer(ctx.agent_id)?;
 
     let modified = layer.modified_files()?;
 
@@ -41,7 +45,10 @@ pub async fn post_session_flow(
 
     println!("{} file(s) modified in overlay.", modified.len());
 
-    if !auto_submit {
+    let agent_id = ctx.agent_id;
+    let changeset_id = ctx.changeset_id;
+
+    if !ctx.auto_submit {
         println!(
             "Run `phantom submit {agent_id}` to submit, then `phantom materialize {changeset_id}` to merge."
         );
@@ -50,17 +57,18 @@ pub async fn post_session_flow(
 
     // Auto-submit
     println!("Auto-submitting changeset...");
-    match submit_overlay(phantom_dir, repo_root, events, overlays, agent_id).await? {
+    match submit_overlay(ctx.phantom_dir, ctx.repo_root, ctx.events, ctx.overlays, agent_id).await?
+    {
         Some(cs_id) => {
             println!("Changeset {cs_id} submitted.");
 
-            if auto_materialize {
+            if ctx.auto_materialize {
                 println!("Auto-materializing...");
                 let output = materialize_changeset(
-                    phantom_dir,
-                    repo_root,
-                    events,
-                    overlays,
+                    ctx.phantom_dir,
+                    ctx.repo_root,
+                    ctx.events,
+                    ctx.overlays,
                     &cs_id,
                     &agent_id.0,
                 )
