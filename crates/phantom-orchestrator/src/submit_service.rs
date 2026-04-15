@@ -67,7 +67,7 @@ pub async fn submit_and_materialize(
     phantom_dir: &Path,
     materializer: &Materializer,
     active_overlays: &[ActiveOverlay],
-    message: &str,
+    message: Option<&str>,
 ) -> Result<Option<SubmitAndMaterializeOutput>, OrchestratorError> {
     let all_modified = layer
         .modified_files()
@@ -233,6 +233,17 @@ pub async fn submit_and_materialize(
     ripple::remove_trunk_notification(phantom_dir, agent_id);
     crate::trunk_update::remove_trunk_update_md(upper_dir);
 
+    // Build commit message: use explicit message if provided, otherwise
+    // generate a descriptive one from the semantic operations.
+    let generated;
+    let commit_message = match message {
+        Some(m) => m,
+        None => {
+            generated = generate_commit_message(agent_id, &all_ops, &modified);
+            &generated
+        }
+    };
+
     let submit_output = SubmitOutput {
         changeset_id: changeset_id.clone(),
         additions,
@@ -267,7 +278,7 @@ pub async fn submit_and_materialize(
         materializer,
         phantom_dir,
         active_overlays,
-        message,
+        commit_message,
     )
     .await?;
 
@@ -275,4 +286,163 @@ pub async fn submit_and_materialize(
         submit: submit_output,
         materialize: materialize_output,
     }))
+}
+
+/// Generate a descriptive commit message from semantic operations.
+///
+/// Produces a subject line summarizing what changed (symbols and files),
+/// followed by a body listing individual operations grouped by file.
+fn generate_commit_message(
+    agent_id: &AgentId,
+    ops: &[SemanticOperation],
+    modified_files: &[PathBuf],
+) -> String {
+    use std::collections::BTreeMap;
+    use std::fmt::Write;
+
+    // Collect symbol names per action type, grouped by file.
+    let mut added: Vec<&str> = Vec::new();
+    let mut modified: Vec<&str> = Vec::new();
+    let mut deleted: Vec<&str> = Vec::new();
+    let mut new_files: Vec<&Path> = Vec::new();
+    let mut deleted_files: Vec<&Path> = Vec::new();
+    let mut raw_files: Vec<&Path> = Vec::new();
+
+    for op in ops {
+        match op {
+            SemanticOperation::AddSymbol { symbol, .. } => added.push(&symbol.name),
+            SemanticOperation::ModifySymbol { new_entry, .. } => modified.push(&new_entry.name),
+            SemanticOperation::DeleteSymbol { id, .. } => {
+                // SymbolId is "scope::name::kind", extract the name part.
+                let name = id.0.split("::").nth(1).unwrap_or(&id.0);
+                deleted.push(name);
+            }
+            SemanticOperation::AddFile { path } => new_files.push(path),
+            SemanticOperation::DeleteFile { path } => deleted_files.push(path),
+            SemanticOperation::RawDiff { path, .. } => raw_files.push(path),
+        }
+    }
+
+    // Build a concise subject line.
+    let mut parts: Vec<String> = Vec::new();
+
+    if !modified.is_empty() {
+        let names = symbol_summary(&modified, 4);
+        parts.push(format!("modify {names}"));
+    }
+    if !added.is_empty() {
+        let names = symbol_summary(&added, 4);
+        parts.push(format!("add {names}"));
+    }
+    if !deleted.is_empty() {
+        let names = symbol_summary(&deleted, 4);
+        parts.push(format!("remove {names}"));
+    }
+    if !new_files.is_empty() {
+        let names = file_summary(&new_files, 3);
+        parts.push(format!("create {names}"));
+    }
+    if !deleted_files.is_empty() {
+        let names = file_summary(&deleted_files, 3);
+        parts.push(format!("delete {names}"));
+    }
+    if !raw_files.is_empty() && parts.is_empty() {
+        let names = file_summary(&raw_files, 3);
+        parts.push(format!("update {names}"));
+    }
+
+    let subject = if parts.is_empty() {
+        format!("phantom({agent_id}): update {} file(s)", modified_files.len())
+    } else {
+        let joined = parts.join(", ");
+        // Truncate subject line to keep it readable.
+        let subject = format!("phantom({agent_id}): {joined}");
+        if subject.len() > 120 {
+            format!("{}...", &subject[..117])
+        } else {
+            subject
+        }
+    };
+
+    // Build body with per-file breakdown.
+    let mut body = String::new();
+
+    // Per-file breakdown in the body.
+    let mut file_ops: BTreeMap<&Path, Vec<String>> = BTreeMap::new();
+    for op in ops {
+        match op {
+            SemanticOperation::AddSymbol { file, symbol, .. } => {
+                file_ops
+                    .entry(file)
+                    .or_default()
+                    .push(format!("  + {} ({})", symbol.name, symbol.kind));
+            }
+            SemanticOperation::ModifySymbol { file, new_entry, .. } => {
+                file_ops
+                    .entry(file)
+                    .or_default()
+                    .push(format!("  ~ {} ({})", new_entry.name, new_entry.kind));
+            }
+            SemanticOperation::DeleteSymbol { file, id, .. } => {
+                let name = id.0.split("::").nth(1).unwrap_or(&id.0);
+                file_ops
+                    .entry(file)
+                    .or_default()
+                    .push(format!("  - {name}"));
+            }
+            SemanticOperation::AddFile { path } => {
+                file_ops
+                    .entry(path)
+                    .or_default()
+                    .push("  (new file)".to_string());
+            }
+            SemanticOperation::DeleteFile { path } => {
+                file_ops
+                    .entry(path)
+                    .or_default()
+                    .push("  (deleted)".to_string());
+            }
+            SemanticOperation::RawDiff { path, .. } => {
+                file_ops
+                    .entry(path)
+                    .or_default()
+                    .push("  (raw diff)".to_string());
+            }
+        }
+    }
+
+    if !file_ops.is_empty() {
+        let _ = write!(body, "\n");
+        for (file, ops_list) in &file_ops {
+            let _ = writeln!(body, "{}:", file.display());
+            for line in ops_list {
+                let _ = writeln!(body, "{line}");
+            }
+        }
+    }
+
+    if body.is_empty() {
+        subject
+    } else {
+        format!("{subject}{body}")
+    }
+}
+
+/// Summarize a list of symbol names, showing up to `max` names.
+fn symbol_summary(names: &[&str], max: usize) -> String {
+    if names.len() <= max {
+        names.join(", ")
+    } else {
+        let shown: Vec<&str> = names[..max].to_vec();
+        format!("{} (+{} more)", shown.join(", "), names.len() - max)
+    }
+}
+
+/// Summarize a list of file paths, showing filenames only.
+fn file_summary(paths: &[&Path], max: usize) -> String {
+    let names: Vec<&str> = paths
+        .iter()
+        .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap_or("?"))
+        .collect();
+    symbol_summary(&names, max)
 }

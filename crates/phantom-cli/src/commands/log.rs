@@ -107,6 +107,7 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
     }
 
     let mut palette = AgentPalette::new();
+    let width = ui::term_width();
 
     for event in &events {
         let ts = ui::dim_timestamp(event.timestamp);
@@ -118,7 +119,11 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
                 .causal_parent
                 .map(|p| format!(" <- #{}", p.0))
                 .unwrap_or_default();
-            println!("  {ts:>12}  {agent}  {kind_summary}{parent}");
+            // Prefix: "  " + 12-char ts + "  " + agent + "  "
+            let prefix_len = 2 + 12 + 2 + event.agent_id.0.len() + 2;
+            let detail = format!("{kind_summary}{parent}");
+            let detail = ui::truncate_line(&detail, width.saturating_sub(prefix_len));
+            println!("  {ts:>12}  {agent}  {detail}");
         } else {
             let label = styled_event_kind_label(&event.kind);
             println!("  {ts:>12}  {agent}  {label}");

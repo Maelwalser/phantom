@@ -306,7 +306,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     println!();
     println!(
         "  Run {} to check progress.",
-        console::style(format!("phantom status {}", args.agent)).bold()
+        console::style(format!("ph status {}", args.agent)).bold()
     );
 
     Ok(())

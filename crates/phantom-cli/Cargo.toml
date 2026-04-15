@@ -6,7 +6,7 @@ license.workspace = true
 description = "The `phantom` command-line interface"
 
 [[bin]]
-name = "phantom"
+name = "ph"
 path = "src/main.rs"
 
 [dependencies]

@@ -127,7 +127,7 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     writeln!(
         out,
         "{} — watching agents  {}",
-        console::style("phantom background").bold(),
+        console::style("ph background").bold(),
         console::style(format!("{now}  (Ctrl+C to exit)")).dim()
     )?;
     writeln!(out)?;

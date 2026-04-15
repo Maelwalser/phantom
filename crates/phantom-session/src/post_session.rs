@@ -65,7 +65,7 @@ pub async fn post_session_flow(ctx: PostSessionContext<'_>) -> anyhow::Result<Po
     let agent_id = ctx.agent_id;
 
     if !ctx.auto_submit {
-        println!("Run `phantom submit {agent_id}` to submit and merge to trunk.");
+        println!("Run `ph submit {agent_id}` to submit and merge to trunk.");
         return Ok(PostSessionOutcome::PendingSubmit);
     }
 
@@ -133,8 +133,6 @@ async fn submit_and_materialize_overlay(
     // Build the list of active overlays for ripple checking.
     let active_overlays = build_active_overlays(events, overlays, agent_id).await?;
 
-    let message = &agent_id.0;
-
     let output = submit_service::submit_and_materialize(
         &git,
         events,
@@ -145,7 +143,7 @@ async fn submit_and_materialize_overlay(
         phantom_dir,
         &materializer,
         &active_overlays,
-        message,
+        None,
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -170,7 +168,13 @@ async fn submit_and_materialize_overlay(
                 } => {
                     let hex = new_commit.to_hex();
                     let short = &hex[..12.min(hex.len())];
-                    println!("Submitted {} -> commit {short}", out.submit.changeset_id);
+                    let msg = format!("Submitted {} -> commit {short}", out.submit.changeset_id);
+                    let width = term_width();
+                    if msg.len() > width && width >= 4 {
+                        println!("{}...", &msg[..width.saturating_sub(3)]);
+                    } else {
+                        println!("{msg}");
+                    }
                     if !text_fallback_files.is_empty() {
                         eprintln!(
                             "  Warning: {} file(s) merged via line-based fallback (no syntax validation)",
@@ -194,8 +198,8 @@ async fn submit_and_materialize_overlay(
                         "The changeset has been submitted but could not be merged."
                     );
                     eprintln!(
-                        "Run `phantom resolve {agent_id}` to attempt resolution, or \
-                         `phantom rollback --changeset {}` to drop it.",
+                        "Run `ph resolve {agent_id}` to attempt resolution, or \
+                         `ph rollback --changeset {}` to drop it.",
                         out.submit.changeset_id
                     );
                     Ok(SubmitOutcome::Conflict { changeset_id: out.submit.changeset_id })
@@ -247,4 +251,16 @@ async fn build_active_overlays(
         .collect();
 
     Ok(active_overlays)
+}
+
+/// Return the terminal width in columns, defaulting to 80.
+fn term_width() -> usize {
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
+            ws.ws_col as usize
+        } else {
+            80
+        }
+    }
 }

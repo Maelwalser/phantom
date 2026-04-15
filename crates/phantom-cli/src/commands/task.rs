@@ -212,7 +212,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
         println!();
         println!(
             "  Run {} again to check progress.",
-            console::style(format!("phantom {}", args.agent)).bold()
+            console::style(format!("ph {}", args.agent)).bold()
         );
     } else {
         // If a background agent is already running or has completed for this

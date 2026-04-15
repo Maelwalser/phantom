@@ -48,8 +48,8 @@ You are working inside a Phantom overlay. Your changes are isolated from
 trunk and other agents.
 
 ## Commands
-- `phantom submit {agent_id}` -- submit your changes and merge to trunk
-- `phantom status` -- view all agents and changesets
+- `ph submit {agent_id}` -- submit your changes and merge to trunk
+- `ph status` -- view all agents and changesets
 
 ## Agent Info
 - Agent: {agent_id}

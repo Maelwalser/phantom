@@ -26,7 +26,7 @@ fn print_banner() {
 
 /// Create or resume an agent task overlay.
 #[derive(Parser)]
-#[command(name = "phantom", about = "Create or resume an agent task overlay")]
+#[command(name = "ph", about = "Create or resume an agent task overlay")]
 struct TaskWrapper {
     #[command(flatten)]
     args: commands::task::TaskArgs,
@@ -34,9 +34,32 @@ struct TaskWrapper {
 
 #[derive(Parser)]
 #[command(
-    name = "phantom",
+    name = "ph",
     version,
-    about = "Semantic version control for agentic AI development"
+    about = "Semantic version control for agentic AI development",
+    override_help = "\
+Semantic version control for agentic AI development
+
+Usage: ph <agent> [OPTIONS]
+       ph [COMMAND]
+
+Commands:
+  init            Initialize Phantom in an existing git repository
+  submit/sub      Submit an agent's work: merge to trunk and ripple to other agents
+  status/st       Show status of overlays and changesets
+  plan            Decompose a feature into parallel agent tasks
+  resolve/res     Auto-resolve merge conflicts by launching an AI agent
+  rollback/rb     Roll back a changeset and replay downstream
+  log/l           Query the event log
+  changes/c       Show materializations, or submits for a specific agent
+  destroy/rm      Destroy an agent's overlay
+  background/b    Watch background agents in real-time
+  down            Tear down Phantom: unmount all FUSE overlays and remove .phantom/
+  help            Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -48,30 +71,30 @@ enum Commands {
     /// Initialize Phantom in an existing git repository
     Init,
     /// Submit an agent's work: merge to trunk and ripple to other agents
-    #[command(visible_alias = "sub")]
+    #[command(alias = "sub", display_name = "submit/sub")]
     Submit(commands::submit::SubmitArgs),
     /// Show status of overlays and changesets
-    #[command(visible_alias = "st")]
+    #[command(alias = "st", display_name = "status/st")]
     Status(commands::status::StatusArgs),
     /// Decompose a feature into parallel agent tasks
     Plan(commands::plan::PlanArgs),
     /// Auto-resolve merge conflicts by launching an AI agent
-    #[command(visible_alias = "res")]
+    #[command(alias = "res", display_name = "resolve/res")]
     Resolve(commands::resolve::ResolveArgs),
     /// Roll back a changeset and replay downstream
-    #[command(visible_alias = "rb")]
+    #[command(alias = "rb", display_name = "rollback/rb")]
     Rollback(commands::rollback::RollbackArgs),
     /// Query the event log
-    #[command(visible_alias = "l")]
+    #[command(alias = "l", display_name = "log/l")]
     Log(commands::log::LogArgs),
     /// Show materializations, or submits for a specific agent
-    #[command(visible_alias = "c")]
+    #[command(alias = "c", display_name = "changes/c")]
     Changes(commands::changes::ChangesArgs),
     /// Destroy an agent's overlay
-    #[command(visible_alias = "rm")]
+    #[command(alias = "rm", display_name = "destroy/rm")]
     Destroy(commands::destroy::DestroyArgs),
     /// Watch background agents in real-time
-    #[command(visible_alias = "b")]
+    #[command(alias = "b", display_name = "background/b")]
     Background(commands::background::BackgroundArgs),
     /// Tear down Phantom: unmount all FUSE overlays and remove .phantom/
     Down(commands::down::DownArgs),
@@ -119,7 +142,7 @@ async fn main() {
         Some(Commands::ExternalTask(ext_args)) => {
             // Parse external subcommand args as TaskArgs.
             // ext_args[0] is the agent name, rest are flags like --background.
-            let mut argv: Vec<OsString> = vec!["phantom".into()];
+            let mut argv: Vec<OsString> = vec!["ph".into()];
             argv.extend(ext_args);
             match TaskWrapper::try_parse_from(argv) {
                 Ok(w) => commands::task::run(w.args).await,

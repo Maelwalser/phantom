@@ -27,9 +27,9 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
     let events = ctx.open_events().await?;
     let overlays = ctx.open_overlays_restored()?;
     let agent_id = AgentId(args.agent.clone());
-    let message = args.message.unwrap_or_else(|| args.agent.clone());
+    let message = args.message;
 
-    match submit_agent(&ctx, &events, &overlays, &agent_id, &message).await? {
+    match submit_agent(&ctx, &events, &overlays, &agent_id, message.as_deref()).await? {
         Some(changeset_id) => {
             println!(
                 "  {} Changeset {} submitted.",
@@ -76,7 +76,7 @@ pub async fn submit_agent(
     events: &dyn EventStore,
     overlays: &phantom_overlay::OverlayManager,
     agent_id: &AgentId,
-    message: &str,
+    message: Option<&str>,
 ) -> anyhow::Result<Option<ChangesetId>> {
     let layer = overlays
         .get_layer(agent_id)

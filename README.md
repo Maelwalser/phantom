@@ -40,14 +40,14 @@ Phantom replaces branches with **changesets** — reorderable, atomic units of w
 
 ## Features
 
-- **Session-aware tasking** — Each `phantom <agent>` launches a coding session (defaults to Claude Code) inside the overlay. Sessions are automatically captured and persisted, so re-entering the same agent resumes exactly where it left off.
+- **Session-aware tasking** — Each `ph <agent>` launches a coding session (defaults to Claude Code) inside the overlay. Sessions are automatically captured and persisted, so re-entering the same agent resumes exactly where it left off.
 - **Semantic merging** — Conflict detection at the AST level via tree-sitter. Two agents adding different functions to the same file? No conflict.
 - **FUSE overlays** — Each agent gets an isolated copy-on-write filesystem. Reads fall through to trunk; writes are captured. No git branches, no rebasing.
 - **Event sourcing** — Every agent action is an immutable event in an append-only log. Full auditability, surgical rollback, and "what-if" replay.
 - **Live rebase** — When one agent's work is materialized, Phantom automatically rebases other agents' overlapping files at the symbol level and notifies them of trunk changes.
 - **Auto-submit** — Use `--auto-submit` (or its alias `--auto-materialize`) to automatically submit and merge an agent's work when the session exits.
-- **AI-driven planning** — `phantom plan` decomposes a feature request into parallel agent tasks using an AI planner, then dispatches background agents.
-- **AI-driven conflict resolution** — `phantom resolve` launches a background AI agent with three-way conflict context to automatically resolve merge conflicts.
+- **AI-driven planning** — `ph plan` decomposes a feature request into parallel agent tasks using an AI planner, then dispatches background agents.
+- **AI-driven conflict resolution** — `ph resolve` launches a background AI agent with three-way conflict context to automatically resolve merge conflicts.
 - **Multi-language support** — Symbol extraction for Rust, TypeScript, JavaScript, Python, Go (including JSX/TSX), plus config formats (YAML, TOML, JSON, Bash, CSS, HCL/Terraform, Dockerfile, Makefile) via tree-sitter grammars.
 - **Zero-config conflict resolution** — Disjoint symbol changes auto-merge. True conflicts (same function modified by two agents) are detected and reported clearly.
 
@@ -59,29 +59,29 @@ cargo install --path crates/phantom-cli
 
 # Initialize in any git repository
 cd /path/to/your/repo
-phantom init
+ph init
 
 # Launch an agent — opens an interactive Claude Code session
-phantom agent-a
+ph agent-a
 
 # Or launch in the background with a task description
-phantom agent-b --background --task "add rate limiting"
+ph agent-b --background --task "add rate limiting"
 
 # When done, submit (automatically merges to trunk)
-phantom sub agent-a
+ph sub agent-a
 
 # Agent B's overlay automatically sees Agent A's changes.
 # If Agent B touched different symbols, it merges cleanly.
-phantom sub agent-b
+ph sub agent-b
 
 # Or auto-submit when the session exits
-phantom agent-c --auto-submit
+ph agent-c --auto-submit
 
 # Decompose a feature into parallel agents
-phantom plan "add caching layer"
+ph plan "add caching layer"
 
 # Resolve conflicts automatically
-phantom resolve agent-a
+ph resolve agent-a
 ```
 
 ## Installation
@@ -128,36 +128,36 @@ cargo install --path crates/phantom-cli
 ### Verify
 
 ```bash
-phantom --help
+ph --help
 ```
 
 ## Commands
 
-| Command | Alias | Description |
-|---------|-------|-------------|
-| `phantom init` | | Initialize Phantom in the current git repository |
-| `phantom <agent>` | | Create an overlay, bind a coding session, and assign a task |
-| `phantom submit` | `sub` | Submit an agent's work: semantic merge and commit to trunk |
-| `phantom plan` | | Decompose a feature into parallel agent tasks via AI planner |
-| `phantom resolve` | `res` | Auto-resolve merge conflicts by launching a background AI agent |
-| `phantom status` | `st` | Show active overlays, pending changesets, and trunk state |
-| `phantom log` | `l` | Query the event log with filters |
-| `phantom changes` | `c` | Show recent submits and materializations |
-| `phantom rollback` | `rb` | Drop a changeset and revert its changes from trunk |
-| `phantom background` | `b` | Watch background agents in real-time |
-| `phantom destroy` | `rm` | Tear down an agent's overlay and FUSE mount |
-| `phantom down` | | Unmount all FUSE overlays and remove `.phantom/` |
+| Command | Description |
+|---------|-------------|
+| `ph init` | Initialize Phantom in the current git repository |
+| `ph <agent>` | Create an overlay, bind a coding session, and assign a task |
+| `ph submit/sub` | Submit an agent's work: semantic merge and commit to trunk |
+| `ph plan` | Decompose a feature into parallel agent tasks via AI planner |
+| `ph resolve/res` | Auto-resolve merge conflicts by launching a background AI agent |
+| `ph status/st` | Show active overlays, pending changesets, and trunk state |
+| `ph log/l` | Query the event log with filters |
+| `ph changes/c` | Show recent submits and materializations |
+| `ph rollback/rb` | Drop a changeset and revert its changes from trunk |
+| `ph background/b` | Watch background agents in real-time |
+| `ph destroy/rm` | Tear down an agent's overlay and FUSE mount |
+| `ph down` | Unmount all FUSE overlays and remove `.phantom/` |
 
-### `phantom init`
+### `ph init`
 
 Initialize Phantom in an existing git repository. Creates the `.phantom/` directory with an event store, overlay root, and configuration. Adds `.phantom/` to `.gitignore` automatically.
 
 ```bash
 cd /path/to/your/repo
-phantom init
+ph init
 ```
 
-### `phantom <agent>`
+### `ph <agent>`
 
 Create an overlay and launch a coding session for an agent. Any unrecognized subcommand is treated as an agent name — there is no separate `task` keyword required.
 
@@ -165,22 +165,22 @@ If the agent already has an active overlay, the existing session is resumed inst
 
 ```bash
 # Interactive — launches Claude Code inside the overlay (default)
-phantom agent-a
+ph agent-a
 
 # Resume an existing agent's session (automatic if overlay exists)
-phantom agent-a
+ph agent-a
 
 # Background — create overlay without launching a session (--task required)
-phantom agent-b --background --task "implement caching layer"
+ph agent-b --background --task "implement caching layer"
 
 # Auto-submit and merge when the session exits
-phantom agent-a --auto-submit
+ph agent-a --auto-submit
 
 # Use a custom CLI instead of Claude Code
-phantom agent-a --command aider
+ph agent-a --command aider
 
 # Skip FUSE mounting (agent works via upper layer only)
-phantom agent-a --no-fuse
+ph agent-a --no-fuse
 ```
 
 **Flags:**
@@ -195,156 +195,156 @@ phantom agent-a --no-fuse
 
 The agent works in `.phantom/overlays/<agent>/mount/` (FUSE merged view) or `.phantom/overlays/<agent>/upper/` (with `--no-fuse`). A `.phantom-task.md` context file is placed in the working directory with agent metadata and instructions.
 
-### `phantom submit` / `sub`
+### `ph submit` / `sub`
 
 Submit an agent's work and merge it to trunk in a single step. Phantom parses the modified files with tree-sitter, extracts semantic operations (functions added, structs modified, imports changed), records a changeset in the event log, and runs a three-way semantic merge against trunk.
 
 ```bash
-phantom sub agent-a
+ph sub agent-a
 
 # With a custom commit message
-phantom sub agent-a -m "feat: add user authentication"
+ph sub agent-a -m "feat: add user authentication"
 ```
 
 **Possible outcomes:**
 - **Success** — Changes committed to trunk. Other agents' overlays are live-rebased if they touch the same files, and notified of trunk changes.
-- **Conflict** — Two agents modified the same symbol. The changeset is marked conflicted; use `phantom resolve` or re-task the agent.
+- **Conflict** — Two agents modified the same symbol. The changeset is marked conflicted; use `ph resolve` or re-task the agent.
 
-### `phantom plan`
+### `ph plan`
 
 Decompose a feature request into parallel agent tasks. An AI planner analyzes the codebase, breaks the work into independent domains, creates overlays for each, and dispatches background agents.
 
 ```bash
 # Interactive — opens an editor for the description
-phantom plan
+ph plan
 
 # Inline description
-phantom plan "add caching layer with Redis backend"
+ph plan "add caching layer with Redis backend"
 
 # Show the plan without dispatching
-phantom plan "add caching" --dry-run
+ph plan "add caching" --dry-run
 
 # Skip confirmation prompt
-phantom plan "add caching" -y
+ph plan "add caching" -y
 
 # Don't auto-submit (agents wait for manual submit)
-phantom plan "add caching" --no-submit
+ph plan "add caching" --no-submit
 ```
 
-### `phantom resolve` / `res`
+### `ph resolve` / `res`
 
 Auto-resolve merge conflicts by launching a background AI agent with three-way conflict context (base/ours/theirs). The agent receives a specialized `.phantom-task.md` with conflict resolution instructions.
 
 ```bash
-phantom resolve agent-a
+ph resolve agent-a
 ```
 
 Guards against infinite resolution loops — if a resolution is already in progress, the command will tell you to wait or drop the changeset.
 
-### `phantom rollback` / `rb`
+### `ph rollback` / `rb`
 
 Surgically remove a changeset. Phantom marks the changeset's events as dropped and creates a git revert commit. Identifies any downstream changesets that may need re-tasking.
 
 ```bash
 # By changeset ID
-phantom rb cs-0001-123456
+ph rb cs-0001-123456
 
 # By agent name (interactive selection of their changesets)
-phantom rb agent-a
+ph rb agent-a
 
 # Interactive — menu of all materialized changesets
-phantom rb
+ph rb
 ```
 
-### `phantom log` / `l`
+### `ph log` / `l`
 
 Query the append-only event log. Every agent action, every materialization, every conflict, and every live rebase is recorded.
 
 ```bash
 # All recent events (default limit: 50)
-phantom l
+ph l
 
 # Filter by agent
-phantom l agent-b
+ph l agent-b
 
 # Filter by changeset
-phantom l cs-0042-789012
+ph l cs-0042-789012
 
 # Filter by symbol
-phantom l --symbol "handlers::handle_login"
+ph l --symbol "handlers::handle_login"
 
 # Filter by time
-phantom l --since 2h
+ph l --since 2h
 
 # Show full event details
-phantom l -v
+ph l -v
 
 # Limit results
-phantom l --limit 20
+ph l --limit 20
 
 # Trace causal chain from a specific event
-phantom l --trace 42
+ph l --trace 42
 ```
 
 Duration units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
 
-### `phantom changes` / `c`
+### `ph changes` / `c`
 
 Show recent submits and materializations.
 
 ```bash
 # Default: last 25 entries
-phantom c
+ph c
 
 # Filter by agent
-phantom c agent-a
+ph c agent-a
 
 # Custom limit
-phantom c -n 10
+ph c -n 10
 ```
 
-### `phantom status` / `st`
+### `ph status` / `st`
 
 View the current state: active agents, pending changesets, trunk HEAD, and event count.
 
 ```bash
 # Overview of all agents
-phantom st
+ph st
 
 # Detailed status for a specific agent
-phantom st agent-a
+ph st agent-a
 ```
 
-### `phantom background` / `b`
+### `ph background` / `b`
 
 Real-time watch view of all background agents. Shows each agent's run state, elapsed time, and task description. Refreshes on a configurable interval.
 
 ```bash
 # Default refresh (1s)
-phantom b
+ph b
 
 # Custom refresh interval
-phantom b -n 5
+ph b -n 5
 ```
 
-### `phantom destroy` / `rm`
+### `ph destroy` / `rm`
 
 Remove an agent's overlay, unmount its FUSE filesystem, and clean up its resources (including persisted session data).
 
 ```bash
-phantom rm agent-a
+ph rm agent-a
 ```
 
-### `phantom down`
+### `ph down`
 
 Tear down Phantom entirely: unmount all active FUSE overlays, kill all agent and monitor processes, and remove the `.phantom/` directory. This is the safe way to remove Phantom — running `rm -rf .phantom` while FUSE overlays are mounted is dangerous.
 
 ```bash
 # With confirmation prompt
-phantom down
+ph down
 
 # Skip confirmation
-phantom down -f
+ph down -f
 ```
 
 ## Sessions
@@ -353,13 +353,13 @@ Each task binds a **coding session** to the agent's overlay. This is a core conc
 
 ### How sessions work
 
-1. **First task** — `phantom agent-a` creates the overlay, spawns a FUSE mount, and launches an interactive coding CLI (Claude Code by default) inside the overlay directory. The CLI process runs in a PTY so Phantom can capture its session ID from the terminal output.
+1. **First task** — `ph agent-a` creates the overlay, spawns a FUSE mount, and launches an interactive coding CLI (Claude Code by default) inside the overlay directory. The CLI process runs in a PTY so Phantom can capture its session ID from the terminal output.
 
 2. **Session capture** — When the coding CLI exits, Phantom extracts the session ID (e.g., Claude Code's `--resume` UUID) and persists it to `.phantom/overlays/<agent>/cli_session.json`.
 
-3. **Resume task** — Running `phantom agent-a` again detects the existing overlay, loads the saved session ID, and launches the CLI with `--resume <session-id>`. The agent picks up exactly where it left off — same conversation context, same file state.
+3. **Resume task** — Running `ph agent-a` again detects the existing overlay, loads the saved session ID, and launches the CLI with `--resume <session-id>`. The agent picks up exactly where it left off — same conversation context, same file state.
 
-4. **Session lifecycle** — The session persists as long as the overlay exists. Submitting the changeset ends the session. Destroying the overlay (`phantom rm agent-a`) clears the session data.
+4. **Session lifecycle** — The session persists as long as the overlay exists. Submitting the changeset ends the session. Destroying the overlay (`ph rm agent-a`) clears the session data.
 
 ### Supported CLIs
 
@@ -399,8 +399,8 @@ trunk and other agents.
 - Base commit: abc123def456
 
 ## Commands
-- `phantom submit agent-a` — submit your changes and merge to trunk
-- `phantom status` — view all agents and changesets
+- `ph submit agent-a` — submit your changes and merge to trunk
+- `ph status` — view all agents and changesets
 ```
 
 ## How It Works
@@ -460,13 +460,13 @@ Phantom sits between your AI agents and the Git repository. Each agent gets an i
 
 ### Lifecycle of a task
 
-1. **Task** — `phantom agent-a` creates a FUSE overlay, spawns the FUSE daemon in the background, and launches a Claude Code session inside the overlay mount point. The agent sees the full repository through the merged view (trunk + its own writes). A `.phantom-task.md` context file is written with agent metadata.
+1. **Task** — `ph agent-a` creates a FUSE overlay, spawns the FUSE daemon in the background, and launches a Claude Code session inside the overlay mount point. The agent sees the full repository through the merged view (trunk + its own writes). A `.phantom-task.md` context file is written with agent metadata.
 
 2. **Work** — The agent writes code inside the overlay. Reads fall through to trunk; writes are captured in the upper layer. Other agents can't see or interfere with its work. The session ID is captured from the CLI output for later resume.
 
-3. **Pause / Resume** — The agent can exit the session at any time. Running `phantom agent-a` again resumes the same coding session with the same overlay state. No work is lost.
+3. **Pause / Resume** — The agent can exit the session at any time. Running `ph agent-a` again resumes the same coding session with the same overlay state. No work is lost.
 
-4. **Submit** — `phantom sub agent-a` parses the modified files with tree-sitter, extracts what changed at the symbol level (functions added, structs modified, imports changed), records a changeset in the event log, and runs a three-way semantic merge against trunk. If the symbols the agent touched are disjoint from what changed on trunk, it auto-merges. If the same symbol was modified by two agents, it reports a conflict.
+4. **Submit** — `ph sub agent-a` parses the modified files with tree-sitter, extracts what changed at the symbol level (functions added, structs modified, imports changed), records a changeset in the event log, and runs a three-way semantic merge against trunk. If the symbols the agent touched are disjoint from what changed on trunk, it auto-merges. If the same symbol was modified by two agents, it reports a conflict.
 
 5. **Ripple** — After materialization, Phantom performs a live rebase on other active agents whose files overlap with the materialized changes. Files that were modified by both the agent and trunk are semantically merged in place. All agents are notified of the trunk change via a notification file.
 
@@ -476,8 +476,8 @@ Phantom sits between your AI agents and the Git repository. Each agent gets an i
 |----------|--------|
 | Both agents add different symbols to the same file | Auto-merge |
 | Both agents add different fields to the same struct | Auto-merge |
-| Both agents modify the same function body | **Conflict** — re-task or `phantom resolve` |
-| One modifies, other deletes the same symbol | **Conflict** — re-task or `phantom resolve` |
+| Both agents modify the same function body | **Conflict** — re-task or `ph resolve` |
+| One modifies, other deletes the same symbol | **Conflict** — re-task or `ph resolve` |
 | Both add the same import | Auto-deduplicate |
 | Additive insertions to the same collection (routes, middleware) | Auto-merge |
 
@@ -489,7 +489,7 @@ For files without tree-sitter grammar support, Phantom falls back to text-level 
 phantom/
 ├── Cargo.toml                    # Workspace root
 ├── crates/
-│   ├── phantom-cli/              # Binary — the `phantom` command
+│   ├── phantom-cli/              # Binary — the `ph` command
 │   │   └── src/
 │   │       ├── main.rs           # CLI entry point (clap)
 │   │       ├── context.rs        # PhantomContext loader
@@ -580,8 +580,8 @@ cargo test --test event_log_query           # Event log querying
 - [x] Auto-submit and auto-materialize flags
 - [x] Live rebase on materialization
 - [x] PTY-based session capture (Claude Code)
-- [x] `phantom plan` — AI-driven multi-agent task decomposition
-- [x] `phantom resolve` — AI-driven conflict resolution
+- [x] `ph plan` — AI-driven multi-agent task decomposition
+- [x] `ph resolve` — AI-driven conflict resolution
 - [ ] Agent re-task automation
 - [ ] Incremental parsing for large codebases
 - [ ] Additional CLI adapters (Aider, Cursor, Codex)

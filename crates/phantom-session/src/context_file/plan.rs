@@ -123,7 +123,7 @@ pub fn write_plan_domain_instructions(
     let _ = writeln!(
         content,
         "When all requirements are met and verification passes, your work will \
-         be automatically submitted and merged to trunk. Do not run `phantom submit` \
+         be automatically submitted and merged to trunk. Do not run `ph submit` \
          manually."
     );
 

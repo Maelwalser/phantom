@@ -55,12 +55,17 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
     let git = ctx.open_git().ok();
 
     let mut palette = AgentPalette::new();
+    let width = ui::term_width();
 
     for event in &events {
         let ts = ui::dim_timestamp(event.timestamp);
         let agent_style = palette.style_for(&event.agent_id.0).clone();
         let agent = agent_style.apply_to(&event.agent_id.0);
         let (label, detail) = format_change(&event.kind, git.as_ref());
+        // Trim the detail so the whole line fits within the terminal width.
+        // Prefix is: "  " + 12-char timestamp + "  " + 14-char label + " " + agent + "  "
+        let prefix_len = 2 + 12 + 2 + 14 + 1 + event.agent_id.0.len() + 2;
+        let detail = ui::truncate_line(&detail, width.saturating_sub(prefix_len));
         println!("  {ts:>12}  {label:<14} {agent}  {detail}");
     }
 

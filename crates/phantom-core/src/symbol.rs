@@ -62,6 +62,30 @@ pub enum SymbolKind {
     Variable,
 }
 
+impl std::fmt::Display for SymbolKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Function => "fn",
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Trait => "trait",
+            Self::Impl => "impl",
+            Self::Import => "import",
+            Self::Const => "const",
+            Self::TypeAlias => "type",
+            Self::Module => "mod",
+            Self::Test => "test",
+            Self::Class => "class",
+            Self::Interface => "interface",
+            Self::Method => "method",
+            Self::Section => "section",
+            Self::Directive => "directive",
+            Self::Variable => "var",
+        };
+        f.write_str(s)
+    }
+}
+
 /// A single symbol extracted from a source file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolEntry {
