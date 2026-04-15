@@ -198,6 +198,187 @@ impl CliAdapter for ClaudeAdapter {
 }
 
 // ---------------------------------------------------------------------------
+// Gemini CLI adapter
+// ---------------------------------------------------------------------------
+
+pub struct GeminiAdapter;
+
+impl CliAdapter for GeminiAdapter {
+    fn name(&self) -> &str {
+        "gemini"
+    }
+
+    fn build_command(
+        &self,
+        work_dir: &Path,
+        session_id: Option<&str>,
+        env_vars: &[(&str, &str)],
+        system_prompt_file: Option<&Path>,
+    ) -> Command {
+        let mut cmd = Command::new("gemini");
+        cmd.current_dir(work_dir);
+
+        for &(key, val) in env_vars {
+            cmd.env(key, val);
+        }
+
+        // Resume a prior session if we have one.
+        if let Some(id) = session_id {
+            cmd.args(["--resume", id]);
+        }
+
+        // Make the overlay directory visible to Gemini.
+        if let Some(dir_str) = work_dir.to_str() {
+            cmd.args(["--include-directories", dir_str]);
+        }
+
+        // Gemini has no --append-system-prompt-file equivalent.
+        // The .phantom-task.md file is in the working directory and will be
+        // discoverable by the agent. If the system prompt file is outside
+        // work_dir, include its parent directory so Gemini can find it.
+        if let Some(path) = system_prompt_file
+            && let Some(parent) = path.parent()
+            && parent != work_dir
+            && let Some(parent_str) = parent.to_str()
+        {
+            cmd.args(["--include-directories", parent_str]);
+        }
+
+        cmd
+    }
+
+    fn build_headless_command(
+        &self,
+        work_dir: &Path,
+        task: &str,
+        env_vars: &[(&str, &str)],
+        system_prompt_file: Option<&Path>,
+    ) -> Option<Command> {
+        let mut cmd = Command::new("gemini");
+        cmd.current_dir(work_dir);
+
+        for &(key, val) in env_vars {
+            cmd.env(key, val);
+        }
+
+        // Use -p for non-interactive prompt mode.
+        cmd.args(["-p", task]);
+
+        if let Some(dir_str) = work_dir.to_str() {
+            cmd.args(["--include-directories", dir_str]);
+        }
+
+        if let Some(path) = system_prompt_file
+            && let Some(parent) = path.parent()
+            && parent != work_dir
+            && let Some(parent_str) = parent.to_str()
+        {
+            cmd.args(["--include-directories", parent_str]);
+        }
+
+        Some(cmd)
+    }
+
+    fn extract_session_id(&self, output_tail: &str) -> Option<String> {
+        // Gemini CLI prints: "gemini --resume <UUID>" or "gemini -r <UUID>"
+        // near the end of output when a session ends.
+        let re = Regex::new(
+            r"gemini (?:--resume|-r) ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        )
+        .ok()?;
+        re.captures(output_tail)
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode adapter
+// ---------------------------------------------------------------------------
+
+pub struct OpenCodeAdapter;
+
+impl CliAdapter for OpenCodeAdapter {
+    fn name(&self) -> &str {
+        "opencode"
+    }
+
+    fn build_command(
+        &self,
+        work_dir: &Path,
+        session_id: Option<&str>,
+        env_vars: &[(&str, &str)],
+        _system_prompt_file: Option<&Path>,
+    ) -> Command {
+        let mut cmd = Command::new("opencode");
+
+        // OpenCode uses --cwd for explicit working directory control.
+        if let Some(dir_str) = work_dir.to_str() {
+            cmd.args(["--cwd", dir_str]);
+        }
+        cmd.current_dir(work_dir);
+
+        for &(key, val) in env_vars {
+            cmd.env(key, val);
+        }
+
+        // Resume a specific session.
+        if let Some(id) = session_id {
+            cmd.args(["--session", id]);
+        }
+
+        // OpenCode has no system prompt file injection flag.
+        // The .phantom-task.md file is in the working directory.
+
+        cmd
+    }
+
+    fn build_headless_command(
+        &self,
+        work_dir: &Path,
+        task: &str,
+        env_vars: &[(&str, &str)],
+        _system_prompt_file: Option<&Path>,
+    ) -> Option<Command> {
+        let mut cmd = Command::new("opencode");
+
+        if let Some(dir_str) = work_dir.to_str() {
+            cmd.args(["--cwd", dir_str]);
+        }
+        cmd.current_dir(work_dir);
+
+        for &(key, val) in env_vars {
+            cmd.env(key, val);
+        }
+
+        cmd.args(["-p", task]);
+
+        Some(cmd)
+    }
+
+    fn extract_session_id(&self, output_tail: &str) -> Option<String> {
+        // Strategy 1: Look for "opencode --session <id>" or "opencode -s <id>".
+        let resume_re = Regex::new(
+            r"opencode (?:--session|-s) ([0-9a-f-]{36}|ses_[a-zA-Z0-9]+)",
+        )
+        .ok()?;
+        if let Some(caps) = resume_re.captures(output_tail) {
+            return caps.get(1).map(|m| m.as_str().to_string());
+        }
+
+        // Strategy 2: Look for a UUID near a "session" keyword.
+        let uuid_re = Regex::new(
+            r"[Ss]ession[^\n]*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        )
+        .ok()?;
+        uuid_re
+            .captures(output_tail)
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Generic adapter (no session support)
 // ---------------------------------------------------------------------------
 
@@ -237,23 +418,24 @@ impl CliAdapter for GenericAdapter {
 // ---------------------------------------------------------------------------
 
 /// Return the appropriate CLI adapter for the given command.
+///
+/// Recognises `claude`, `gemini`, and `opencode` by basename (so both
+/// `"claude"` and `"/usr/bin/claude"` resolve to `ClaudeAdapter`).
+/// Everything else falls through to `GenericAdapter`.
 pub fn adapter_for(command: &str) -> Box<dyn CliAdapter> {
-    if is_claude_command(command) {
-        Box::new(ClaudeAdapter)
-    } else {
-        Box::new(GenericAdapter {
-            command: command.to_string(),
-        })
-    }
-}
-
-/// Check whether the command is the Claude Code CLI.
-fn is_claude_command(command: &str) -> bool {
     let basename = Path::new(command)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(command);
-    basename == "claude"
+
+    match basename {
+        "claude" => Box::new(ClaudeAdapter),
+        "gemini" => Box::new(GeminiAdapter),
+        "opencode" => Box::new(OpenCodeAdapter),
+        _ => Box::new(GenericAdapter {
+            command: command.to_string(),
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -309,13 +491,113 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Gemini adapter tests
+    // -----------------------------------------------------------------------
+
     #[test]
-    fn test_is_claude_command() {
-        assert!(is_claude_command("claude"));
-        assert!(is_claude_command("/usr/bin/claude"));
-        assert!(!is_claude_command("aider"));
-        assert!(!is_claude_command("/usr/bin/vim"));
+    fn test_gemini_extract_session_id() {
+        let adapter = GeminiAdapter;
+        let output = "\
+    Session ended.
+
+    Resume with:
+    gemini --resume a1b2c3d4-e5f6-7890-abcd-ef1234567890
+    ";
+        assert_eq!(
+            adapter.extract_session_id(output),
+            Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string())
+        );
     }
+
+    #[test]
+    fn test_gemini_extract_short_flag() {
+        let adapter = GeminiAdapter;
+        let output = "gemini -r a1b2c3d4-e5f6-7890-abcd-ef1234567890\n";
+        assert_eq!(
+            adapter.extract_session_id(output),
+            Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string())
+        );
+    }
+
+    #[test]
+    fn test_gemini_extract_no_match() {
+        let adapter = GeminiAdapter;
+        assert_eq!(adapter.extract_session_id("no session here"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // OpenCode adapter tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_opencode_extract_session_id() {
+        let adapter = OpenCodeAdapter;
+        let output = "Session saved.\nopencode --session a1b2c3d4-e5f6-7890-abcd-ef1234567890\n";
+        assert_eq!(
+            adapter.extract_session_id(output),
+            Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string())
+        );
+    }
+
+    #[test]
+    fn test_opencode_extract_short_flag() {
+        let adapter = OpenCodeAdapter;
+        let output = "opencode -s ses_abc123xyz\n";
+        assert_eq!(
+            adapter.extract_session_id(output),
+            Some("ses_abc123xyz".to_string())
+        );
+    }
+
+    #[test]
+    fn test_opencode_extract_fallback_uuid() {
+        let adapter = OpenCodeAdapter;
+        let output = "Session ID: a1b2c3d4-e5f6-7890-abcd-ef1234567890\n";
+        assert_eq!(
+            adapter.extract_session_id(output),
+            Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string())
+        );
+    }
+
+    #[test]
+    fn test_opencode_extract_no_match() {
+        let adapter = OpenCodeAdapter;
+        assert_eq!(adapter.extract_session_id("no session here"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Factory tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_adapter_for_claude() {
+        assert_eq!(adapter_for("claude").name(), "claude");
+        assert_eq!(adapter_for("/usr/bin/claude").name(), "claude");
+    }
+
+    #[test]
+    fn test_adapter_for_gemini() {
+        assert_eq!(adapter_for("gemini").name(), "gemini");
+        assert_eq!(adapter_for("/usr/local/bin/gemini").name(), "gemini");
+    }
+
+    #[test]
+    fn test_adapter_for_opencode() {
+        assert_eq!(adapter_for("opencode").name(), "opencode");
+        assert_eq!(adapter_for("/usr/local/bin/opencode").name(), "opencode");
+    }
+
+    #[test]
+    fn test_adapter_for_unknown() {
+        assert_eq!(adapter_for("aider").name(), "aider");
+        // GenericAdapter stores the full command string as its name.
+        assert_eq!(adapter_for("/usr/bin/vim").name(), "/usr/bin/vim");
+    }
+
+    // -----------------------------------------------------------------------
+    // Session persistence tests
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_session_roundtrip() {
@@ -344,5 +626,45 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let agent_id = AgentId("no-such-agent".to_string());
         assert!(load_session(dir.path(), &agent_id).is_none());
+    }
+
+    #[test]
+    fn test_session_roundtrip_gemini() {
+        let dir = tempfile::tempdir().unwrap();
+        let phantom_dir = dir.path();
+        let agent_id = AgentId("gemini-agent".to_string());
+        std::fs::create_dir_all(phantom_dir.join("overlays").join("gemini-agent")).unwrap();
+
+        let session = CliSession {
+            cli_name: "gemini".to_string(),
+            session_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string(),
+            last_used: Utc::now(),
+        };
+
+        save_session(phantom_dir, &agent_id, &session).unwrap();
+        let loaded = load_session(phantom_dir, &agent_id).unwrap();
+
+        assert_eq!(loaded.cli_name, "gemini");
+        assert_eq!(loaded.session_id, "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    }
+
+    #[test]
+    fn test_session_roundtrip_opencode() {
+        let dir = tempfile::tempdir().unwrap();
+        let phantom_dir = dir.path();
+        let agent_id = AgentId("opencode-agent".to_string());
+        std::fs::create_dir_all(phantom_dir.join("overlays").join("opencode-agent")).unwrap();
+
+        let session = CliSession {
+            cli_name: "opencode".to_string(),
+            session_id: "ses_abc123xyz".to_string(),
+            last_used: Utc::now(),
+        };
+
+        save_session(phantom_dir, &agent_id, &session).unwrap();
+        let loaded = load_session(phantom_dir, &agent_id).unwrap();
+
+        assert_eq!(loaded.cli_name, "opencode");
+        assert_eq!(loaded.session_id, "ses_abc123xyz");
     }
 }

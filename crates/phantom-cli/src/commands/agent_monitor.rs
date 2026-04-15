@@ -41,6 +41,9 @@ pub struct AgentMonitorArgs {
     /// Path to a system prompt file to append to the claude invocation
     #[arg(long)]
     pub system_prompt_file: Option<String>,
+    /// CLI command to use (e.g. "claude", "gemini", "opencode").
+    #[arg(long, default_value = "claude")]
+    pub cli_command: String,
     /// Comma-separated list of upstream agent IDs that must materialize before
     /// this agent starts. Empty means no dependencies.
     #[arg(long, default_value = "")]
@@ -127,14 +130,15 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         )?;
     }
 
-    // Spawn the claude process as our child so we can waitpid for it.
+    // Spawn the agent process as our child so we can waitpid for it.
     let system_prompt_file = args.system_prompt_file.as_deref().map(PathBuf::from);
-    let (claude_pid, exit_code) = spawn_and_wait_claude(
+    let (claude_pid, exit_code) = spawn_and_wait_agent(
         &ctx.phantom_dir,
         &args.agent,
         &work_dir,
         &args.task,
         &args.repo_root,
+        &args.cli_command,
         system_prompt_file.as_deref(),
     )?;
 
@@ -207,13 +211,14 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     result.map(|_| ())
 }
 
-/// Spawn the claude process as our direct child, wait for it, return the exit code.
-fn spawn_and_wait_claude(
+/// Spawn the CLI agent process as our direct child, wait for it, return the exit code.
+fn spawn_and_wait_agent(
     phantom_dir: &std::path::Path,
     agent: &str,
     work_dir: &Path,
     task: &str,
     repo_root: &str,
+    cli_command: &str,
     system_prompt_file: Option<&Path>,
 ) -> anyhow::Result<(u32, Option<i32>)> {
     let overlay_root = phantom_dir.join("overlays").join(agent);
@@ -226,7 +231,7 @@ fn spawn_and_wait_claude(
         .try_clone()
         .context("failed to clone log file handle")?;
 
-    let cli_adapter = adapter::adapter_for("claude");
+    let cli_adapter = adapter::adapter_for(cli_command);
     let env_vars: Vec<(&str, &str)> = vec![
         ("PHANTOM_AGENT_ID", agent),
         ("PHANTOM_CHANGESET_ID", ""),
@@ -244,7 +249,7 @@ fn spawn_and_wait_claude(
         .stderr(log_stderr);
 
     let mut child = cmd.spawn().with_context(
-        || "failed to spawn background agent -- is 'claude' installed and on PATH?",
+        || format!("failed to spawn background agent -- is '{cli_command}' installed and on PATH?"),
     )?;
 
     let claude_pid = child.id();

@@ -33,7 +33,8 @@ pub async fn run_interactive_session(
     args: &TaskArgs,
     system_prompt_file: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let command = args.command.as_deref().unwrap_or("claude");
+    let config_default = crate::context::default_cli(&ctx.phantom_dir);
+    let command = args.command.as_deref().unwrap_or(&config_default);
     let cli_adapter = adapter::adapter_for(command);
 
     // Write context file into the working directory.

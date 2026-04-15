@@ -190,6 +190,33 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
     }
 }
 
+/// Read `default_cli` from `.phantom/config.toml`.
+///
+/// Falls back to `"claude"` if the key is missing or the config is unreadable.
+/// Uses simple line parsing to avoid pulling in a TOML crate.
+pub fn default_cli(phantom_dir: &Path) -> String {
+    let config_path = phantom_dir.join("config.toml");
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return "claude".to_string(),
+    };
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("default_cli") {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let val = rest.trim().trim_matches('"').trim_matches('\'');
+                if !val.is_empty() {
+                    return val.to_string();
+                }
+            }
+        }
+    }
+
+    "claude".to_string()
+}
+
 /// Walk up from `start` looking for a `.phantom/` directory.
 fn find_phantom_dir(start: &Path) -> anyhow::Result<PathBuf> {
     let mut current = start.to_path_buf();

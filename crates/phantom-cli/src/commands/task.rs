@@ -170,13 +170,15 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             Some(task),
         )?;
 
-        // Spawn the monitor process, which in turn spawns claude as its child.
-        // This ensures the monitor can waitpid for the real exit code.
+        // Spawn the monitor process, which in turn spawns the agent CLI as its
+        // child. This ensures the monitor can waitpid for the real exit code.
         let log_file = ctx
             .phantom_dir
             .join("overlays")
             .join(&args.agent)
             .join("agent.log");
+        let config_default = crate::context::default_cli(&ctx.phantom_dir);
+        let cli_command = args.command.as_deref().unwrap_or(&config_default);
         spawn_agent_monitor(
             &ctx.phantom_dir,
             &ctx.repo_root,
@@ -184,6 +186,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             &changeset_id,
             task,
             &work_dir,
+            cli_command,
             None,
             &[],
         )?;
@@ -445,8 +448,8 @@ async fn check_changeset_resumable(
 }
 
 /// Spawn the `phantom _agent-monitor` process which will in turn spawn and
-/// monitor the claude process. This ensures the monitor is the parent of
-/// claude and can `waitpid` to get the real exit code.
+/// monitor the agent CLI process. This ensures the monitor is the parent of
+/// the agent and can `waitpid` to get the real exit code.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_agent_monitor(
     phantom_dir: &Path,
@@ -455,6 +458,7 @@ pub(crate) fn spawn_agent_monitor(
     changeset_id: &ChangesetId,
     task: &str,
     work_dir: &Path,
+    cli_command: &str,
     system_prompt_file: Option<&Path>,
     depends_on_agents: &[String],
 ) -> anyhow::Result<()> {
@@ -473,7 +477,9 @@ pub(crate) fn spawn_agent_monitor(
         .arg("--work-dir")
         .arg(work_dir.as_os_str())
         .arg("--repo-root")
-        .arg(repo_root);
+        .arg(repo_root)
+        .arg("--cli-command")
+        .arg(cli_command);
 
     if let Some(path) = system_prompt_file {
         cmd.arg("--system-prompt-file").arg(path);

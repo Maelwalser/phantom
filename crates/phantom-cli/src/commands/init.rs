@@ -31,7 +31,7 @@ pub async fn run() -> anyhow::Result<()> {
         .context("failed to create event store")?;
 
     let config = format!(
-        "phantom_version = \"{}\"\ncreated_at = \"{}\"\n",
+        "phantom_version = \"{}\"\ncreated_at = \"{}\"\ndefault_cli = \"claude\"\n",
         env!("CARGO_PKG_VERSION"),
         chrono::Utc::now().to_rfc3339(),
     );

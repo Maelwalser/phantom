@@ -171,6 +171,11 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     };
     events.append(event).await?;
 
+    // Determine CLI to use: saved session preference or config default.
+    let cli_command = phantom_session::adapter::load_session(&ctx.phantom_dir, &agent_id)
+        .map(|s| s.cli_name)
+        .unwrap_or_else(|| crate::context::default_cli(&ctx.phantom_dir));
+
     if groups.len() <= 1 {
         // Single file group — existing single-agent background path.
         let conflicts = groups.into_iter().next().unwrap_or_default();
@@ -191,6 +196,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
             &changeset.id,
             task,
             &work_dir,
+            &cli_command,
             Some(&rules_path),
             &[],
         )?;
@@ -234,6 +240,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
         let exit_codes = spawn_parallel_resolve_agents(
             &ctx.phantom_dir,
             &args.agent,
+            &cli_command,
             &work_dir,
             &rules_path,
             &context_files,
@@ -334,7 +341,7 @@ fn group_conflicts_by_file(
     by_file.into_values().collect()
 }
 
-/// Spawn parallel headless claude processes for independent file groups.
+/// Spawn parallel headless agent processes for independent file groups.
 ///
 /// Each process gets its own context file and log file. All processes share
 /// the same work directory (safe because file groups are disjoint).
@@ -343,6 +350,7 @@ fn group_conflicts_by_file(
 fn spawn_parallel_resolve_agents(
     phantom_dir: &std::path::Path,
     agent: &str,
+    cli_command: &str,
     work_dir: &std::path::Path,
     rules_path: &std::path::Path,
     context_files: &[std::path::PathBuf],
@@ -350,7 +358,7 @@ fn spawn_parallel_resolve_agents(
     use phantom_session::adapter;
 
     let overlay_root = phantom_dir.join("overlays").join(agent);
-    let cli_adapter = adapter::adapter_for("claude");
+    let cli_adapter = adapter::adapter_for(cli_command);
 
     let env_vars: Vec<(&str, &str)> = vec![
         ("PHANTOM_AGENT_ID", agent),
@@ -381,7 +389,7 @@ fn spawn_parallel_resolve_agents(
             .stderr(log_stderr);
 
         let child = cmd.spawn().with_context(|| {
-            format!("failed to spawn resolve agent {i} — is 'claude' installed and on PATH?")
+            format!("failed to spawn resolve agent {i} — is '{cli_command}' installed and on PATH?")
         })?;
 
         println!(

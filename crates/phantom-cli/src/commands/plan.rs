@@ -54,7 +54,7 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     println!("Planning... analyzing codebase for: {:?}", description);
     println!();
 
-    let raw_output = run_planner(&ctx.repo_root, &description)?;
+    let raw_output = run_planner(&ctx.repo_root, &ctx.phantom_dir, &description)?;
 
     // Step 2: Build the Plan struct.
     let plan_id = generate_plan_id();
@@ -159,24 +159,24 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
 }
 
 /// Run the AI planner to decompose the request into domains.
-fn run_planner(repo_root: &Path, description: &str) -> anyhow::Result<RawPlanOutput> {
+fn run_planner(
+    repo_root: &Path,
+    phantom_dir: &Path,
+    description: &str,
+) -> anyhow::Result<RawPlanOutput> {
     let prompt = build_planning_prompt(description);
 
-    let adapter = phantom_session::adapter::ClaudeAdapter;
-    let mut cmd = phantom_session::adapter::CliAdapter::build_headless_command(
-        &adapter,
-        repo_root,
-        &prompt,
-        &[],
-        None,
-    )
-    .context("planner CLI does not support headless mode")?;
+    let cli_command = crate::context::default_cli(phantom_dir);
+    let adapter = phantom_session::adapter::adapter_for(&cli_command);
+    let mut cmd = adapter
+        .build_headless_command(repo_root, &prompt, &[], None)
+        .context("planner CLI does not support headless mode")?;
     cmd.args(["--output-format", "json"]);
     cmd.stdin(std::process::Stdio::null());
 
     let output = cmd
         .output()
-        .context("failed to run claude planner — is 'claude' installed and on PATH?")?;
+        .with_context(|| format!("failed to run planner — is '{cli_command}' installed and on PATH?"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -543,6 +543,7 @@ async fn dispatch_domain(
     )?;
 
     // Spawn the agent monitor with the custom instruction file.
+    let cli_command = crate::context::default_cli(&ctx.phantom_dir);
     super::task::spawn_agent_monitor(
         &ctx.phantom_dir,
         &ctx.repo_root,
@@ -550,6 +551,7 @@ async fn dispatch_domain(
         &cs_id,
         &domain.description,
         &work_dir,
+        &cli_command,
         Some(&instructions_path),
         upstream_agent_ids,
     )?;
