@@ -10,6 +10,7 @@ pub mod interactive;
 pub mod log;
 pub mod plan;
 pub mod resolve;
+pub mod resume;
 pub mod rollback;
 pub mod status;
 pub mod submit;

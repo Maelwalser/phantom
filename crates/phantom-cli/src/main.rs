@@ -54,6 +54,7 @@ Commands:
   log/l           Query the event log
   changes/c       Show materializations, or submits for a specific agent
   destroy/rm      Destroy an agent's overlay
+  resume/re       Select and resume an interactive agent session
   background/b    Watch background agents in real-time
   down            Tear down Phantom: unmount all FUSE overlays and remove .phantom/
   help            Print this message or the help of the given subcommand(s)
@@ -100,6 +101,9 @@ enum Commands {
     /// Watch background agents in real-time
     #[command(alias = "b", display_name = "background/b")]
     Background(commands::background::BackgroundArgs),
+    /// Select and resume an interactive agent session
+    #[command(alias = "re", display_name = "resume/re")]
+    Resume(commands::resume::ResumeArgs),
     /// Tear down Phantom: unmount all FUSE overlays and remove .phantom/
     Down(commands::down::DownArgs),
 
@@ -141,6 +145,7 @@ async fn main() {
         Some(Commands::Changes(args)) => commands::changes::run(args).await,
         Some(Commands::Destroy(args)) => commands::destroy::run(args).await,
         Some(Commands::Background(args)) => commands::background::run(args).await,
+        Some(Commands::Resume(args)) => commands::resume::run(args).await,
         Some(Commands::Down(args)) => commands::down::run(&args),
         Some(Commands::FuseMount(args)) => commands::fuse_mount::run(args),
         Some(Commands::AgentMonitor(args)) => commands::agent_monitor::run(args).await,

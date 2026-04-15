@@ -25,6 +25,7 @@ phantom <agent-name> --background    # Run agent in background
 phantom plan "add caching layer"     # Decompose feature into parallel agents
 phantom submit <agent>               # Submit overlay: semantic merge to trunk, ripple to agents
 phantom resolve <agent>              # Auto-resolve conflicts via AI agent
+phantom resume                       # Select and resume an interactive agent session
 phantom tasks                        # List all agent task overlays
 phantom status                       # Show overlays, changesets, queue
 phantom log [filter]                 # Query event log (agent name or cs-id)
@@ -143,7 +144,7 @@ The CLI uses external subcommand parsing: `phantom <agent-name>` is caught by `E
 
 Hidden internal commands: `_fuse-mount` (FUSE daemon), `_agent-monitor` (background agent watcher).
 
-Key aliases: `t` (tasks), `st` (status), `sub` (submit), `res` (resolve), `rb` (rollback), `l` (log), `c` (changes), `b` (background), `rm` (destroy).
+Key aliases: `re` (resume), `t` (tasks), `st` (status), `sub` (submit), `res` (resolve), `rb` (rollback), `l` (log), `c` (changes), `b` (background), `rm` (destroy).
 
 ## Data Flow
 
