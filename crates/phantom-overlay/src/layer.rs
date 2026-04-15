@@ -117,12 +117,12 @@ impl OverlayLayer {
         }
 
         let upper_path = self.upper.join(rel_path);
-        if upper_path.exists() {
+        if fs::symlink_metadata(&upper_path).is_ok() {
             return ResolvedPath::Upper(upper_path);
         }
 
         let lower_path = lower.join(rel_path);
-        if lower_path.exists() {
+        if fs::symlink_metadata(&lower_path).is_ok() {
             return ResolvedPath::Lower(lower_path);
         }
 
@@ -289,6 +289,53 @@ impl OverlayLayer {
         Ok(())
     }
 
+    /// Create a symbolic link in the overlay.
+    ///
+    /// Passthrough paths create the symlink directly in the lower layer.
+    /// For normal paths, the symlink is created in the upper layer.
+    /// Automatically removes the path from the whiteout set if it was
+    /// previously deleted.
+    pub fn create_symlink(&self, rel_path: &Path, target: &Path) -> Result<(), OverlayError> {
+        if is_hidden(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
+        if is_passthrough(rel_path) {
+            let lower_path = self.lower_path().join(rel_path);
+            if let Some(parent) = lower_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            std::os::unix::fs::symlink(target, &lower_path)?;
+            trace!(path = %rel_path.display(), target = %target.display(), layer = "lower-passthrough", "symlink");
+            return Ok(());
+        }
+
+        let upper_path = self.upper.join(rel_path);
+        if let Some(parent) = upper_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        std::os::unix::fs::symlink(target, &upper_path)?;
+
+        if self.whiteouts.write().unwrap().remove(rel_path) {
+            self.persist_whiteouts_or_warn();
+        }
+
+        trace!(path = %rel_path.display(), target = %target.display(), layer = "upper", "symlink");
+        Ok(())
+    }
+
+    /// Read the target of a symbolic link.
+    ///
+    /// Resolves the path through the overlay layers and reads the symlink target.
+    pub fn read_symlink(&self, rel_path: &Path) -> Result<PathBuf, OverlayError> {
+        match self.classify(rel_path) {
+            ResolvedPath::Upper(path)
+            | ResolvedPath::Lower(path)
+            | ResolvedPath::Passthrough(path) => Ok(fs::read_link(&path)?),
+            ResolvedPath::NotFound => Err(OverlayError::PathNotFound(rel_path.to_path_buf())),
+        }
+    }
+
     /// Delete a file from the overlay.
     ///
     /// Passthrough paths are deleted directly from the lower layer (no whiteout).
@@ -397,7 +444,7 @@ impl OverlayLayer {
         match self.classify(rel_path) {
             ResolvedPath::Upper(path)
             | ResolvedPath::Lower(path)
-            | ResolvedPath::Passthrough(path) => Ok(fs::metadata(&path)?),
+            | ResolvedPath::Passthrough(path) => Ok(fs::symlink_metadata(&path)?),
             ResolvedPath::NotFound => Err(OverlayError::PathNotFound(rel_path.to_path_buf())),
         }
     }
@@ -1316,6 +1363,125 @@ mod tests {
 
         let result = layer.rename_file(Path::new("ghost.txt"), Path::new("dst.txt"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn chmod_preserves_permissions() {
+        let (lower, upper) = setup();
+        fs::write(lower.path().join("script.sh"), b"#!/bin/sh\necho hi").unwrap();
+
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        // Set executable permission.
+        layer.set_permissions(Path::new("script.sh"), 0o755).unwrap();
+
+        // getattr should reflect the new mode.
+        let meta = layer.getattr(Path::new("script.sh")).unwrap();
+        let mode = meta.permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o755, "expected 0o755 but got {mode:#o}");
+
+        // File should have been COW-copied to upper.
+        assert!(upper.path().join("script.sh").exists());
+    }
+
+    #[test]
+    fn chmod_on_upper_file() {
+        let (lower, upper) = setup();
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        layer.write_file(Path::new("bin"), b"binary").unwrap();
+        layer.set_permissions(Path::new("bin"), 0o755).unwrap();
+
+        let meta = layer.getattr(Path::new("bin")).unwrap();
+        let mode = meta.permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn create_symlink_and_readlink() {
+        let (lower, upper) = setup();
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        layer.write_file(Path::new("target.txt"), b"hello").unwrap();
+        layer
+            .create_symlink(Path::new("link.txt"), Path::new("target.txt"))
+            .unwrap();
+
+        // Symlink should exist.
+        assert!(layer.exists(Path::new("link.txt")));
+
+        // readlink should return the target.
+        let target = layer.read_symlink(Path::new("link.txt")).unwrap();
+        assert_eq!(target, Path::new("target.txt"));
+
+        // Symlink lives in upper layer.
+        assert!(upper.path().join("link.txt").symlink_metadata().unwrap().is_symlink());
+    }
+
+    #[test]
+    fn symlink_getattr_reports_symlink_type() {
+        let (lower, upper) = setup();
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        layer
+            .create_symlink(Path::new("mylink"), Path::new("/some/target"))
+            .unwrap();
+
+        let meta = layer.getattr(Path::new("mylink")).unwrap();
+        assert!(meta.is_symlink(), "getattr should report symlink file type");
+    }
+
+    #[test]
+    fn symlink_appears_in_readdir() {
+        let (lower, upper) = setup();
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        layer.write_file(Path::new("file.txt"), b"data").unwrap();
+        layer
+            .create_symlink(Path::new("link"), Path::new("file.txt"))
+            .unwrap();
+
+        let entries = layer.read_dir(Path::new("")).unwrap();
+        let link_entry = entries.iter().find(|e| e.name.to_string_lossy() == "link");
+        assert!(link_entry.is_some(), "symlink should appear in readdir");
+        assert_eq!(link_entry.unwrap().file_type, FileType::Symlink);
+    }
+
+    #[test]
+    fn modified_files_includes_symlinks() {
+        let (lower, upper) = setup();
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        layer
+            .create_symlink(Path::new("node_modules/.bin/esbuild"), Path::new("../esbuild/bin/esbuild"))
+            .unwrap();
+
+        let modified = layer.modified_files().unwrap();
+        assert!(
+            modified.iter().any(|p| p.ends_with("esbuild")),
+            "modified_files should include symlinks: {modified:?}"
+        );
+    }
+
+    #[test]
+    fn symlink_delete_and_whiteout() {
+        let (lower, upper) = setup();
+
+        // Create a symlink in the lower layer.
+        std::os::unix::fs::symlink("target", lower.path().join("link")).unwrap();
+
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+        assert!(layer.exists(Path::new("link")));
+        layer.delete_file(Path::new("link")).unwrap();
+        assert!(!layer.exists(Path::new("link")));
     }
 
     #[test]

@@ -89,6 +89,10 @@ pub(crate) fn read_dir_entries(abs_path: &Path) -> Result<Vec<DirEntry>, Overlay
 }
 
 /// Recursively collect all file paths under `dir`, returning paths relative to `base`.
+///
+/// Uses `entry.file_type()` (lstat) instead of `path.is_dir()` (stat) to avoid
+/// following symlinks. Symlinks are included as leaf entries; symlinks pointing
+/// to directories are NOT recursed into.
 pub(crate) fn walk_files(dir: &Path, base: &Path) -> Result<Vec<PathBuf>, OverlayError> {
     let mut result = Vec::new();
     if !dir.is_dir() {
@@ -96,10 +100,12 @@ pub(crate) fn walk_files(dir: &Path, base: &Path) -> Result<Vec<PathBuf>, Overla
     }
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
+        let ft = entry.file_type()?;
         let path = entry.path();
-        if path.is_dir() {
+        if ft.is_dir() {
             result.extend(walk_files(&path, base)?);
         } else if let Ok(rel) = path.strip_prefix(base) {
+            // Regular files and symlinks are both included as leaf entries.
             result.push(rel.to_path_buf());
         }
     }

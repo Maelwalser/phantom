@@ -141,6 +141,8 @@ mod inner {
 
     /// Convert [`std::fs::Metadata`] to [`fuser::FileAttr`].
     fn metadata_to_attr(ino: u64, meta: &std::fs::Metadata, config: &FsConfig) -> FileAttr {
+        use std::os::unix::fs::PermissionsExt;
+
         let kind = if meta.is_dir() {
             FileType::Directory
         } else if meta.is_symlink() {
@@ -153,10 +155,8 @@ mod inner {
         let mtime = meta.modified().unwrap_or(UNIX_EPOCH);
         let ctime = mtime; // Unix ctime ≈ mtime for our purposes.
 
-        let perm = match kind {
-            FileType::Directory => config.dir_mode,
-            _ => config.file_mode,
-        };
+        // Use real on-disk permissions so chmod is visible to FUSE clients.
+        let perm = (meta.permissions().mode() & 0o7777) as u16;
 
         FileAttr {
             ino: INodeNo(ino),
@@ -469,7 +469,7 @@ mod inner {
             _req: &Request,
             parent: INodeNo,
             name: &OsStr,
-            _mode: u32,
+            mode: u32,
             _umask: u32,
             _flags: i32,
             reply: ReplyCreate,
@@ -484,6 +484,12 @@ mod inner {
             match self.layer.write_file(&child_path, &[]) {
                 Ok(()) => {
                     self.layer.remove_whiteout(&child_path);
+
+                    // Apply the requested mode so executables retain +x.
+                    if let Err(e) = self.layer.set_permissions(&child_path, mode) {
+                        warn!(error = %e, "create: set_permissions failed");
+                        // Non-fatal — file was created, just with default perms.
+                    }
 
                     // Open a real file handle so subsequent writes use pwrite.
                     let real_path = match self.layer.resolve_path(&child_path) {
@@ -514,6 +520,7 @@ mod inner {
                         },
                     );
                     let now = SystemTime::now();
+                    let perm = (mode & 0o7777) as u16;
                     let attr = FileAttr {
                         ino: INodeNo(ino),
                         size: 0,
@@ -523,7 +530,7 @@ mod inner {
                         ctime: now,
                         crtime: UNIX_EPOCH,
                         kind: FileType::RegularFile,
-                        perm: self.config.file_mode,
+                        perm,
                         nlink: 1,
                         uid: self.config.uid,
                         gid: self.config.gid,
@@ -771,6 +778,58 @@ mod inner {
         ) {
             self.open_files.write().unwrap().remove(&fh.0);
             reply.ok();
+        }
+
+        fn symlink(
+            &self,
+            _req: &Request,
+            parent: INodeNo,
+            link_name: &OsStr,
+            target: &std::path::Path,
+            reply: ReplyEntry,
+        ) {
+            let Some(parent_path) = self.inodes.get_path(parent.0) else {
+                reply.error(Errno::ENOENT);
+                return;
+            };
+
+            let child_path = parent_path.join(link_name);
+
+            match self.layer.create_symlink(&child_path, target) {
+                Ok(()) => {
+                    let ino = self.inodes.get_or_create_inode(&child_path);
+                    match self.layer.getattr(&child_path) {
+                        Ok(meta) => {
+                            let attr = metadata_to_attr(ino, &meta, &self.config);
+                            reply.entry(&TTL, &attr, Generation(0));
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "symlink: getattr after create failed");
+                            reply.error(Errno::EIO);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "symlink failed");
+                    reply.error(Errno::EIO);
+                }
+            }
+        }
+
+        fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+            let Some(path) = self.inodes.get_path(ino.0) else {
+                reply.error(Errno::ENOENT);
+                return;
+            };
+
+            match self.layer.read_symlink(&path) {
+                Ok(target) => {
+                    reply.data(target.as_os_str().as_encoded_bytes());
+                }
+                Err(_) => {
+                    reply.error(Errno::ENOENT);
+                }
+            }
         }
     }
 
