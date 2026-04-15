@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 
 use phantom_core::SymbolEntry;
 
@@ -12,6 +13,10 @@ use crate::error::SemanticError;
 use crate::languages::{self, LanguageExtractor};
 
 /// Multi-language parser that routes files to the right tree-sitter grammar.
+///
+/// Holds a cached `tree_sitter::Parser` instance via `RefCell` to avoid
+/// re-allocating the parser on every `parse_file` call. The language is
+/// swapped via `set_language` (a cheap pointer swap) before each parse.
 pub struct Parser {
     /// Maps file extension to extractor index.
     ext_to_index: HashMap<String, usize>,
@@ -19,6 +24,8 @@ pub struct Parser {
     name_to_index: HashMap<String, usize>,
     /// Registered extractors.
     extractors: Vec<Box<dyn LanguageExtractor>>,
+    /// Reusable tree-sitter parser instance.
+    ts_parser: Mutex<tree_sitter::Parser>,
 }
 
 impl Parser {
@@ -29,6 +36,7 @@ impl Parser {
             ext_to_index: HashMap::new(),
             name_to_index: HashMap::new(),
             extractors: Vec::new(),
+            ts_parser: Mutex::new(tree_sitter::Parser::new()),
         };
         for extractor in languages::all_extractors() {
             parser.register(extractor);
@@ -45,6 +53,7 @@ impl Parser {
             ext_to_index: HashMap::new(),
             name_to_index: HashMap::new(),
             extractors: Vec::new(),
+            ts_parser: Mutex::new(tree_sitter::Parser::new()),
         }
     }
 
@@ -89,7 +98,7 @@ impl Parser {
         let extractor = &self.extractors[idx];
         let language = extractor.language();
 
-        let mut ts_parser = tree_sitter::Parser::new();
+        let mut ts_parser = self.ts_parser.lock().unwrap_or_else(|e| e.into_inner());
         ts_parser
             .set_language(&language)
             .map_err(|e| SemanticError::ParseError {
@@ -125,7 +134,7 @@ impl Parser {
         };
 
         let language = self.extractors[idx].language();
-        let mut ts_parser = tree_sitter::Parser::new();
+        let mut ts_parser = self.ts_parser.lock().unwrap_or_else(|e| e.into_inner());
         if ts_parser.set_language(&language).is_err() {
             return false;
         }

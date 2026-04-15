@@ -46,19 +46,19 @@ pub enum MaterializeResult {
 }
 
 /// Coordinates changeset materialization to trunk.
-pub struct Materializer {
-    git: GitOps,
+pub struct Materializer<'a> {
+    git: &'a GitOps,
 }
 
-impl Materializer {
+impl<'a> Materializer<'a> {
     /// Create a materializer backed by the given git operations handle.
-    pub fn new(git: GitOps) -> Self {
+    pub fn new(git: &'a GitOps) -> Self {
         Self { git }
     }
 
     /// Borrow the inner `GitOps` for inspection.
     pub fn git(&self) -> &GitOps {
-        &self.git
+        self.git
     }
 
     /// Attempt to materialize a changeset to trunk.
@@ -603,7 +603,7 @@ mod tests {
 
         let changeset = make_changeset("cs-1", base, vec![PathBuf::from("src/main.rs")]);
 
-        let materializer = Materializer::new(git);
+        let materializer = Materializer::new(&git);
         let result = materializer
             .materialize(
                 &changeset,
@@ -645,7 +645,7 @@ mod tests {
 
         let changeset = make_changeset("cs-2", base, vec![PathBuf::from("src/api.rs")]);
 
-        let materializer = Materializer::new(git);
+        let materializer = Materializer::new(&git);
         let result = materializer
             .materialize(
                 &changeset,
@@ -699,7 +699,7 @@ mod tests {
 
         let changeset = make_changeset("cs-3", base, vec![PathBuf::from("src/lib.rs")]);
 
-        let materializer = Materializer::new(git);
+        let materializer = Materializer::new(&git);
         let result = materializer
             .materialize(
                 &changeset,
@@ -742,7 +742,7 @@ mod tests {
 
         let changeset = make_changeset("cs-4", base, vec![PathBuf::from("src/new_module.rs")]);
 
-        let materializer = Materializer::new(git);
+        let materializer = Materializer::new(&git);
         let result = materializer
             .materialize(
                 &changeset,
@@ -825,7 +825,7 @@ mod tests {
             ],
         );
 
-        let materializer = Materializer::new(git);
+        let materializer = Materializer::new(&git);
         let result = materializer
             .materialize(
                 &changeset,
@@ -864,7 +864,7 @@ mod tests {
 
         let changeset = make_changeset("cs-6", base, vec![PathBuf::from("src/api.rs")]);
 
-        let materializer = Materializer::new(git);
+        let materializer = Materializer::new(&git);
         let result = materializer
             .materialize(
                 &changeset,
@@ -901,7 +901,7 @@ mod tests {
 
         let changeset = make_changeset("cs-bad", base, vec![PathBuf::from("../../../etc/passwd")]);
 
-        let materializer = Materializer::new(git);
+        let materializer = Materializer::new(&git);
         let result = materializer
             .materialize(
                 &changeset,
@@ -930,7 +930,7 @@ mod tests {
 
         let changeset = make_changeset("cs-abs", base, vec![PathBuf::from("/etc/passwd")]);
 
-        let materializer = Materializer::new(git);
+        let materializer = Materializer::new(&git);
         let result = materializer
             .materialize(
                 &changeset,

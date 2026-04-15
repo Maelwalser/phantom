@@ -46,13 +46,13 @@ pub enum AgentRunState {
 
 pub async fn run(args: StatusArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
-    let git = ctx.open_git()?;
     let events = ctx.open_events().await?;
-    let overlays = ctx.open_overlays_restored()?;
+    let overlays = ctx.open_overlays_readonly()?;
 
     if let Some(agent_name) = &args.agent {
         run_detailed(&ctx.phantom_dir, &events, &overlays, agent_name).await
     } else {
+        let git = ctx.open_git()?;
         run_summary(&ctx.phantom_dir, &git, &events, &overlays).await
     }
 }
@@ -67,7 +67,6 @@ async fn run_summary(
     let head = git.head_oid()?;
 
     let projection = SnapshotManager::new(events).build_projection().await?;
-    let all_events = events.query_all().await?;
 
     // Header
     let head_short = head.to_hex();
@@ -85,14 +84,20 @@ async fn run_summary(
     overlay_agents.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Detect plans: find PlanCreated events to map plan IDs to their request text.
+    // Uses a targeted query with kind_prefix filter instead of loading all events.
     let mut plan_agents: std::collections::HashMap<String, Vec<&AgentId>> =
         std::collections::HashMap::new();
     let mut standalone_agents: Vec<&AgentId> = Vec::new();
     let mut plan_requests: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    // Collect plan metadata from events.
-    for event in &all_events {
+    // Collect plan metadata via targeted query (only PlanCreated events).
+    let plan_query = phantom_events::query::EventQuery {
+        kind_prefixes: vec!["PlanCreated".into()],
+        ..Default::default()
+    };
+    let plan_events = events.query(&plan_query).await?;
+    for event in &plan_events {
         if let EventKind::PlanCreated {
             plan_id, request, ..
         } = &event.kind
@@ -165,14 +170,11 @@ async fn run_summary(
                 .unwrap_or_default();
             let status = latest_changeset_status(&projection, agent);
 
-            let task = all_events
-                .iter()
-                .rev()
-                .find(|e| e.agent_id == **agent && matches!(e.kind, EventKind::TaskCreated { .. }))
-                .and_then(|e| match &e.kind {
-                    EventKind::TaskCreated { task, .. } if !task.is_empty() => Some(task.as_str()),
-                    _ => None,
-                });
+            let task = projection
+                .changesets_for_agent(agent)
+                .first()
+                .map(|cs| cs.task.as_str())
+                .filter(|t| !t.is_empty());
 
             if let Some(task) = task {
                 // Prefix: "  " + indicator(2) + " " + agent(14) + " " + state(12) + " elapsed" + " " + status + "  "
@@ -252,9 +254,10 @@ async fn run_summary(
         println!();
     }
 
+    let event_count = events.event_count().await?;
     println!(
         "{}",
-        ui::style_dim(&format!("Total events: {}", all_events.len()))
+        ui::style_dim(&format!("Total events: {event_count}"))
     );
 
     Ok(())
@@ -270,13 +273,7 @@ async fn run_detailed(
     let agent_id = AgentId(agent_name.to_string());
 
     let projection = SnapshotManager::new(events).build_projection().await?;
-    let all_events = events.query_all().await?;
-
-    // Find the changeset for this agent.
-    let agent_events: Vec<_> = all_events
-        .iter()
-        .filter(|e| e.agent_id == agent_id)
-        .collect();
+    let agent_events = events.query_by_agent(&agent_id).await?;
 
     if agent_events.is_empty() {
         anyhow::bail!("no events found for agent '{agent_name}'");

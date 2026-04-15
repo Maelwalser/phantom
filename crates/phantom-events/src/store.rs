@@ -34,7 +34,7 @@ pub struct EventStoreConfig {
 impl Default for EventStoreConfig {
     fn default() -> Self {
         Self {
-            max_connections: 10,
+            max_connections: 2,
         }
     }
 }
@@ -166,14 +166,34 @@ impl SqliteEventStore {
             .create_if_missing(true)
             .pragma("journal_mode", "WAL")
             .pragma("busy_timeout", "5000")
-            .pragma("foreign_keys", "ON");
+            .pragma("foreign_keys", "ON")
+            .pragma("synchronous", "NORMAL")
+            .pragma("cache_size", "-64000")
+            .pragma("temp_store", "MEMORY");
         let pool = SqlitePoolOptions::new()
             .max_connections(config.max_connections)
             .connect_with(options)
             .await?;
         let store = Self { pool };
-        schema::ensure_schema(&store.pool).await?;
-        schema::run_migrations(&store.pool).await?;
+
+        // Fast path: skip schema checks if a version marker indicates we are
+        // already at the current schema version.
+        let marker = path.with_extension(format!("schema_v{}", schema::CURRENT_SCHEMA_VERSION));
+        if !marker.exists() {
+            schema::ensure_schema(&store.pool).await?;
+            schema::run_migrations(&store.pool).await?;
+            // Write marker atomically (tmp + rename) so a crash never leaves
+            // a half-written file that tricks future opens.
+            let tmp = marker.with_extension("tmp");
+            let _ = std::fs::write(&tmp, schema::CURRENT_SCHEMA_VERSION.to_string());
+            let _ = std::fs::rename(&tmp, &marker);
+            // Clean up markers from older schema versions.
+            for v in 1..schema::CURRENT_SCHEMA_VERSION {
+                let old = path.with_extension(format!("schema_v{v}"));
+                let _ = std::fs::remove_file(old);
+            }
+        }
+
         debug!(?path, "opened event store");
         Ok(store)
     }
@@ -185,7 +205,10 @@ impl SqliteEventStore {
         let options = SqliteConnectOptions::from_str("sqlite::memory:")?
             .pragma("journal_mode", "WAL")
             .pragma("busy_timeout", "5000")
-            .pragma("foreign_keys", "ON");
+            .pragma("foreign_keys", "ON")
+            .pragma("synchronous", "NORMAL")
+            .pragma("cache_size", "-64000")
+            .pragma("temp_store", "MEMORY");
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(options)
@@ -299,13 +322,22 @@ impl SqliteEventStore {
         self.query_events("dropped = 0", &[]).await
     }
 
+    /// Return the count of non-dropped events.
+    pub async fn event_count(&self) -> Result<u64, EventStoreError> {
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM events WHERE dropped = 0")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(row.0 as u64)
+    }
+
     /// Return events whose `id` is strictly greater than `after`, in
     /// insertion order. Used by [`crate::snapshot::SnapshotManager`] to replay
     /// only the tail of the event log after a snapshot.
     pub async fn query_after_id(&self, after: EventId) -> Result<Vec<Event>, EventStoreError> {
         let mut qb = QueryBuilder::new();
         let p = qb.bind((after.0 as i64).to_string());
-        qb.push(format!("CAST(id AS INTEGER) > CAST({p} AS INTEGER)"));
+        qb.push(format!("id > {p}"));
         qb.fetch(&self.pool, "ASC", None).await
     }
 

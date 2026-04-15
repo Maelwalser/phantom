@@ -65,7 +65,7 @@ pub async fn submit_and_materialize(
     layer: &OverlayLayer,
     upper_dir: &Path,
     phantom_dir: &Path,
-    materializer: &Materializer,
+    materializer: &Materializer<'_>,
     active_overlays: &[ActiveOverlay],
     message: Option<&str>,
 ) -> Result<Option<SubmitAndMaterializeOutput>, OrchestratorError> {

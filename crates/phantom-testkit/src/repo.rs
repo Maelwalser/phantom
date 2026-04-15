@@ -51,7 +51,10 @@ impl TestContext {
             .unwrap();
 
         let git = GitOps::open(dir.path()).expect("failed to open repo");
-        let rt = tokio::runtime::Runtime::new().expect("failed to create runtime");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create runtime");
         let events = rt
             .block_on(SqliteEventStore::in_memory())
             .expect("failed to create event store");
@@ -172,12 +175,8 @@ impl TestContext {
     }
 
     /// Create a [`Materializer`] backed by this context's git repo.
-    ///
-    /// This re-opens the repository because `Materializer` takes ownership of
-    /// a `GitOps`.
-    pub fn materializer(&self) -> Materializer {
-        let git = GitOps::open(self.dir.path()).expect("failed to reopen repo");
-        Materializer::new(git)
+    pub fn materializer(&self) -> Materializer<'_> {
+        Materializer::new(&self.git)
     }
 
     /// Return the current HEAD OID.

@@ -3,6 +3,7 @@
 //! These tests need `pub(crate)` access to the SQLite pool, so they live
 //! as a `#[cfg(test)]` module within the crate rather than in `tests/`.
 
+use crate::schema;
 use crate::store::SqliteEventStore;
 use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
@@ -30,7 +31,11 @@ async fn schema_meta_table_created_with_version() {
             .fetch_one(&store.pool)
             .await
             .unwrap();
-    assert_eq!(row.0, "4", "schema should be at version 4 after migrations");
+    assert_eq!(
+        row.0,
+        schema::CURRENT_SCHEMA_VERSION.to_string(),
+        "schema should be at current version after migrations"
+    );
 }
 
 #[tokio::test]

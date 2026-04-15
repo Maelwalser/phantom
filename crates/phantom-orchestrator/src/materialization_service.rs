@@ -76,7 +76,7 @@ pub async fn materialize_and_ripple(
     upper_dir: &Path,
     events: &dyn EventStore,
     analyzer: &dyn SemanticAnalyzer,
-    materializer: &Materializer,
+    materializer: &Materializer<'_>,
     phantom_dir: &Path,
     active_overlays: &[ActiveOverlay],
     message: &str,
@@ -147,7 +147,7 @@ pub async fn materialize_and_ripple(
 /// live rebase on shadowed files, write notifications, and emit audit events.
 #[allow(clippy::too_many_arguments)]
 async fn handle_agent_ripple(
-    materializer: &Materializer,
+    materializer: &Materializer<'_>,
     analyzer: &dyn SemanticAnalyzer,
     events: &dyn EventStore,
     phantom_dir: &Path,
@@ -321,7 +321,7 @@ fn write_trunk_update(
     operations: &[SemanticOperation],
     classified: &[(PathBuf, TrunkFileStatus)],
     overlapping_files: &[PathBuf],
-    materializer: &Materializer,
+    materializer: &Materializer<'_>,
     upper_path: &Path,
     agent_id: &AgentId,
 ) {

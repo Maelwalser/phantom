@@ -125,10 +125,7 @@ async fn submit_and_materialize_overlay(
         .map_err(|e| anyhow::anyhow!("failed to open git repo: {e}"))?;
     let analyzer = SemanticMerger::new();
 
-    let materializer = Materializer::new(
-        phantom_git::GitOps::open(repo_root)
-            .map_err(|e| anyhow::anyhow!("failed to open git repo for materialization: {e}"))?,
-    );
+    let materializer = Materializer::new(&git);
 
     // Build the list of active overlays for ripple checking.
     let active_overlays = build_active_overlays(events, overlays, agent_id).await?;

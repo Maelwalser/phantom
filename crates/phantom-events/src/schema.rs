@@ -10,7 +10,7 @@ use crate::error::EventStoreError;
 /// Current schema version for the event store database.
 ///
 /// Increment this when adding migrations in [`run_migrations`].
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 /// Create the events table, schema_meta table, and indexes if they do not exist.
 pub(crate) async fn ensure_schema(pool: &SqlitePool) -> Result<(), EventStoreError> {
@@ -136,6 +136,31 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), EventStoreEr
         .await?;
 
         sqlx::query("UPDATE schema_meta SET value = '4' WHERE key = 'schema_version'")
+            .execute(pool)
+            .await?;
+    }
+
+    if version < 5 {
+        // Migration 4 -> 5: add composite indexes for common query patterns.
+        // Most queries filter on `dropped = 0` first, so leading with `dropped`
+        // lets SQLite skip dropped rows via the index rather than scanning.
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_dropped_changeset ON events(dropped, changeset_id)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_dropped_agent ON events(dropped, agent_id)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_dropped_timestamp ON events(dropped, timestamp)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'")
             .execute(pool)
             .await?;
     }

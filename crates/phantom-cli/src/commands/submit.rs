@@ -89,10 +89,7 @@ pub async fn submit_agent(
     let git = ctx.open_git()?;
     let analyzer = ctx.semantic();
 
-    let materializer = Materializer::new(
-        phantom_git::GitOps::open(&ctx.repo_root)
-            .context("failed to open git repo for materialization")?,
-    );
+    let materializer = Materializer::new(&git);
 
     let active_overlays = build_active_overlays(events, overlays, agent_id).await?;
 
