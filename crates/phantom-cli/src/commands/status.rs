@@ -507,14 +507,21 @@ fn latest_changeset_status(projection: &Projection, agent_id: &AgentId) -> Strin
 
 /// Read the last N lines of a log file.
 fn read_log_tail(path: &PathBuf, n: usize) -> Option<String> {
+    use std::collections::VecDeque;
+
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
-    let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
-    let start = lines.len().saturating_sub(n);
-    let tail = &lines[start..];
-    if tail.is_empty() {
+    let mut ring = VecDeque::with_capacity(n);
+    for line in reader.lines().map_while(Result::ok) {
+        if ring.len() == n {
+            ring.pop_front();
+        }
+        ring.push_back(line);
+    }
+    if ring.is_empty() {
         None
     } else {
+        let tail: Vec<&str> = ring.iter().map(String::as_str).collect();
         Some(tail.join("\n"))
     }
 }
