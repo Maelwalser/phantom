@@ -26,6 +26,10 @@ pub enum EventStoreError {
         found: u32,
     },
 
+    /// A projection snapshot could not be deserialized or serialized.
+    #[error("snapshot corrupted: {0}")]
+    SnapshotCorrupted(String),
+
     /// An error from phantom-core.
     #[error("core error: {0}")]
     Core(#[from] CoreError),

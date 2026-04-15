@@ -13,7 +13,7 @@ use phantom_core::changeset::ChangesetStatus;
 use phantom_core::event::EventKind;
 use phantom_core::id::AgentId;
 use phantom_core::traits::EventStore;
-use phantom_events::{Projection, SqliteEventStore};
+use phantom_events::{Projection, SnapshotManager, SqliteEventStore};
 use phantom_orchestrator::git::GitOps;
 use phantom_overlay::OverlayManager;
 
@@ -65,8 +65,8 @@ async fn run_summary(
 ) -> anyhow::Result<()> {
     let head = git.head_oid()?;
 
+    let projection = SnapshotManager::new(events).build_projection().await?;
     let all_events = events.query_all().await?;
-    let projection = Projection::from_events(&all_events);
 
     // Header
     let head_short = head.to_hex();
@@ -271,8 +271,8 @@ async fn run_detailed(
 ) -> anyhow::Result<()> {
     let agent_id = AgentId(agent_name.to_string());
 
+    let projection = SnapshotManager::new(events).build_projection().await?;
     let all_events = events.query_all().await?;
-    let projection = Projection::from_events(&all_events);
 
     // Find the changeset for this agent.
     let agent_events: Vec<_> = all_events

@@ -10,7 +10,7 @@ use crate::error::EventStoreError;
 /// Current schema version for the event store database.
 ///
 /// Increment this when adding migrations in [`run_migrations`].
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Create the events table, schema_meta table, and indexes if they do not exist.
 pub(crate) async fn ensure_schema(pool: &SqlitePool) -> Result<(), EventStoreError> {
@@ -86,6 +86,31 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), EventStoreEr
             })?;
 
         sqlx::query("UPDATE schema_meta SET value = '2' WHERE key = 'schema_version'")
+            .execute(pool)
+            .await?;
+    }
+
+    if version < 3 {
+        // Migration 2 -> 3: add projection_snapshots table for snapshot-based
+        // projection loading (avoids full event replay on every projection build).
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS projection_snapshots (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_at INTEGER NOT NULL,
+                data        BLOB NOT NULL,
+                created_at  TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_snapshots_at ON projection_snapshots(snapshot_at)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("UPDATE schema_meta SET value = '3' WHERE key = 'schema_version'")
             .execute(pool)
             .await?;
     }

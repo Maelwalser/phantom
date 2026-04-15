@@ -195,7 +195,7 @@ impl SqliteEventStore {
     }
 
     /// Append an event, returning the auto-generated [`EventId`].
-    async fn append_internal(&self, event: Event) -> Result<EventId, EventStoreError> {
+    pub(crate) async fn append_internal(&self, event: Event) -> Result<EventId, EventStoreError> {
         let kind_json = serde_json::to_string(&event.kind)?;
         let timestamp_str = event.timestamp.to_rfc3339();
 
@@ -257,7 +257,30 @@ impl SqliteEventStore {
         qb.fetch(&self.pool, q.order.as_sql(), q.limit).await
     }
 
+    /// Return all non-dropped events in insertion order.
+    ///
+    /// This is the same as the [`EventStore::query_all`] trait method but
+    /// returns [`EventStoreError`] directly, avoiding the `CoreError`
+    /// conversion needed by the trait. Used internally by
+    /// [`crate::snapshot::SnapshotManager`].
+    pub async fn query_all_events(&self) -> Result<Vec<Event>, EventStoreError> {
+        self.query_events("dropped = 0", &[]).await
+    }
+
+    /// Return events whose `id` is strictly greater than `after`, in
+    /// insertion order. Used by [`crate::snapshot::SnapshotManager`] to replay
+    /// only the tail of the event log after a snapshot.
+    pub async fn query_after_id(&self, after: EventId) -> Result<Vec<Event>, EventStoreError> {
+        let mut qb = QueryBuilder::new();
+        let p = qb.bind((after.0 as i64).to_string());
+        qb.push(format!("CAST(id AS INTEGER) > CAST({p} AS INTEGER)"));
+        qb.fetch(&self.pool, "ASC", None).await
+    }
+
     /// Mark all events belonging to a changeset as dropped.
+    ///
+    /// Also invalidates all projection snapshots, since they may contain
+    /// state derived from the dropped events.
     ///
     /// Returns the number of rows affected.
     pub async fn mark_dropped(&self, changeset_id: &ChangesetId) -> Result<u64, EventStoreError> {
@@ -265,6 +288,13 @@ impl SqliteEventStore {
             .bind(&changeset_id.0)
             .execute(&self.pool)
             .await?;
+
+        // Invalidate all projection snapshots — rollback is rare, so a full
+        // wipe is simpler and safer than selective invalidation.
+        sqlx::query("DELETE FROM projection_snapshots")
+            .execute(&self.pool)
+            .await?;
+
         Ok(result.rows_affected())
     }
 

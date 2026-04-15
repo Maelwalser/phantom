@@ -30,7 +30,7 @@ async fn schema_meta_table_created_with_version() {
             .fetch_one(&store.pool)
             .await
             .unwrap();
-    assert_eq!(row.0, "2", "schema should be at version 2 after migrations");
+    assert_eq!(row.0, "3", "schema should be at version 3 after migrations");
 }
 
 #[tokio::test]

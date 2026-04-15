@@ -11,7 +11,7 @@ use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{AgentId, EventId};
 use phantom_core::traits::EventStore;
-use phantom_events::Projection;
+use phantom_events::SnapshotManager;
 use phantom_session::context_file::{self, ResolveConflictContext};
 
 use crate::context::PhantomContext;
@@ -32,8 +32,8 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     let head = git.head_oid().context("failed to read HEAD")?;
 
     // Find the latest conflicted changeset for this agent.
+    let projection = SnapshotManager::new(&events).build_projection().await?;
     let all_events = events.query_all().await?;
-    let projection = Projection::from_events(&all_events);
 
     // Check if a resolution is already in progress.
     if let Some(resolving) = projection.latest_resolving_changeset(&agent_id) {

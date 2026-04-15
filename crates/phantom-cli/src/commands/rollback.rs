@@ -12,6 +12,7 @@ use phantom_core::id::{AgentId, ChangesetId, GitOid};
 use phantom_core::traits::EventStore;
 use phantom_events::ReplayEngine;
 use phantom_events::projection::Projection;
+use phantom_events::snapshot::SnapshotManager;
 use phantom_events::store::SqliteEventStore;
 use phantom_orchestrator::git::GitOps;
 
@@ -133,8 +134,7 @@ async fn run_interactive(ctx: &PhantomContext, events: &SqliteEventStore) -> any
     }
 
     // Build projection for display metadata (task, agent, timestamp).
-    let all_events = events.query_all().await?;
-    let projection = Projection::from_events(&all_events);
+    let projection = SnapshotManager::new(events).build_projection().await?;
 
     // Reverse to newest-first for the menu.
     let materialized_rev: Vec<&ChangesetId> = materialized.iter().rev().collect();

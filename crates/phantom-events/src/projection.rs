@@ -28,72 +28,32 @@ impl Projection {
     #[must_use]
     pub fn from_events(events: &[Event]) -> Self {
         let mut changesets: HashMap<ChangesetId, Changeset> = HashMap::new();
-
-        for event in events {
-            let cs = changesets
-                .entry(event.changeset_id.clone())
-                .or_insert_with(|| new_changeset(&event.changeset_id, &event.agent_id));
-
-            match &event.kind {
-                EventKind::TaskCreated { base_commit, task } => {
-                    cs.status = ChangesetStatus::InProgress;
-                    cs.base_commit = *base_commit;
-                    cs.task = task.clone();
-                    cs.created_at = event.timestamp;
-                }
-                EventKind::ChangesetSubmitted { operations } => {
-                    cs.status = ChangesetStatus::Submitted;
-                    cs.operations = operations.clone();
-                    for op in operations {
-                        let p = op.file_path().to_path_buf();
-                        if !cs.files_touched.contains(&p) {
-                            cs.files_touched.push(p);
-                        }
-                    }
-                }
-                EventKind::ChangesetMaterialized { .. } => {
-                    // Status stays Submitted — materialization is an internal
-                    // detail, not a separate user-facing state.
-                }
-                EventKind::ChangesetConflicted { .. } => {
-                    cs.status = ChangesetStatus::Conflicted;
-                }
-                EventKind::ChangesetDropped { .. } => {
-                    cs.status = ChangesetStatus::Dropped;
-                }
-                EventKind::TestsRun(result) => {
-                    cs.test_result = Some(*result);
-                }
-                EventKind::FileWritten { path, .. } => {
-                    if !cs.files_touched.contains(path) {
-                        cs.files_touched.push(path.clone());
-                    }
-                }
-                EventKind::FileDeleted { path } => {
-                    if !cs.files_touched.contains(path) {
-                        cs.files_touched.push(path.clone());
-                    }
-                }
-                EventKind::AgentLaunched { pid, .. } => {
-                    cs.agent_pid = Some(*pid);
-                    cs.agent_launched_at = Some(event.timestamp);
-                }
-                EventKind::AgentCompleted { exit_code, .. } => {
-                    cs.agent_exit_code = *exit_code;
-                    cs.agent_completed_at = Some(event.timestamp);
-                }
-                EventKind::ConflictResolutionStarted { new_base, .. } => {
-                    cs.status = ChangesetStatus::Resolving;
-                    if let Some(base) = new_base {
-                        cs.base_commit = *base;
-                    }
-                }
-                // Other event kinds don't affect changeset state.
-                _ => {}
-            }
-        }
-
+        apply_events(&mut changesets, events);
         Self { changesets }
+    }
+
+    /// Build a projection from a previously-persisted snapshot, then replay
+    /// only the events that occurred after the snapshot was taken.
+    ///
+    /// This is the fast path: instead of replaying the entire event log,
+    /// we deserialize the snapshot and apply only the tail.
+    #[must_use]
+    pub fn from_snapshot(base: HashMap<ChangesetId, Changeset>, tail: &[Event]) -> Self {
+        let mut changesets = base;
+        apply_events(&mut changesets, tail);
+        Self { changesets }
+    }
+
+    /// Consume the projection and return the internal changeset map.
+    #[must_use]
+    pub fn into_changesets(self) -> HashMap<ChangesetId, Changeset> {
+        self.changesets
+    }
+
+    /// Clone the internal changeset map for snapshot persistence.
+    #[must_use]
+    pub fn clone_changesets(&self) -> HashMap<ChangesetId, Changeset> {
+        self.changesets.clone()
     }
 
     /// Look up a changeset by ID.
@@ -191,6 +151,76 @@ impl Projection {
             .collect();
         result.sort_by(|a, b| a.id.0.cmp(&b.id.0));
         result
+    }
+}
+
+/// Apply a sequence of events to a changeset map, updating each changeset
+/// as events are encountered. Shared implementation for both full replay
+/// ([`Projection::from_events`]) and incremental replay
+/// ([`Projection::from_snapshot`]).
+fn apply_events(changesets: &mut HashMap<ChangesetId, Changeset>, events: &[Event]) {
+    for event in events {
+        let cs = changesets
+            .entry(event.changeset_id.clone())
+            .or_insert_with(|| new_changeset(&event.changeset_id, &event.agent_id));
+
+        match &event.kind {
+            EventKind::TaskCreated { base_commit, task } => {
+                cs.status = ChangesetStatus::InProgress;
+                cs.base_commit = *base_commit;
+                cs.task = task.clone();
+                cs.created_at = event.timestamp;
+            }
+            EventKind::ChangesetSubmitted { operations } => {
+                cs.status = ChangesetStatus::Submitted;
+                cs.operations = operations.clone();
+                for op in operations {
+                    let p = op.file_path().to_path_buf();
+                    if !cs.files_touched.contains(&p) {
+                        cs.files_touched.push(p);
+                    }
+                }
+            }
+            EventKind::ChangesetMaterialized { .. } => {
+                // Status stays Submitted — materialization is an internal
+                // detail, not a separate user-facing state.
+            }
+            EventKind::ChangesetConflicted { .. } => {
+                cs.status = ChangesetStatus::Conflicted;
+            }
+            EventKind::ChangesetDropped { .. } => {
+                cs.status = ChangesetStatus::Dropped;
+            }
+            EventKind::TestsRun(result) => {
+                cs.test_result = Some(*result);
+            }
+            EventKind::FileWritten { path, .. } => {
+                if !cs.files_touched.contains(path) {
+                    cs.files_touched.push(path.clone());
+                }
+            }
+            EventKind::FileDeleted { path } => {
+                if !cs.files_touched.contains(path) {
+                    cs.files_touched.push(path.clone());
+                }
+            }
+            EventKind::AgentLaunched { pid, .. } => {
+                cs.agent_pid = Some(*pid);
+                cs.agent_launched_at = Some(event.timestamp);
+            }
+            EventKind::AgentCompleted { exit_code, .. } => {
+                cs.agent_exit_code = *exit_code;
+                cs.agent_completed_at = Some(event.timestamp);
+            }
+            EventKind::ConflictResolutionStarted { new_base, .. } => {
+                cs.status = ChangesetStatus::Resolving;
+                if let Some(base) = new_base {
+                    cs.base_commit = *base;
+                }
+            }
+            // Other event kinds don't affect changeset state.
+            _ => {}
+        }
     }
 }
 

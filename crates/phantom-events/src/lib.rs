@@ -9,6 +9,7 @@ pub mod projection;
 pub mod query;
 pub mod replay;
 mod schema;
+pub mod snapshot;
 pub mod store;
 
 #[cfg(test)]
@@ -18,4 +19,5 @@ pub use error::EventStoreError;
 pub use projection::Projection;
 pub use query::{EventQuery, QueryOrder};
 pub use replay::ReplayEngine;
+pub use snapshot::SnapshotManager;
 pub use store::{EventStoreConfig, SqliteEventStore};

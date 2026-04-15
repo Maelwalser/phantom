@@ -11,7 +11,7 @@ use std::time::Duration;
 use phantom_core::event::EventKind;
 use phantom_core::id::AgentId;
 use phantom_core::traits::EventStore;
-use phantom_events::Projection;
+use phantom_events::SnapshotManager;
 
 use crate::context::PhantomContext;
 
@@ -95,8 +95,8 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events_store = ctx.open_events().await?;
     let git = ctx.open_git()?;
+    let projection = SnapshotManager::new(&events_store).build_projection().await?;
     let all_events = events_store.query_all().await?;
-    let projection = Projection::from_events(&all_events);
 
     let head = git.head_oid()?;
     let head_short = head.to_hex();
