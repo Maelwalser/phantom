@@ -11,7 +11,6 @@ use std::time::Duration;
 use phantom_core::event::EventKind;
 use phantom_core::id::AgentId;
 use phantom_core::traits::EventStore;
-use phantom_events::SnapshotManager;
 
 use crate::context::PhantomContext;
 
@@ -116,7 +115,6 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events_store = ctx.open_events().await?;
     let git = ctx.open_git()?;
-    let projection = SnapshotManager::new(&events_store).build_projection().await?;
     let all_events = events_store.query_all().await?;
 
     let head = git.head_oid()?;
@@ -141,13 +139,10 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     )?;
     writeln!(out)?;
 
-    // Gather all agents (active changesets).
-    let active_agents = projection.active_agents();
-
-    // Also find agents that have completed (materialized/failed) — they still
-    // have overlay dirs with status files.
-    let mut all_agents: Vec<AgentId> = active_agents.clone();
-    collect_completed_agents(&ctx.phantom_dir, &mut all_agents);
+    // Gather only background agents — those with agent.pid or agent.status
+    // files in their overlay directory. Interactive agents are excluded.
+    let mut all_agents: Vec<AgentId> = Vec::new();
+    collect_background_agents(&ctx.phantom_dir, &mut all_agents);
     all_agents.sort_by(|a, b| a.0.cmp(&b.0));
     all_agents.dedup();
 
@@ -242,18 +237,24 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Scan `.phantom/overlays/` for agent directories that have a status file
-/// (completed agents whose changesets may no longer be InProgress).
-fn collect_completed_agents(phantom_dir: &Path, agents: &mut Vec<AgentId>) {
+/// Scan `.phantom/overlays/` for agent directories that were launched as
+/// background agents (have `agent.pid` or `agent.status` files).
+/// Interactive-only agents are excluded.
+fn collect_background_agents(phantom_dir: &Path, agents: &mut Vec<AgentId>) {
     let overlays_dir = phantom_dir.join("overlays");
     if let Ok(entries) = std::fs::read_dir(&overlays_dir) {
         for entry in entries.flatten() {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
                 && let Some(name) = entry.file_name().to_str()
             {
-                let id = AgentId(name.to_string());
-                if !agents.contains(&id) {
-                    agents.push(id);
+                let dir = entry.path();
+                let is_background =
+                    dir.join("agent.pid").exists() || dir.join("agent.status").exists();
+                if is_background {
+                    let id = AgentId(name.to_string());
+                    if !agents.contains(&id) {
+                        agents.push(id);
+                    }
                 }
             }
         }
