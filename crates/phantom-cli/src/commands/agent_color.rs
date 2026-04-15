@@ -25,6 +25,7 @@ pub struct AgentPalette {
 }
 
 impl AgentPalette {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             assignments: HashMap::new(),

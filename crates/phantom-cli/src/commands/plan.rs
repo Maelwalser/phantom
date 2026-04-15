@@ -162,11 +162,16 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
 fn run_planner(repo_root: &Path, description: &str) -> anyhow::Result<RawPlanOutput> {
     let prompt = build_planning_prompt(description);
 
-    let mut cmd = std::process::Command::new("claude");
-    cmd.current_dir(repo_root);
-    cmd.args(["-p", &prompt]);
+    let adapter = phantom_session::adapter::ClaudeAdapter;
+    let mut cmd = phantom_session::adapter::CliAdapter::build_headless_command(
+        &adapter,
+        repo_root,
+        &prompt,
+        &[],
+        None,
+    )
+    .context("planner CLI does not support headless mode")?;
     cmd.args(["--output-format", "json"]);
-    cmd.args(["--allowedTools", "Read", "Bash", "Glob", "Grep"]);
     cmd.stdin(std::process::Stdio::null());
 
     let output = cmd

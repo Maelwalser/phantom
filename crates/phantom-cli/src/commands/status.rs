@@ -470,6 +470,8 @@ pub fn format_duration(d: &Duration) -> String {
         format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
     } else if secs >= 60 {
         format!("{}m{}s", secs / 60, secs % 60)
+    } else if secs == 0 {
+        "just started".to_string()
     } else {
         format!("{secs}s")
     }

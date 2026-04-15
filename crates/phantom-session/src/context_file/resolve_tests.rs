@@ -91,39 +91,67 @@ fn write_truncated_centers_on_offset() {
 }
 
 #[test]
-fn write_span_context_uses_semantic_for_rust() {
-    let src = "struct Foo {}\n\nfn target() {\n    let x = 1;\n    let y = 2;\n}\n\nfn other() {}\n";
-    let span = phantom_core::conflict::ConflictSpan {
-        byte_range: 28..39, // inside "fn target()"
-        start_line: 4,
-        end_line: 4,
-    };
-    let parser = phantom_semantic::Parser::new();
-    let mut result = String::new();
-    write_span_context(&mut result, src, &span, Path::new("test.rs"), &parser);
-    // Should return the entire fn target() body, not just ±10 lines.
-    assert!(result.contains("fn target()"));
-    assert!(result.contains("let x = 1;"));
-    assert!(result.contains("let y = 2;"));
-    // Should NOT include unrelated symbols.
-    assert!(!result.contains("struct Foo"));
-    assert!(!result.contains("fn other"));
+fn fallback_uses_conflict_markers_instead_of_three_blocks() {
+    // build_conflict_marker_view should produce diff3 markers for divergent content.
+    let base = "line1\nline2\nline3\n";
+    let ours = "line1\nours_change\nline3\n";
+    let theirs = "line1\ntheirs_change\nline3\n";
+
+    let merged = build_conflict_marker_view(Some(base), Some(ours), Some(theirs));
+    assert!(merged.is_some(), "should produce merged output");
+    let merged = merged.unwrap();
+    // Should contain conflict markers, not three separate blocks.
+    assert!(merged.contains("<<<<<<<"), "should contain <<<<<<< marker");
+    assert!(merged.contains(">>>>>>>"), "should contain >>>>>>> marker");
+    assert!(merged.contains("======="), "should contain ======= marker");
+    assert!(merged.contains("|||||||"), "should contain ||||||| marker (diff3 style)");
+    // Shared context should appear only once.
+    assert_eq!(merged.matches("line1").count(), 1, "shared line should appear once");
+    assert_eq!(merged.matches("line3").count(), 1, "shared line should appear once");
+    // Both changes should be present.
+    assert!(merged.contains("ours_change"));
+    assert!(merged.contains("theirs_change"));
 }
 
 #[test]
-fn write_span_context_falls_back_for_unsupported_lang() {
-    let src = "line1\nline2\nline3\nline4\nline5\n";
-    let span = phantom_core::conflict::ConflictSpan {
-        byte_range: 6..11,
-        start_line: 2,
-        end_line: 2,
-    };
-    let parser = phantom_semantic::Parser::new();
-    let mut result = String::new();
-    write_span_context(&mut result, src, &span, Path::new("config.toml"), &parser);
-    // Fallback path: should include surrounding lines.
-    assert!(result.contains("line1"));
-    assert!(result.contains("line2"));
+fn fallback_conflict_markers_returns_none_when_content_missing() {
+    assert!(build_conflict_marker_view(None, Some("a"), Some("b")).is_none());
+    assert!(build_conflict_marker_view(Some("a"), None, Some("b")).is_none());
+    assert!(build_conflict_marker_view(Some("a"), Some("b"), None).is_none());
+}
+
+#[test]
+fn fallback_conflict_markers_clean_merge() {
+    // Non-overlapping changes should produce a clean merge (no markers).
+    let base = "line1\nline2\nline3\n";
+    let ours = "OURS\nline2\nline3\n";
+    let theirs = "line1\nline2\nTHEIRS\n";
+
+    let merged = build_conflict_marker_view(Some(base), Some(ours), Some(theirs));
+    let merged = merged.unwrap();
+    assert!(!merged.contains("<<<<<<<"), "clean merge should have no conflict markers");
+    assert!(merged.contains("OURS"), "ours change should be integrated");
+    assert!(merged.contains("THEIRS"), "theirs change should be integrated");
+}
+
+#[test]
+fn minimal_fallback_picks_best_content() {
+    let mut out = String::new();
+    write_minimal_fallback(&mut out, "txt", None, None, Some("theirs content"), "abc", 0);
+    assert!(out.contains("THEIRS"), "should prefer theirs");
+    assert!(out.contains("theirs content"));
+
+    let mut out = String::new();
+    write_minimal_fallback(&mut out, "txt", None, Some("ours content"), None, "abc", 0);
+    assert!(out.contains("OURS"), "should fall back to ours");
+
+    let mut out = String::new();
+    write_minimal_fallback(&mut out, "txt", Some("base content"), None, None, "abc", 0);
+    assert!(out.contains("BASE"), "should fall back to base");
+
+    let mut out = String::new();
+    write_minimal_fallback(&mut out, "txt", None, None, None, "abc", 0);
+    assert!(out.contains("no file content available"), "should show message when all missing");
 }
 
 fn make_both_modified_conflict(
@@ -573,10 +601,72 @@ fn handler(req: Request) -> Response {
         out.contains("`fn handler(req: Request) -> Response {`"),
         "scope signature should identify the enclosing function, got:\n{out}"
     );
-    // setup() should NOT appear since changes are only in handler().
+    // setup() should NOT appear anywhere — not in scope context, not in diffs.
     assert!(
         !out.contains("`fn setup()"),
         "unrelated function should not appear in scope context"
+    );
+    assert!(
+        !out.contains("init()"),
+        "diff should be scoped to handler — setup/init should not leak into output"
+    );
+}
+
+#[test]
+fn raw_text_scoped_diffs_for_two_functions() {
+    use phantom_core::conflict::{ConflictDetail, ConflictKind};
+    use phantom_core::id::ChangesetId;
+
+    // A file with three functions; changes touch two of them.
+    let base = "\
+fn untouched() {
+    noop();
+}
+
+fn alpha() {
+    let x = 1;
+}
+
+fn beta() {
+    let y = 2;
+}
+";
+    let ours = base.replace("let x = 1;", "let x = 10;");
+    let theirs = base.replace("let y = 2;", "let y = 20;");
+
+    let conflict = ResolveConflictContext {
+        detail: ConflictDetail {
+            kind: ConflictKind::RawTextConflict,
+            file: std::path::PathBuf::from("src/lib.rs"),
+            symbol_id: None,
+            ours_changeset: ChangesetId("cs-1".into()),
+            theirs_changeset: ChangesetId("cs-2".into()),
+            description: "changes in alpha and beta".into(),
+            base_span: None,
+            ours_span: None,
+            theirs_span: None,
+        },
+        base_content: Some(base.into()),
+        ours_content: Some(ours),
+        theirs_content: Some(theirs),
+    };
+
+    let mut out = String::new();
+    let parser = phantom_semantic::Parser::new();
+    let ok = write_compact_raw_text_conflict(&mut out, "rust", &conflict, "abc123", &parser);
+
+    assert!(ok, "should succeed");
+    // Two scope context headers — one for alpha, one for beta.
+    assert!(out.contains("`fn alpha() {`"), "should scope to alpha");
+    assert!(out.contains("`fn beta() {`"), "should scope to beta");
+    // untouched() should not appear anywhere.
+    assert!(
+        !out.contains("untouched"),
+        "unmodified function should not appear in scoped output"
+    );
+    assert!(
+        !out.contains("noop"),
+        "body of unmodified function should not appear"
     );
 }
 

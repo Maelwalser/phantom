@@ -88,13 +88,6 @@ pub fn write_plan_domain_instructions(
         let _ = writeln!(content);
     }
 
-    // Cross-domain signatures (pre-extracted for token efficiency).
-    if let Some(sigs) = cross_domain_signatures
-        && !sigs.is_empty()
-    {
-        let _ = write!(content, "{sigs}");
-    }
-
     // Dependencies
     if !domain.depends_on.is_empty() {
         let _ = writeln!(content, "## Dependencies");
@@ -133,6 +126,15 @@ pub fn write_plan_domain_instructions(
          be automatically submitted and merged to trunk. Do not run `phantom submit` \
          manually."
     );
+
+    // Cross-domain signatures — appended last so volatile content doesn't
+    // invalidate the prefix cache for the static sections above.
+    if let Some(sigs) = cross_domain_signatures
+        && !sigs.is_empty()
+    {
+        let _ = writeln!(content);
+        let _ = write!(content, "{sigs}");
+    }
 
     // Ensure parent directory exists.
     if let Some(parent) = instructions_path.parent() {

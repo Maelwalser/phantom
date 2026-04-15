@@ -75,6 +75,69 @@ impl EventStore for MockEventStore {
 }
 
 // ---------------------------------------------------------------------------
+// GitOps test-only extensions
+// ---------------------------------------------------------------------------
+
+impl GitOps {
+    /// Copy overlay files into the working tree, stage, and commit.
+    ///
+    /// This is intentionally **not** used in production (see
+    /// `Materializer::commit_from_oids` for the atomic, OID-based approach).
+    /// Retained for test helpers that need a quick way to advance trunk without
+    /// going through the full materializer pipeline.
+    pub(crate) fn commit_overlay_changes(
+        &self,
+        upper_dir: &Path,
+        trunk_path: &Path,
+        message: &str,
+        author: &str,
+    ) -> Result<GitOid, crate::error::OrchestratorError> {
+        use crate::error::OrchestratorError;
+        use crate::git::helpers::collect_files_recursive;
+
+        let files = collect_files_recursive(upper_dir)?;
+
+        for rel_path in &files {
+            let src = upper_dir.join(rel_path);
+            let dst = trunk_path.join(rel_path);
+
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&src, &dst)?;
+        }
+
+        let repo = self.repo();
+        let mut index = repo.index()?;
+        for rel_path in &files {
+            index.add_path(rel_path)?;
+        }
+        index.write()?;
+
+        let tree_oid = index.write_tree()?;
+        let tree = repo.find_tree(tree_oid)?;
+
+        let sig = git2::Signature::now(author, &format!("{author}@phantom"))?;
+
+        let parent_commit = match repo.head() {
+            Ok(head) => {
+                let oid = head
+                    .target()
+                    .ok_or_else(|| OrchestratorError::NotFound("HEAD has no target".into()))?;
+                Some(repo.find_commit(oid)?)
+            }
+            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => None,
+            Err(e) => return Err(OrchestratorError::Git(e)),
+        };
+
+        let parents: Vec<&git2::Commit<'_>> = parent_commit.iter().collect();
+        let new_oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
+
+        Ok(crate::git::oid_to_git_oid(new_oid))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test repo helpers
 // ---------------------------------------------------------------------------
 

@@ -49,11 +49,15 @@ pub fn write_resolve_rules_file(path: &Path) -> anyhow::Result<()> {
    and THEIRS as unified diffs showing what each side changed relative to BASE.
    Your working directory has the THEIRS version — integrate the OURS changes.
    Do not re-read the file; use the content shown here.
-   For raw text and dependency conflicts you see OURS and THEIRS as unified
-   diffs against BASE (with 3 lines of context). A Scope Context header may
-   appear if the file is parseable, listing the enclosing function or type
-   signature. Use the Read tool if you need broader file context.
-   For binary files you see three labeled blocks.
+   For raw text and dependency conflicts in parseable files, diffs are scoped
+   to the enclosing symbol boundary with a Scope Context header identifying
+   each declaration. For non-parseable files, OURS and THEIRS are shown as
+   unified diffs against the full BASE (with 3 lines of context).
+   Use the Read tool if you need broader file context.
+   For other conflicts (binary files, oversized files, or missing content) you
+   see a single block with diff3-style conflict markers (`<<<<<<< ours`,
+   `||||||| original`, `=======`, `>>>>>>> theirs`). Resolve the markers
+   in place.
 2. Your goal: produce a merged version that preserves the intent of BOTH sides.
 3. NEVER silently drop code from either side unless one side explicitly deleted it.
 4. For BothModifiedSymbol conflicts: merge both sets of changes into the symbol.
@@ -141,7 +145,6 @@ pub fn write_resolve_context_file(
         writeln!(content).unwrap();
 
         let lang = lang_from_path(&conflict.detail.file);
-        let file_path = &conflict.detail.file;
 
         // Try compact diff format for symbol-level conflicts.
         let is_symbol_conflict = matches!(
@@ -181,43 +184,43 @@ pub fn write_resolve_context_file(
                 conflict.theirs_content.as_deref(),
             );
 
-            // Fallback: three full code blocks.
-            writeln!(content, "#### BASE (common ancestor at {base_short})").unwrap();
-            write_code_block(
-                &mut content,
-                lang,
+            // Guard: don't run diffy merge on oversized content (Myers is O(ND)).
+            let any_oversized = [
                 conflict.base_content.as_deref(),
-                conflict.detail.base_span.as_ref(),
-                file_path,
-                &parser,
-                trunc_center,
-            );
-
-            writeln!(content, "#### OURS (current trunk)").unwrap();
-            write_code_block(
-                &mut content,
-                lang,
                 conflict.ours_content.as_deref(),
-                conflict.detail.ours_span.as_ref(),
-                file_path,
-                &parser,
-                trunc_center,
-            );
-
-            writeln!(
-                content,
-                "#### THEIRS (agent's version \u{2014} this is the current state of the file in your working directory; do not re-read it)"
-            )
-            .unwrap();
-            write_code_block(
-                &mut content,
-                lang,
                 conflict.theirs_content.as_deref(),
-                conflict.detail.theirs_span.as_ref(),
-                file_path,
-                &parser,
-                trunc_center,
-            );
+            ]
+            .iter()
+            .any(|c| c.is_some_and(|s| s.len() > MAX_DIFF_BYTE_SIZE));
+
+            let merged = if any_oversized {
+                None
+            } else {
+                build_conflict_marker_view(
+                    conflict.base_content.as_deref(),
+                    conflict.ours_content.as_deref(),
+                    conflict.theirs_content.as_deref(),
+                )
+            };
+
+            if let Some(ref merged_text) = merged {
+                writeln!(content, "#### Conflict (diff3 markers \u{2014} OURS = trunk, THEIRS = agent's working directory)").unwrap();
+                writeln!(content, "```{lang}").unwrap();
+                write_truncated(&mut content, merged_text, trunc_center);
+                content.push('\n');
+                writeln!(content, "```").unwrap();
+                writeln!(content).unwrap();
+            } else {
+                write_minimal_fallback(
+                    &mut content,
+                    lang,
+                    conflict.base_content.as_deref(),
+                    conflict.ours_content.as_deref(),
+                    conflict.theirs_content.as_deref(),
+                    base_short,
+                    trunc_center,
+                );
+            }
         }
 
         writeln!(
@@ -385,21 +388,62 @@ fn write_compact_raw_text_conflict(
         return false;
     }
 
-    // For parseable files, extract enclosing symbol signatures for the
-    // changed regions so the LLM knows what scope it is editing.
+    // For parseable files, restrict diffs to symbol byte ranges instead of
+    // diffing the entire file.  This eliminates irrelevant context lines and
+    // focuses the LLM on the actual conflict region.
     let file_path = &conflict.detail.file;
-    if let Some(signatures) = collect_scope_signatures(base_content, ours_content, theirs_content, file_path, parser) {
-        if !signatures.is_empty() {
-            writeln!(out, "#### Scope Context").unwrap();
-            for sig in &signatures {
-                writeln!(out, "`{sig}`").unwrap();
+    if let Some(scope_symbols) = collect_scope_symbols(base_content, ours_content, theirs_content, file_path, parser)
+        && !scope_symbols.is_empty()
+    {
+        let checkpoint = out.len();
+        let mut all_scoped = true;
+
+        for sym in &scope_symbols {
+            let base_slice = &base_content[sym.base_range.start..sym.base_range.end.min(base_content.len())];
+
+            let ours_range = find_matching_symbol_range(ours_content, &sym.base_range, base_content, file_path, parser);
+            let theirs_range = find_matching_symbol_range(theirs_content, &sym.base_range, base_content, file_path, parser);
+
+            if ours_range.is_none() || theirs_range.is_none() {
+                all_scoped = false;
+                break;
             }
+
+            let ours_range = ours_range.unwrap();
+            let theirs_range = theirs_range.unwrap();
+            let ours_slice = &ours_content[ours_range.start..ours_range.end];
+            let theirs_slice = &theirs_content[theirs_range.start..theirs_range.end];
+
+            writeln!(out, "#### Scope Context").unwrap();
+            writeln!(out, "`{}`", sym.signature).unwrap();
             writeln!(out).unwrap();
+
+            write_diff_section(
+                out,
+                "OURS",
+                "trunk applied these changes",
+                base_slice,
+                Some(ours_slice),
+            );
+
+            write_diff_section(
+                out,
+                "THEIRS",
+                "agent applied these changes \u{2014} this is what is in your working directory; do not re-read the file",
+                base_slice,
+                Some(theirs_slice),
+            );
         }
+
+        if all_scoped {
+            return true;
+        }
+        // Scoping failed partway — truncate partial output and fall
+        // through to whole-file diff.
+        out.truncate(checkpoint);
     }
 
-    // Diffs include 3-line context around each change — the full BASE is redundant
-    // and would waste tokens. The agent can use the Read tool if broader context is needed.
+    // Whole-file diff fallback: 3-line context around each change.
     write_diff_section(
         out,
         "OURS",
@@ -419,17 +463,26 @@ fn write_compact_raw_text_conflict(
     true
 }
 
-/// Collect unique enclosing-symbol first-line signatures for all diff hunks.
+/// A symbol scope extracted from BASE, used to restrict diffs to symbol
+/// boundaries instead of diffing the entire file.
+struct ScopeSymbol {
+    /// First line of the symbol source (used as a scope header).
+    signature: String,
+    /// Byte range of the symbol in BASE content.
+    base_range: std::ops::Range<usize>,
+}
+
+/// Collect unique enclosing symbols for all diff hunks in BASE.
 ///
 /// Returns `None` if the file is not parseable, `Some(vec)` otherwise (possibly
 /// empty if no hunks fall inside a known symbol).
-fn collect_scope_signatures(
+fn collect_scope_symbols(
     base_content: &str,
     ours_content: &str,
     theirs_content: &str,
     file_path: &Path,
     parser: &phantom_semantic::Parser,
-) -> Option<Vec<String>> {
+) -> Option<Vec<ScopeSymbol>> {
     if !parser.supports_language(file_path) {
         return None;
     }
@@ -441,24 +494,74 @@ fn collect_scope_signatures(
     let ours_patch = diffy::create_patch(base_content, ours_content);
     let theirs_patch = diffy::create_patch(base_content, theirs_content);
 
-    let mut signatures: Vec<String> = Vec::new();
+    let mut scope_symbols: Vec<ScopeSymbol> = Vec::new();
 
     for hunk in ours_patch.hunks().iter().chain(theirs_patch.hunks().iter()) {
-        let hunk_line = hunk.old_range().start(); // 1-indexed
+        // Find the first actually changed line in the hunk (skip context lines).
+        // diffy's old_range().start() includes leading context which may point
+        // into an unrelated symbol.
+        let hunk_line = first_changed_old_line(hunk);
         let byte_offset = line_to_byte_offset(base_content, hunk_line);
         let target = byte_offset..byte_offset + 1;
         if let Some(sym) = find_enclosing_symbol(&symbols, &target) {
-            let sym_text = &base_content[sym.byte_range.start..sym.byte_range.end.min(base_content.len())];
+            // Deduplicate by byte range (more robust than string comparison).
+            if scope_symbols.iter().any(|s| s.base_range == sym.byte_range) {
+                continue;
+            }
+            let end = sym.byte_range.end.min(base_content.len());
+            let sym_text = &base_content[sym.byte_range.start..end];
             if let Some(first_line) = sym_text.lines().next() {
-                let sig = first_line.to_string();
-                if !signatures.contains(&sig) {
-                    signatures.push(sig);
-                }
+                scope_symbols.push(ScopeSymbol {
+                    signature: first_line.to_string(),
+                    base_range: sym.byte_range.clone(),
+                });
             }
         }
     }
 
-    Some(signatures)
+    Some(scope_symbols)
+}
+
+/// Find the matching symbol in `content` by parsing it and locating the symbol
+/// that encloses the same probe point (mapped from BASE line to target line via
+/// hunk offset).  Falls back to returning `None` if parsing fails or no
+/// enclosing symbol is found.
+fn find_matching_symbol_range(
+    content: &str,
+    base_range: &std::ops::Range<usize>,
+    base_content: &str,
+    file_path: &Path,
+    parser: &phantom_semantic::Parser,
+) -> Option<std::ops::Range<usize>> {
+    let symbols = parser.parse_file(file_path, content.as_bytes()).ok()?;
+    // Use the midpoint of the BASE range to find the corresponding line, then
+    // probe the same line in the target content.  This is approximate but works
+    // well when the symbol hasn't been drastically moved.
+    let base_mid = (base_range.start + base_range.end) / 2;
+    let base_line = base_content[..base_mid.min(base_content.len())]
+        .matches('\n')
+        .count()
+        + 1;
+    let probe_offset = line_to_byte_offset(content, base_line);
+    let probe = probe_offset..probe_offset + 1;
+    let enclosing = find_enclosing_symbol(&symbols, &probe)?;
+    Some(enclosing.byte_range.start..enclosing.byte_range.end.min(content.len()))
+}
+
+/// Find the 1-indexed old-side line number of the first actual change in a hunk.
+///
+/// Skips leading context lines (which diffy includes) and returns the line
+/// where the first removal or insertion occurs.  Falls back to the hunk's
+/// `old_range().start()` if no changed lines are found.
+fn first_changed_old_line(hunk: &diffy::Hunk<'_, str>) -> usize {
+    let mut line = hunk.old_range().start(); // 1-indexed
+    for diff_line in hunk.lines() {
+        match diff_line {
+            diffy::Line::Context(_) => line += 1,
+            diffy::Line::Delete(_) | diffy::Line::Insert(_) => return line,
+        }
+    }
+    hunk.old_range().start()
 }
 
 /// Convert a 1-indexed line number to a byte offset in `content`.
@@ -513,43 +616,63 @@ fn write_diff_section(
     writeln!(out).unwrap();
 }
 
-/// Write the enclosing AST node for a conflict span directly to `out`,
-/// falling back to ±10 line padding for unsupported languages or when no
-/// symbol encloses the span.
-fn write_span_context(
-    out: &mut String,
-    content: &str,
-    span: &phantom_core::conflict::ConflictSpan,
-    file_path: &Path,
-    parser: &phantom_semantic::Parser,
-) {
-    if parser.supports_language(file_path)
-        && let Ok(symbols) = parser.parse_file(file_path, content.as_bytes())
-        && let Some(enclosing) = find_enclosing_symbol(&symbols, &span.byte_range)
-    {
-        let start = enclosing.byte_range.start;
-        let end = enclosing.byte_range.end.min(content.len());
-        out.push_str(&content[start..end]);
-        return;
-    }
-    write_span_lines_fallback(out, content, span);
+/// Produce a single string with diff3-style conflict markers embedded at
+/// divergence points.
+///
+/// Returns `None` if any of the three versions is missing (the caller should
+/// use `write_minimal_fallback` instead).
+fn build_conflict_marker_view(
+    base: Option<&str>,
+    ours: Option<&str>,
+    theirs: Option<&str>,
+) -> Option<String> {
+    let (b, o, t) = match (base, ours, theirs) {
+        (Some(b), Some(o), Some(t)) => (b, o, t),
+        _ => return None,
+    };
+    // diffy::MergeOptions defaults to ConflictStyle::Diff3 which emits
+    // <<<<<<< ours / ||||||| original / ======= / >>>>>>> theirs markers.
+    let merged = match diffy::MergeOptions::new().merge(b, o, t) {
+        Ok(clean) => clean,
+        Err(conflicted) => conflicted,
+    };
+    Some(merged)
 }
 
-/// Fallback: write lines around a conflict span with ±10 line padding
-/// directly to `out`.
-fn write_span_lines_fallback(
+/// Last-resort fallback when conflict marker generation is not possible
+/// (missing content or oversized files). Emits whatever content is available
+/// as a single labeled, truncated code block.
+fn write_minimal_fallback(
     out: &mut String,
-    content: &str,
-    span: &phantom_core::conflict::ConflictSpan,
+    lang: &str,
+    base: Option<&str>,
+    ours: Option<&str>,
+    theirs: Option<&str>,
+    base_short: &str,
+    trunc_center: usize,
 ) {
-    let start = span.start_line.saturating_sub(10).max(1) - 1; // zero-indexed
-    let count = span.end_line + 10 - start;
-    for (i, line) in content.lines().skip(start).take(count).enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        out.push_str(line);
-    }
+    use std::fmt::Write;
+
+    // Pick the best available content: prefer theirs (agent's working copy),
+    // then ours (trunk), then base.
+    let (label, text) = if let Some(t) = theirs {
+        ("THEIRS (agent's working directory)".to_string(), t)
+    } else if let Some(o) = ours {
+        ("OURS (current trunk)".to_string(), o)
+    } else if let Some(b) = base {
+        (format!("BASE (common ancestor at {base_short})"), b)
+    } else {
+        writeln!(out, "*(no file content available for any version)*").unwrap();
+        writeln!(out).unwrap();
+        return;
+    };
+
+    writeln!(out, "#### {label}").unwrap();
+    writeln!(out, "```{lang}").unwrap();
+    write_truncated(out, text, trunc_center);
+    out.push('\n');
+    writeln!(out, "```").unwrap();
+    writeln!(out).unwrap();
 }
 
 /// Find the first byte offset where two strings diverge.
@@ -578,15 +701,15 @@ fn compute_truncation_center(
     theirs: Option<&str>,
 ) -> usize {
     let mut earliest = usize::MAX;
-    if let (Some(b), Some(o)) = (base, ours) {
-        if let Some(off) = first_divergence_offset(b, o) {
-            earliest = earliest.min(off);
-        }
+    if let (Some(b), Some(o)) = (base, ours)
+        && let Some(off) = first_divergence_offset(b, o)
+    {
+        earliest = earliest.min(off);
     }
-    if let (Some(b), Some(t)) = (base, theirs) {
-        if let Some(off) = first_divergence_offset(b, t) {
-            earliest = earliest.min(off);
-        }
+    if let (Some(b), Some(t)) = (base, theirs)
+        && let Some(off) = first_divergence_offset(b, t)
+    {
+        earliest = earliest.min(off);
     }
     if earliest == usize::MAX { 0 } else { earliest }
 }
@@ -628,7 +751,7 @@ fn write_truncated(out: &mut String, text: &str, center: usize) {
 
     if start > 0 {
         let lines_above = text[..start].matches('\n').count();
-        write!(out, "// ... [CONTENT TRUNCATED: {lines_above} lines above] ...\n").unwrap();
+        writeln!(out, "// ... [CONTENT TRUNCATED: {lines_above} lines above] ...").unwrap();
     }
 
     out.push_str(&text[start..end]);
@@ -637,39 +760,6 @@ fn write_truncated(out: &mut String, text: &str, center: usize) {
         let remaining_tokens = (text.len() - end) / BYTES_PER_TOKEN_ESTIMATE;
         write!(out, "// ... [CONTENT TRUNCATED: ~{remaining_tokens} more tokens below] ...").unwrap();
     }
-}
-
-/// Write a fenced code block, trimming to span if available.
-/// Streams content directly into `out` without intermediate String allocations.
-///
-/// When no span is available, truncation is centered on `truncation_center`
-/// (the byte offset where the conflict is likely located).
-fn write_code_block(
-    out: &mut String,
-    lang: &str,
-    content: Option<&str>,
-    span: Option<&phantom_core::conflict::ConflictSpan>,
-    file_path: &Path,
-    parser: &phantom_semantic::Parser,
-    truncation_center: usize,
-) {
-    use std::fmt::Write;
-
-    match content {
-        Some(text) => {
-            writeln!(out, "```{lang}").unwrap();
-            match span {
-                Some(s) => write_span_context(out, text, s, file_path, parser),
-                None => write_truncated(out, text, truncation_center),
-            }
-            out.push('\n');
-            writeln!(out, "```").unwrap();
-        }
-        None => {
-            writeln!(out, "*(file not found at this version)*").unwrap();
-        }
-    }
-    writeln!(out).unwrap();
 }
 
 /// Map a conflict kind to a human-readable label.
