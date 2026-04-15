@@ -116,18 +116,15 @@ async fn run_summary(
     } else {
         ui::section_header("Overlays");
 
+        let width = ui::term_width();
+
         // Print plan groups first.
         for (plan_prefix, agents) in &plan_agents {
+            // Prefix: "  Plan: " + plan_prefix + " — "
+            let prefix_len = 2 + 6 + plan_prefix.len() + 3;
             let request = plan_requests
                 .get(plan_prefix)
-                .map(|r| {
-                    if r.chars().count() > 60 {
-                        let truncated: String = r.chars().take(57).collect();
-                        format!("{truncated}...")
-                    } else {
-                        r.clone()
-                    }
-                })
+                .map(|r| ui::truncate_line(r, width.saturating_sub(prefix_len)))
                 .unwrap_or_default();
             println!(
                 "  {} {} {} {}",
@@ -158,12 +155,14 @@ async fn run_summary(
             let run_state = read_agent_run_state(phantom_dir, &agent.0);
             let indicator = ui::run_state_indicator(&run_state);
             let state_text = ui::run_state_text(&run_state);
-            let elapsed = match &run_state {
-                AgentRunState::Running { elapsed, .. } => {
-                    format!(" {}", ui::style_dim(&format_duration(elapsed)))
-                }
-                _ => String::new(),
+            let elapsed_raw = match &run_state {
+                AgentRunState::Running { elapsed, .. } => Some(format_duration(elapsed)),
+                _ => None,
             };
+            let elapsed = elapsed_raw
+                .as_ref()
+                .map(|e| format!(" {}", ui::style_dim(e)))
+                .unwrap_or_default();
             let status = latest_changeset_status(&projection, agent);
 
             let task = all_events
@@ -176,11 +175,11 @@ async fn run_summary(
                 });
 
             if let Some(task) = task {
-                let truncated = if task.len() > 50 {
-                    format!("{}...", &task[..47])
-                } else {
-                    task.to_string()
-                };
+                // Prefix: "  " + indicator(2) + " " + agent(14) + " " + state(12) + " elapsed" + " " + status + "  "
+                let elapsed_visible = elapsed_raw.as_ref().map_or(0, |e| e.len() + 1);
+                let status_visible = console::measure_text_width(&format!("{status}"));
+                let prefix_len = 2 + 2 + 1 + 14 + 1 + 12 + elapsed_visible + 1 + status_visible + 2;
+                let truncated = ui::truncate_line(task, width.saturating_sub(prefix_len));
                 println!(
                     "  {indicator} {agent:<14} {state_text:<12}{elapsed} {status}  {}",
                     ui::style_dim(&truncated)

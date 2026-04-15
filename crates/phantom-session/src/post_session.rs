@@ -170,11 +170,7 @@ async fn submit_and_materialize_overlay(
                     let short = &hex[..12.min(hex.len())];
                     let msg = format!("Submitted {} -> commit {short}", out.submit.changeset_id);
                     let width = term_width();
-                    if msg.len() > width && width >= 4 {
-                        println!("{}...", &msg[..width.saturating_sub(3)]);
-                    } else {
-                        println!("{msg}");
-                    }
+                    println!("{}", truncate_line(&msg, width));
                     if !text_fallback_files.is_empty() {
                         eprintln!(
                             "  Warning: {} file(s) merged via line-based fallback (no syntax validation)",
@@ -263,4 +259,20 @@ fn term_width() -> usize {
             80
         }
     }
+}
+
+/// Truncate `text` so it fits in `max` columns, appending "..." if trimmed.
+fn truncate_line(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    if max < 4 {
+        return text.chars().take(max).collect();
+    }
+    let limit = max - 3;
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &text[..end])
 }

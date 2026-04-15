@@ -139,6 +139,8 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     )?;
     writeln!(out)?;
 
+    let term_width = ui::term_width();
+
     // Gather only background agents — those with agent.pid or agent.status
     // files in their overlay directory. Interactive agents are excluded.
     let mut all_agents: Vec<AgentId> = Vec::new();
@@ -203,11 +205,9 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
             })
             .unwrap_or("");
 
-        let truncated_task = if task.len() > 45 {
-            format!("{}...", &task[..42])
-        } else {
-            task.to_string()
-        };
+        // Prefix: "  " + agent(16) + " " + indicator(2) + " " + state(12) + " " + elapsed(10) + " "
+        let prefix_len = 2 + 16 + 1 + 2 + 1 + 12 + 1 + 10 + 1;
+        let truncated_task = ui::truncate_line(task, term_width.saturating_sub(prefix_len));
 
         writeln!(
             out,
