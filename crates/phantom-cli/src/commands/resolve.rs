@@ -150,14 +150,8 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
         .join(context_file::RESOLVE_RULES_FILE);
     context_file::write_resolve_rules_file(&rules_path)?;
 
-    // Write the dynamic conflict context file (agent info + code blocks only).
-    context_file::write_resolve_context_file(
-        &work_dir,
-        &agent_id,
-        &changeset.id,
-        &changeset.base_commit,
-        &resolve_contexts,
-    )?;
+    // Group conflicts by file for parallel resolution.
+    let groups = group_conflicts_by_file(resolve_contexts);
 
     // Emit ConflictResolutionStarted event.
     let event = Event {
@@ -172,33 +166,132 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     };
     events.append(event).await?;
 
-    // Spawn background agent to resolve conflicts.
-    let task = "Resolve merge conflicts per .phantom-task.md";
-    super::task::spawn_agent_monitor(
-        &ctx.phantom_dir,
-        &ctx.repo_root,
-        &args.agent,
-        &changeset.id,
-        task,
-        &work_dir,
-        Some(&rules_path),
-    )?;
+    if groups.len() <= 1 {
+        // Single file group — existing single-agent background path.
+        let conflicts = groups.into_iter().next().unwrap_or_default();
+        context_file::write_resolve_context_file(
+            &work_dir,
+            &agent_id,
+            &changeset.id,
+            &changeset.base_commit,
+            &conflicts,
+            None,
+        )?;
 
-    let log_file = ctx
-        .phantom_dir
-        .join("overlays")
-        .join(&args.agent)
-        .join("agent.log");
+        let task = "Resolve merge conflicts per .phantom-task.md";
+        super::task::spawn_agent_monitor(
+            &ctx.phantom_dir,
+            &ctx.repo_root,
+            &args.agent,
+            &changeset.id,
+            task,
+            &work_dir,
+            Some(&rules_path),
+        )?;
 
-    println!();
-    println!(
-        "  {} Resolve agent launched {}.",
-        console::style("✓").green(),
-        console::style("(background)").dim()
-    );
-    super::ui::key_value("Changeset", &changeset.id.to_string());
-    super::ui::key_value("Log", log_file.display());
-    super::ui::key_value("Overlay", work_dir.display());
+        let log_file = ctx
+            .phantom_dir
+            .join("overlays")
+            .join(&args.agent)
+            .join("agent.log");
+
+        println!();
+        println!(
+            "  {} Resolve agent launched {}.",
+            console::style("✓").green(),
+            console::style("(background)").dim()
+        );
+        super::ui::key_value("Changeset", &changeset.id.to_string());
+        super::ui::key_value("Log", log_file.display());
+        super::ui::key_value("Overlay", work_dir.display());
+    } else {
+        // Multiple independent file groups — spawn parallel resolve agents.
+        println!(
+            "\n  {} Splitting into {} parallel resolve agents (one per file)...\n",
+            console::style("||").cyan(),
+            groups.len()
+        );
+
+        let mut context_files = Vec::with_capacity(groups.len());
+        for (i, group) in groups.iter().enumerate() {
+            let path = context_file::write_resolve_context_file(
+                &work_dir,
+                &agent_id,
+                &changeset.id,
+                &changeset.base_commit,
+                group,
+                Some(i),
+            )?;
+            context_files.push(path);
+        }
+
+        let exit_codes = spawn_parallel_resolve_agents(
+            &ctx.phantom_dir,
+            &args.agent,
+            &work_dir,
+            &rules_path,
+            &context_files,
+        )?;
+
+        // Clean up parallel context files.
+        for path in &context_files {
+            let _ = std::fs::remove_file(path);
+        }
+
+        // Check results.
+        let failed: Vec<(usize, Option<i32>)> = exit_codes
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, code)| *code != Some(0))
+            .collect();
+
+        if !failed.is_empty() {
+            for (i, code) in &failed {
+                let code_str = code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".into());
+                eprintln!(
+                    "  {} Resolve agent {} exited with code {}",
+                    console::style("!").red(),
+                    i,
+                    code_str
+                );
+            }
+            anyhow::bail!(
+                "{} of {} resolve agents failed",
+                failed.len(),
+                exit_codes.len()
+            );
+        }
+
+        println!(
+            "  {} All {} resolve agents completed successfully.",
+            console::style("✓").green(),
+            exit_codes.len()
+        );
+
+        // Run post-session flow once for the whole overlay (submit + materialize).
+        let mut overlays = ctx.open_overlays_restored()?;
+        phantom_session::post_session::post_session_flow(
+            phantom_session::post_session::PostSessionContext {
+                phantom_dir: &ctx.phantom_dir,
+                repo_root: &ctx.repo_root,
+                events: &events,
+                overlays: &mut overlays,
+                agent_id: &agent_id,
+                changeset_id: &changeset.id,
+                auto_submit: true,
+            },
+        )
+        .await?;
+
+        println!(
+            "  {} Changes submitted and materialized.",
+            console::style("✓").green()
+        );
+    }
+
     println!();
     println!(
         "  Run {} to check progress.",
@@ -221,4 +314,110 @@ fn is_fuse_mounted(mount_point: &std::path::Path) -> bool {
         (Ok(m), Ok(p)) => m.dev() != p.dev(),
         _ => false,
     }
+}
+
+/// Group conflicts by file path so independent files can be resolved in parallel.
+fn group_conflicts_by_file(
+    contexts: Vec<ResolveConflictContext>,
+) -> Vec<Vec<ResolveConflictContext>> {
+    use std::collections::BTreeMap;
+    let mut by_file: BTreeMap<std::path::PathBuf, Vec<ResolveConflictContext>> = BTreeMap::new();
+    for ctx in contexts {
+        by_file.entry(ctx.detail.file.clone()).or_default().push(ctx);
+    }
+    by_file.into_values().collect()
+}
+
+/// Spawn parallel headless claude processes for independent file groups.
+///
+/// Each process gets its own context file and log file. All processes share
+/// the same work directory (safe because file groups are disjoint).
+///
+/// Returns the exit code of each agent (indexed by group).
+fn spawn_parallel_resolve_agents(
+    phantom_dir: &std::path::Path,
+    agent: &str,
+    work_dir: &std::path::Path,
+    rules_path: &std::path::Path,
+    context_files: &[std::path::PathBuf],
+) -> anyhow::Result<Vec<Option<i32>>> {
+    use phantom_session::adapter;
+
+    let overlay_root = phantom_dir.join("overlays").join(agent);
+    let cli_adapter = adapter::adapter_for("claude");
+
+    let env_vars: Vec<(&str, &str)> = vec![
+        ("PHANTOM_AGENT_ID", agent),
+        ("PHANTOM_INTERACTIVE", "0"),
+    ];
+
+    let mut children = Vec::with_capacity(context_files.len());
+
+    for (i, context_file) in context_files.iter().enumerate() {
+        let log_file = overlay_root.join(format!("resolve-{i}.log"));
+        let log_handle = std::fs::File::create(&log_file)
+            .with_context(|| format!("failed to create resolve log at {}", log_file.display()))?;
+        let log_stderr = log_handle
+            .try_clone()
+            .context("failed to clone log file handle")?;
+
+        let task = format!(
+            "Resolve merge conflicts described in {}",
+            context_file.file_name().unwrap_or_default().to_string_lossy()
+        );
+
+        let mut cmd = cli_adapter
+            .build_headless_command(work_dir, &task, &env_vars, Some(rules_path))
+            .context("CLI adapter does not support headless mode")?;
+
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(log_handle)
+            .stderr(log_stderr);
+
+        let child = cmd.spawn().with_context(|| {
+            format!("failed to spawn resolve agent {i} — is 'claude' installed and on PATH?")
+        })?;
+
+        println!(
+            "    {} Agent {} spawned (PID {})",
+            console::style("->").dim(),
+            i,
+            child.id()
+        );
+
+        children.push(child);
+    }
+
+    println!(
+        "\n  {} Waiting for {} agents to complete...\n",
+        console::style("...").dim(),
+        children.len()
+    );
+
+    let mut exit_codes = Vec::with_capacity(children.len());
+    for (i, mut child) in children.into_iter().enumerate() {
+        let status = child
+            .wait()
+            .with_context(|| format!("failed to wait for resolve agent {i}"))?;
+        let code = status.code();
+        let label = if code == Some(0) {
+            console::style("ok").green().to_string()
+        } else {
+            console::style(format!(
+                "exit {}",
+                code.map(|c| c.to_string()).unwrap_or_else(|| "signal".into())
+            ))
+            .red()
+            .to_string()
+        };
+        println!("    Agent {i}: {label}");
+        exit_codes.push(code);
+    }
+
+    // Clean up resolve log files.
+    for i in 0..context_files.len() {
+        let _ = std::fs::remove_file(overlay_root.join(format!("resolve-{i}.log")));
+    }
+
+    Ok(exit_codes)
 }

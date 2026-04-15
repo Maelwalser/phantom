@@ -254,7 +254,7 @@ echo -e "${BOLD}7. Event log${RESET}"
 LOG=$($PHANTOM log 2>&1)
 assert_contains "log has TaskCreated" "$LOG" "TaskCreated"
 assert_contains "log has ChangesetSubmitted" "$LOG" "ChangesetSubmitted"
-assert_contains "log has Materialized" "$LOG" "Materialized"
+assert_contains "log has submitted" "$LOG" "submitted"
 
 LOG_A=$($PHANTOM log agent-a 2>&1)
 assert_contains "agent-a log has events" "$LOG_A" "agent-a"

@@ -27,7 +27,10 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
         EventQuery {
             agent_id: Some(AgentId(agent.clone())),
             limit: Some(args.limit),
-            kind_prefixes: vec!["ChangesetSubmitted".to_string()],
+            kind_prefixes: vec![
+                "ChangesetMaterialized".to_string(),
+                "ChangesetConflicted".to_string(),
+            ],
             ..Default::default()
         }
     } else {
@@ -44,7 +47,7 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
         if let Some(ref agent) = args.agent {
             println!("No submits for agent '{agent}' yet.");
         } else {
-            println!("No materializations yet.");
+            println!("No submits yet.");
         }
         return Ok(());
     }
@@ -69,28 +72,19 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
     } else {
         println!(
             "\n{}",
-            ui::style_dim(&format!("{} materialization(s)", events.len()))
+            ui::style_dim(&format!("{} submit(s)", events.len()))
         );
     }
 
     Ok(())
 }
 
-/// Format a submit or materialization event into a styled label and detail string.
+/// Format a submit or conflict event into a styled label and detail string.
 fn format_change(
     kind: &EventKind,
     git: Option<&GitOps>,
 ) -> (console::StyledObject<&'static str>, String) {
     match kind {
-        EventKind::ChangesetSubmitted { operations } => {
-            let count = operations.len();
-            let summary = if count == 1 {
-                "1 operation".to_string()
-            } else {
-                format!("{count} operations")
-            };
-            (console::style("SUBMITTED").yellow(), summary)
-        }
         EventKind::ChangesetMaterialized { new_commit } => {
             let message = git.and_then(|g| {
                 let oid = git_oid_to_oid(new_commit).ok()?;
@@ -106,7 +100,16 @@ fn format_change(
                     format!("commit {short}")
                 }
             };
-            (console::style("MATERIALIZED").green(), detail)
+            (console::style("SUBMITTED").green(), detail)
+        }
+        EventKind::ChangesetConflicted { conflicts } => {
+            let count = conflicts.len();
+            let summary = if count == 1 {
+                "1 conflict".to_string()
+            } else {
+                format!("{count} conflicts")
+            };
+            (console::style("CONFLICTED").red(), summary)
         }
         _ => (console::style("UNKNOWN").dim(), String::new()),
     }

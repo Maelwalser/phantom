@@ -213,10 +213,17 @@ async fn run_post_completion(
     let events = ctx.open_events().await?;
     let mut overlays = ctx.open_overlays_restored()?;
 
-    // Clean up the context file.
+    // Clean up context files (standard + parallel resolve variants).
     let upper_dir = overlays.upper_dir(agent_id)?;
     let context_path = upper_dir.join(context_file::CONTEXT_FILE);
     let _ = std::fs::remove_file(&context_path);
+    for i in 0..32 {
+        let path = upper_dir.join(format!(".phantom-task-resolve-{i}.md"));
+        if !path.exists() {
+            break;
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 
     let success = exit_code == Some(0);
 

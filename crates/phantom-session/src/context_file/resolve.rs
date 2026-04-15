@@ -89,16 +89,20 @@ Your changes will be automatically submitted and materialized when you finish.
 
 /// Write a conflict-resolution context file into the overlay.
 ///
-/// Generates a `.phantom-task.md` with three-version diffs for a background
+/// Generates a `.phantom-task.md` (or `.phantom-task-resolve-{i}.md` when
+/// `group_index` is `Some(i)`) with three-version diffs for a background
 /// Claude Code agent. Static resolution rules are injected separately via
 /// `--append-system-prompt-file` (see [`write_resolve_rules_file`]).
+///
+/// Returns the path of the written context file.
 pub fn write_resolve_context_file(
     upper_dir: &Path,
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
     base_commit: &GitOid,
     conflicts: &[ResolveConflictContext],
-) -> anyhow::Result<()> {
+    group_index: Option<usize>,
+) -> anyhow::Result<std::path::PathBuf> {
     use std::fmt::Write;
 
     let base_hex = base_commit.to_hex();
@@ -168,6 +172,15 @@ pub fn write_resolve_context_file(
         }
 
         if !used_compact {
+            // Compute the best truncation center from content divergence so
+            // that the token budget window is centered on the actual conflict
+            // region rather than naively slicing from byte 0.
+            let trunc_center = compute_truncation_center(
+                conflict.base_content.as_deref(),
+                conflict.ours_content.as_deref(),
+                conflict.theirs_content.as_deref(),
+            );
+
             // Fallback: three full code blocks.
             writeln!(content, "#### BASE (common ancestor at {base_short})").unwrap();
             write_code_block(
@@ -177,6 +190,7 @@ pub fn write_resolve_context_file(
                 conflict.detail.base_span.as_ref(),
                 file_path,
                 &parser,
+                trunc_center,
             );
 
             writeln!(content, "#### OURS (current trunk)").unwrap();
@@ -187,6 +201,7 @@ pub fn write_resolve_context_file(
                 conflict.detail.ours_span.as_ref(),
                 file_path,
                 &parser,
+                trunc_center,
             );
 
             writeln!(
@@ -201,6 +216,7 @@ pub fn write_resolve_context_file(
                 conflict.detail.theirs_span.as_ref(),
                 file_path,
                 &parser,
+                trunc_center,
             );
         }
 
@@ -213,11 +229,15 @@ pub fn write_resolve_context_file(
         writeln!(content, "---").unwrap();
     }
 
-    let path = upper_dir.join(CONTEXT_FILE);
+    let filename = match group_index {
+        Some(i) => format!(".phantom-task-resolve-{i}.md"),
+        None => CONTEXT_FILE.to_string(),
+    };
+    let path = upper_dir.join(&filename);
     std::fs::write(&path, content)
         .with_context(|| format!("failed to write resolve context file to {}", path.display()))?;
 
-    Ok(())
+    Ok(path)
 }
 
 /// Extract the enclosing symbol's source text and start line from file content.
@@ -532,25 +552,98 @@ fn write_span_lines_fallback(
     }
 }
 
-/// Write content to `out`, truncating at the token budget boundary if needed.
-/// Breaks at the last complete line before the byte limit.
-fn write_truncated(out: &mut String, text: &str) {
+/// Find the first byte offset where two strings diverge.
+///
+/// Returns `None` if the strings are identical.
+fn first_divergence_offset(a: &str, b: &str) -> Option<usize> {
+    a.as_bytes()
+        .iter()
+        .zip(b.as_bytes().iter())
+        .position(|(x, y)| x != y)
+        .or_else(|| {
+            if a.len() != b.len() {
+                Some(a.len().min(b.len()))
+            } else {
+                None
+            }
+        })
+}
+
+/// Compute the best center byte for truncation by comparing base against ours/theirs.
+///
+/// Returns the earliest divergence point, or 0 if no comparison is possible.
+fn compute_truncation_center(
+    base: Option<&str>,
+    ours: Option<&str>,
+    theirs: Option<&str>,
+) -> usize {
+    let mut earliest = usize::MAX;
+    if let (Some(b), Some(o)) = (base, ours) {
+        if let Some(off) = first_divergence_offset(b, o) {
+            earliest = earliest.min(off);
+        }
+    }
+    if let (Some(b), Some(t)) = (base, theirs) {
+        if let Some(off) = first_divergence_offset(b, t) {
+            earliest = earliest.min(off);
+        }
+    }
+    if earliest == usize::MAX { 0 } else { earliest }
+}
+
+/// Write content to `out`, truncating to a window around `center` if needed.
+///
+/// The window is `WHOLE_FILE_BYTE_BUDGET` bytes centered on `center`, snapped
+/// to line boundaries. Truncation markers are emitted when content is cut.
+fn write_truncated(out: &mut String, text: &str, center: usize) {
     use std::fmt::Write;
 
     if text.len() <= WHOLE_FILE_BYTE_BUDGET {
         out.push_str(text);
+        return;
+    }
+
+    let half = WHOLE_FILE_BYTE_BUDGET / 2;
+    let raw_start = center.saturating_sub(half);
+    let raw_end = (raw_start + WHOLE_FILE_BYTE_BUDGET).min(text.len());
+
+    // Snap start forward to the first line boundary (unless already at 0).
+    let start = if raw_start == 0 {
+        0
     } else {
-        let cut = text[..WHOLE_FILE_BYTE_BUDGET]
-            .rfind('\n')
-            .unwrap_or(WHOLE_FILE_BYTE_BUDGET);
-        out.push_str(&text[..cut]);
-        let remaining_tokens = (text.len() - cut) / BYTES_PER_TOKEN_ESTIMATE;
-        write!(out, "\n// ... truncated (~{remaining_tokens} more tokens)").unwrap();
+        text[raw_start..]
+            .find('\n')
+            .map(|i| raw_start + i + 1)
+            .unwrap_or(raw_start)
+    };
+
+    // Snap end backward to the last line boundary.
+    let end = text[..raw_end]
+        .rfind('\n')
+        .map(|i| i + 1)
+        .unwrap_or(raw_end);
+
+    // Ensure we still have a non-empty window after snapping.
+    let end = end.max(start);
+
+    if start > 0 {
+        let lines_above = text[..start].matches('\n').count();
+        write!(out, "// ... [CONTENT TRUNCATED: {lines_above} lines above] ...\n").unwrap();
+    }
+
+    out.push_str(&text[start..end]);
+
+    if end < text.len() {
+        let remaining_tokens = (text.len() - end) / BYTES_PER_TOKEN_ESTIMATE;
+        write!(out, "// ... [CONTENT TRUNCATED: ~{remaining_tokens} more tokens below] ...").unwrap();
     }
 }
 
 /// Write a fenced code block, trimming to span if available.
 /// Streams content directly into `out` without intermediate String allocations.
+///
+/// When no span is available, truncation is centered on `truncation_center`
+/// (the byte offset where the conflict is likely located).
 fn write_code_block(
     out: &mut String,
     lang: &str,
@@ -558,6 +651,7 @@ fn write_code_block(
     span: Option<&phantom_core::conflict::ConflictSpan>,
     file_path: &Path,
     parser: &phantom_semantic::Parser,
+    truncation_center: usize,
 ) {
     use std::fmt::Write;
 
@@ -566,7 +660,7 @@ fn write_code_block(
             writeln!(out, "```{lang}").unwrap();
             match span {
                 Some(s) => write_span_context(out, text, s, file_path, parser),
-                None => write_truncated(out, text),
+                None => write_truncated(out, text, truncation_center),
             }
             out.push('\n');
             writeln!(out, "```").unwrap();

@@ -52,15 +52,16 @@ pub async fn run(args: StatusArgs) -> anyhow::Result<()> {
     if let Some(agent_name) = &args.agent {
         run_detailed(&ctx.phantom_dir, &events, &overlays, agent_name).await
     } else {
-        run_summary(&ctx.phantom_dir, &git, &events).await
+        run_summary(&ctx.phantom_dir, &git, &events, &overlays).await
     }
 }
 
-/// Summary view: show all active agents and pending changesets.
+/// Summary view: show all overlays, pending changesets, and conflicts.
 async fn run_summary(
     phantom_dir: &Path,
     git: &GitOps,
     events: &SqliteEventStore,
+    overlays: &OverlayManager,
 ) -> anyhow::Result<()> {
     let head = git.head_oid()?;
 
@@ -77,9 +78,10 @@ async fn run_summary(
     );
     println!();
 
-    // Active overlays with run state.
-    // Group plan-prefixed agents together for better readability.
-    let active_agents = projection.active_agents();
+    // All overlays that exist on disk.
+    let all_handles = overlays.list_overlays();
+    let mut overlay_agents: Vec<&AgentId> = all_handles.iter().map(|h| &h.agent_id).collect();
+    overlay_agents.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Detect plans: find PlanCreated events to map plan IDs to their request text.
     let mut plan_agents: std::collections::HashMap<String, Vec<&AgentId>> =
@@ -99,8 +101,7 @@ async fn run_summary(
     }
 
     // Classify agents into plan groups vs standalone.
-    for agent in &active_agents {
-        // Agent IDs from plans follow the pattern: plan-YYYYMMDD-HHMMSS-domain-name
+    for agent in &overlay_agents {
         let plan_prefix = extract_plan_prefix(&agent.0);
         if let Some(prefix) = plan_prefix {
             plan_agents.entry(prefix).or_default().push(agent);
@@ -109,10 +110,10 @@ async fn run_summary(
         }
     }
 
-    if active_agents.is_empty() {
-        println!("  {} {}", ui::style_bold("Active overlays:"), ui::style_dim("(none)"));
+    if overlay_agents.is_empty() {
+        println!("  {} {}", ui::style_bold("Overlays:"), ui::style_dim("(none)"));
     } else {
-        ui::section_header("Active overlays");
+        ui::section_header("Overlays");
 
         // Print plan groups first.
         for (plan_prefix, agents) in &plan_agents {
@@ -139,11 +140,15 @@ async fn run_summary(
                 let run_state = read_agent_run_state(phantom_dir, &agent.0);
                 let indicator = ui::run_state_indicator(&run_state);
                 let state_text = ui::run_state_text(&run_state);
+                let status = latest_changeset_status(&projection, agent);
                 let domain_name = agent
                     .0
                     .strip_prefix(&format!("{plan_prefix}-"))
                     .unwrap_or(&agent.0);
-                println!("    {indicator} {domain_name:<20} {state_text}");
+                println!(
+                    "    {indicator} {domain_name:<20} {state_text:<12} {}",
+                    status
+                );
             }
             println!();
         }
@@ -159,6 +164,7 @@ async fn run_summary(
                 }
                 _ => String::new(),
             };
+            let status = latest_changeset_status(&projection, agent);
 
             let task = all_events
                 .iter()
@@ -176,19 +182,35 @@ async fn run_summary(
                     task.to_string()
                 };
                 println!(
-                    "  {indicator} {agent:<14} {state_text:<12}{elapsed}  {}",
+                    "  {indicator} {agent:<14} {state_text:<12}{elapsed} {status}  {}",
                     ui::style_dim(&truncated)
                 );
             } else {
-                println!("  {indicator} {agent:<14} {state_text}{elapsed}");
+                println!("  {indicator} {agent:<14} {state_text:<12}{elapsed} {status}");
             }
         }
     }
     println!();
 
-    // Pending changesets
-    let pending = projection.pending_changesets();
-    if pending.is_empty() {
+    // Pending: overlays with modified files that haven't been submitted yet.
+    let mut pending_overlays: Vec<(&AgentId, usize)> = Vec::new();
+    for handle in &all_handles {
+        // Only show overlays whose latest changeset is still InProgress.
+        let changesets = projection.changesets_for_agent(&handle.agent_id);
+        let is_pending = changesets
+            .first()
+            .is_some_and(|cs| cs.status == ChangesetStatus::InProgress);
+        if !is_pending {
+            continue;
+        }
+        if let Ok(layer) = overlays.get_layer(&handle.agent_id)
+            && let Ok(files) = layer.modified_files()
+            && !files.is_empty()
+        {
+            pending_overlays.push((&handle.agent_id, files.len()));
+        }
+    }
+    if pending_overlays.is_empty() {
         println!(
             "  {} {}",
             ui::style_bold("Pending changesets:"),
@@ -198,12 +220,29 @@ async fn run_summary(
         ui::section_header("Pending changesets");
         println!(
             "  {}",
+            ui::style_dim(&format!("{:<14} {:>5}", "AGENT", "FILES"))
+        );
+        for (agent_id, file_count) in &pending_overlays {
+            println!(
+                "  {:<14} {:>5}",
+                agent_id, file_count,
+            );
+        }
+    }
+    println!();
+
+    // Conflicted changesets
+    let conflicted = projection.conflicted_changesets();
+    if !conflicted.is_empty() {
+        ui::section_header("Conflicted changesets");
+        println!(
+            "  {}",
             ui::style_dim(&format!(
                 "{:<20} {:<14} {:>5}   STATUS",
                 "ID", "AGENT", "FILES"
             ))
         );
-        for cs in &pending {
+        for cs in &conflicted {
             println!(
                 "  {:<20} {:<14} {:>5}   {}",
                 cs.id,
@@ -212,8 +251,8 @@ async fn run_summary(
                 ui::status_label(&cs.status),
             );
         }
+        println!();
     }
-    println!();
 
     println!(
         "{}",
@@ -313,7 +352,7 @@ async fn run_detailed(
         },
         Err(_) => {
             if let Some(cs) = changeset {
-                if cs.status == ChangesetStatus::Materialized {
+                if cs.status == ChangesetStatus::Submitted {
                     ui::key_value("Overlay", ui::style_dim("cleared (materialized)"));
                 } else {
                     ui::key_value("Overlay", ui::style_warning("not found"));
@@ -430,6 +469,15 @@ fn extract_plan_prefix(agent_id: &str) -> Option<String> {
         Some(format!("{}-{}-{}", parts[0], parts[1], parts[2]))
     } else {
         None
+    }
+}
+
+/// Get the styled status label for the latest changeset of an agent.
+fn latest_changeset_status(projection: &Projection, agent_id: &AgentId) -> String {
+    let changesets = projection.changesets_for_agent(agent_id);
+    match changesets.first() {
+        Some(cs) => format!("{}", ui::status_label(&cs.status)),
+        None => format!("{}", ui::style_dim("no changeset")),
     }
 }
 

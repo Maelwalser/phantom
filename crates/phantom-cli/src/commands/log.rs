@@ -219,7 +219,7 @@ fn event_kind_label(kind: &phantom_core::EventKind) -> &'static str {
         EventKind::FileDeleted { .. } => "file deleted",
         EventKind::ChangesetSubmitted { .. } => "submitted",
         EventKind::ChangesetMergeChecked { .. } => "merge checked",
-        EventKind::ChangesetMaterialized { .. } => "materialized",
+        EventKind::ChangesetMaterialized { .. } => "submitted",
         EventKind::ChangesetConflicted { .. } => "conflicted",
         EventKind::ChangesetDropped { .. } => "dropped",
         EventKind::TrunkAdvanced { .. } => "trunk advanced",

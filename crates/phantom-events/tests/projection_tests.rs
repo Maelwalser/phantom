@@ -161,7 +161,7 @@ fn latest_submitted_changeset_picks_most_recent_when_multiple_submitted() {
 }
 
 #[test]
-fn latest_submitted_changeset_skips_materialized_and_conflicted() {
+fn latest_submitted_changeset_picks_most_recent_skipping_conflicted() {
     let t1 = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
         .unwrap()
         .with_timezone(&Utc);
@@ -172,7 +172,7 @@ fn latest_submitted_changeset_skips_materialized_and_conflicted() {
         .unwrap()
         .with_timezone(&Utc);
     let events = vec![
-        // cs-0001: submitted then materialized
+        // cs-0001: submitted and materialized (stays Submitted)
         make_event(
             1,
             "cs-0001",

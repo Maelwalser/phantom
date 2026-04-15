@@ -40,8 +40,6 @@ fn serde_changeset_status_roundtrip() {
     for status in [
         ChangesetStatus::InProgress,
         ChangesetStatus::Submitted,
-        ChangesetStatus::Merging,
-        ChangesetStatus::Materialized,
         ChangesetStatus::Conflicted,
         ChangesetStatus::Resolving,
         ChangesetStatus::Dropped,

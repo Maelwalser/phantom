@@ -146,7 +146,7 @@ async fn submit_and_materialize_overlay(
                 } => {
                     let hex = new_commit.to_hex();
                     let short = &hex[..12.min(hex.len())];
-                    println!("Materialized {} -> commit {short}", out.submit.changeset_id);
+                    println!("Submitted {} -> commit {short}", out.submit.changeset_id);
                     if !text_fallback_files.is_empty() {
                         eprintln!(
                             "  Warning: {} file(s) merged via line-based fallback (no syntax validation)",

@@ -321,15 +321,14 @@ fn test_projection_full_lifecycle() {
         .changeset(&ChangesetId(cs_id.into()))
         .expect("changeset should exist");
 
-    assert_eq!(cs.status, ChangesetStatus::Materialized);
+    assert_eq!(cs.status, ChangesetStatus::Submitted);
     assert_eq!(cs.operations.len(), 1);
     assert!(cs.test_result.is_some());
     assert_eq!(cs.test_result.unwrap().passed, 10);
     assert!(cs.files_touched.contains(&PathBuf::from("src/lib.rs")));
 
-    // No active agents (changeset is materialized, not in-progress)
+    // No active agents (changeset is submitted, not in-progress)
     assert!(projection.active_agents().is_empty());
-    assert!(projection.pending_changesets().is_empty());
 }
 
 // ── Test 6: ReplayEngine ─────────────────────────────────────────

@@ -4,7 +4,7 @@ use super::*;
 fn write_truncated_under_budget_is_identity() {
     let text = "fn main() {}\n";
     let mut out = String::new();
-    write_truncated(&mut out, text);
+    write_truncated(&mut out, text, 0);
     assert_eq!(out, text);
 }
 
@@ -17,13 +17,77 @@ fn write_truncated_over_budget_cuts_at_line() {
     assert!(text.len() > WHOLE_FILE_BYTE_BUDGET);
 
     let mut out = String::new();
-    write_truncated(&mut out, &text);
+    write_truncated(&mut out, &text, 0);
     assert!(out.len() < text.len());
-    assert!(out.contains("// ... truncated (~"));
-    assert!(out.contains("more tokens)"));
-    // The cut should be at a newline boundary — no partial lines.
-    let before_comment = out.split("// ... truncated").next().unwrap();
-    assert!(before_comment.ends_with('\n'));
+    assert!(out.contains("CONTENT TRUNCATED"));
+    assert!(out.contains("more tokens below"));
+}
+
+#[test]
+fn first_divergence_offset_identical() {
+    assert_eq!(first_divergence_offset("hello", "hello"), None);
+}
+
+#[test]
+fn first_divergence_offset_at_position() {
+    assert_eq!(first_divergence_offset("abcdef", "abcXef"), Some(3));
+}
+
+#[test]
+fn first_divergence_offset_length_diff() {
+    assert_eq!(first_divergence_offset("abc", "abcdef"), Some(3));
+    assert_eq!(first_divergence_offset("abcdef", "abc"), Some(3));
+}
+
+#[test]
+fn compute_truncation_center_picks_earliest() {
+    let base = "aaaa_bbbb_cccc_dddd";
+    // Diverges from base at position 5
+    let ours = "aaaa_XXXX_cccc_dddd";
+    // Diverges from base at position 10
+    let theirs = "aaaa_bbbb_YYYY_dddd";
+    let center = compute_truncation_center(Some(base), Some(ours), Some(theirs));
+    assert_eq!(center, 5);
+}
+
+#[test]
+fn compute_truncation_center_no_content_returns_zero() {
+    assert_eq!(compute_truncation_center(None, None, None), 0);
+}
+
+#[test]
+fn write_truncated_centers_on_offset() {
+    // Build a ~100KB file with a distinctive marker near byte 70,000.
+    let prefix = "prefix_line\n".repeat(5000); // ~60,000 bytes
+    let marker = "CONFLICT_MARKER_HERE\n";
+    let suffix = "suffix_line\n".repeat(5000); // ~60,000 bytes
+    let text = format!("{prefix}{marker}{suffix}");
+    assert!(text.len() > WHOLE_FILE_BYTE_BUDGET * 2);
+
+    let center = prefix.len() + 10; // points into the marker area
+    let mut out = String::new();
+    write_truncated(&mut out, &text, center);
+
+    // The output should contain the marker.
+    assert!(
+        out.contains("CONFLICT_MARKER_HERE"),
+        "centered truncation should include the conflict region"
+    );
+    // Should have a leading truncation marker (since center is far from byte 0).
+    assert!(
+        out.contains("lines above"),
+        "should have leading truncation marker"
+    );
+    // Should have a trailing truncation marker.
+    assert!(
+        out.contains("more tokens below"),
+        "should have trailing truncation marker"
+    );
+    // Should NOT start from the very beginning of the file.
+    assert!(
+        !out.starts_with("prefix_line"),
+        "should not start from byte 0 when center is far away"
+    );
 }
 
 #[test]
@@ -250,6 +314,7 @@ fn full_resolve_file_uses_compact_for_symbol_conflicts() {
         &changeset_id,
         &base_commit,
         &conflicts,
+        None,
     )
     .unwrap();
 
@@ -293,6 +358,7 @@ fn full_resolve_file_uses_compact_for_raw_text() {
         &changeset_id,
         &base_commit,
         &conflicts,
+        None,
     )
     .unwrap();
 
@@ -600,6 +666,7 @@ fn symbol_conflict_cascades_to_raw_text_on_parse_failure() {
         &changeset_id,
         &base_commit,
         &conflicts,
+        None,
     )
     .unwrap();
 
@@ -628,6 +695,7 @@ fn resolve_context_file_excludes_rules() {
         &changeset_id,
         &base_commit,
         &[],
+        None,
     )
     .unwrap();
 

@@ -57,7 +57,7 @@ tests/integration/          # End-to-end tests with real git repos
 ### phantom-core (`crates/phantom-core/`)
 Zero dependencies on other phantom crates. Defines all shared types:
 - **IDs**: `ChangesetId`, `AgentId`, `EventId`, `SymbolId`, `ContentHash` (BLAKE3), `GitOid` (20-byte, no git2 dependency), `PlanId`
-- **Changeset**: status lifecycle (`InProgress → Materialized/Conflicted/Resolving/Dropped`), `SemanticOperation` (AddSymbol/ModifySymbol/DeleteSymbol/AddFile/DeleteFile/RawDiff), `TestResult`
+- **Changeset**: status lifecycle (`InProgress → Submitted/Conflicted/Resolving/Dropped`), `SemanticOperation` (AddSymbol/ModifySymbol/DeleteSymbol/AddFile/DeleteFile/RawDiff), `TestResult`
 - **Event**: `EventKind` enum with 17+ variants including `TaskCreated`, `ChangesetSubmitted`, `ChangesetMaterialized`, `LiveRebased`, `PlanCreated`, `AgentLaunched/Completed`, `Unknown` (forward-compat via `serde(other)`)
 - **Conflict**: `ConflictDetail` with `ConflictKind` (BothModifiedSymbol, ModifyDeleteSymbol, BothModifiedDependencyVersion, RawTextConflict, BinaryFile) and `ConflictSpan` (byte ranges + line numbers)
 - **Traits**: `EventStore` (async), `SymbolIndex`, `SemanticAnalyzer` (extract_symbols, diff_symbols, three_way_merge)
@@ -181,7 +181,7 @@ Key aliases: `st` (status), `sub` (submit), `res` (resolve), `rb` (rollback), `l
 | **Changeset** | Atomic unit of work from an agent. Contains semantic operations, test results, lifecycle status. Replaces branches. |
 | **Overlay** | FUSE-mounted COW filesystem per agent. Upper = writes, lower = trunk read-through. |
 | **Trunk** | `main` branch of the underlying git repo. Single source of truth. |
-| **Materialize** | Commit a changeset to trunk after semantic merge checks pass. |
+| **Submit** | Commit a changeset to trunk after semantic merge checks pass (or mark as conflicted). |
 | **Semantic Operation** | Structured change description: AddSymbol, ModifySymbol, DeleteSymbol, etc. |
 | **Ripple** | Post-materialization notification to active agents about trunk changes. |
 | **Live Rebase** | Auto-merge trunk changes into an agent's upper layer for shadowed files. |

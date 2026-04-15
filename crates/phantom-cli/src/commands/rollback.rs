@@ -203,7 +203,7 @@ async fn run_interactive_for_agent(
         .filter(|cs| {
             matches!(
                 cs.status,
-                ChangesetStatus::Submitted | ChangesetStatus::Materialized
+                ChangesetStatus::Submitted
             )
         })
         .collect();

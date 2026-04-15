@@ -103,9 +103,7 @@ pub fn key_value(key: &str, value: impl std::fmt::Display) {
 pub fn status_label(status: &ChangesetStatus) -> console::StyledObject<&'static str> {
     match status {
         ChangesetStatus::InProgress => style("in progress").dim(),
-        ChangesetStatus::Submitted => style("submitted").yellow(),
-        ChangesetStatus::Merging => style("merging").cyan(),
-        ChangesetStatus::Materialized => style("materialized").green(),
+        ChangesetStatus::Submitted => style("submitted").green(),
         ChangesetStatus::Conflicted => style("conflicted").red(),
         ChangesetStatus::Resolving => style("resolving").cyan(),
         ChangesetStatus::Dropped => style("dropped").dim(),

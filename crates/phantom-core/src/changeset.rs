@@ -18,12 +18,9 @@ use crate::symbol::SymbolEntry;
 pub enum ChangesetStatus {
     /// Agent is still working inside its overlay.
     InProgress,
-    /// Agent finished; changeset is awaiting merge check.
+    /// Changeset submitted and merged to trunk successfully.
+    #[serde(alias = "Materialized", alias = "Merging")]
     Submitted,
-    /// Semantic merge is in progress.
-    Merging,
-    /// Successfully committed to trunk.
-    Materialized,
     /// Semantic conflict detected; needs re-task.
     Conflicted,
     /// A conflict resolution agent is actively working on this changeset.
@@ -37,8 +34,6 @@ impl std::fmt::Display for ChangesetStatus {
         match self {
             Self::InProgress => write!(f, "in progress"),
             Self::Submitted => write!(f, "submitted"),
-            Self::Merging => write!(f, "merging"),
-            Self::Materialized => write!(f, "materialized"),
             Self::Conflicted => write!(f, "conflicted"),
             Self::Resolving => write!(f, "resolving"),
             Self::Dropped => write!(f, "dropped"),

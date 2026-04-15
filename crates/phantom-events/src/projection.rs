@@ -21,7 +21,7 @@ impl Projection {
     /// Each event updates the corresponding changeset record:
     /// - `TaskCreated` → new changeset with `InProgress` status
     /// - `ChangesetSubmitted` → status becomes `Submitted`, operations stored
-    /// - `ChangesetMaterialized` → status becomes `Materialized`
+    /// - `ChangesetMaterialized` → status stays `Submitted` (merge succeeded)
     /// - `ChangesetConflicted` → status becomes `Conflicted`
     /// - `ChangesetDropped` → status becomes `Dropped`
     /// - `TestsRun` → test results updated
@@ -52,7 +52,8 @@ impl Projection {
                     }
                 }
                 EventKind::ChangesetMaterialized { .. } => {
-                    cs.status = ChangesetStatus::Materialized;
+                    // Status stays Submitted — materialization is an internal
+                    // detail, not a separate user-facing state.
                 }
                 EventKind::ChangesetConflicted { .. } => {
                     cs.status = ChangesetStatus::Conflicted;
@@ -175,6 +176,21 @@ impl Projection {
             .collect();
         pending.sort_by(|a, b| a.id.0.cmp(&b.id.0));
         pending
+    }
+
+    /// Return changesets with `Conflicted` or `Resolving` status.
+    #[must_use]
+    pub fn conflicted_changesets(&self) -> Vec<&Changeset> {
+        let mut result: Vec<&Changeset> = self
+            .changesets
+            .values()
+            .filter(|cs| {
+                cs.status == ChangesetStatus::Conflicted
+                    || cs.status == ChangesetStatus::Resolving
+            })
+            .collect();
+        result.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+        result
     }
 }
 
