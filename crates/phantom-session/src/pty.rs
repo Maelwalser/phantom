@@ -9,7 +9,7 @@ use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::process::ExitStatus;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use anyhow::Context;
 use nix::pty::openpty;
@@ -26,9 +26,29 @@ static SIGINT_RECEIVED: AtomicBool = AtomicBool::new(false);
 /// explicit rather than silently racy.
 static PTY_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Master PTY fd for the SIGWINCH handler to propagate terminal resize.
+static SIGWINCH_MASTER_FD: AtomicI32 = AtomicI32::new(-1);
+
 /// Async-signal-safe SIGINT handler that sets a flag instead of terminating.
 extern "C" fn handle_sigint(_sig: libc::c_int) {
     SIGINT_RECEIVED.store(true, Ordering::Release);
+}
+
+/// Async-signal-safe SIGWINCH handler that propagates terminal size to the PTY.
+extern "C" fn handle_sigwinch(_sig: libc::c_int) {
+    let master = SIGWINCH_MASTER_FD.load(Ordering::Acquire);
+    if master < 0 {
+        return;
+    }
+    // SAFETY: ioctl is async-signal-safe. STDIN_FILENO is valid during the
+    // session. master fd is valid while PTY_SESSION_ACTIVE is true, which is
+    // guaranteed because the guard clears SIGWINCH_MASTER_FD before closing it.
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 {
+            libc::ioctl(master, libc::TIOCSWINSZ, &ws);
+        }
+    }
 }
 
 /// Size of the rolling buffer that captures the tail of terminal output (bytes).
@@ -106,6 +126,49 @@ impl Drop for SigactionGuard {
     fn drop(&mut self) {
         unsafe {
             libc::sigaction(libc::SIGINT, &raw const self.old, std::ptr::null_mut());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SIGWINCH handler guard
+// ---------------------------------------------------------------------------
+
+/// RAII guard that installs a SIGWINCH handler to propagate terminal resize
+/// events to the child PTY, and restores the previous handler on drop.
+struct SigwinchGuard {
+    old: libc::sigaction,
+}
+
+impl SigwinchGuard {
+    /// Install a SIGWINCH handler that copies the parent terminal size to the
+    /// PTY master fd. The master fd must remain valid for the lifetime of this
+    /// guard.
+    ///
+    /// # Safety
+    /// `handle_sigwinch` is async-signal-safe (ioctl + atomic load only).
+    fn install(master_raw_fd: RawFd) -> Self {
+        SIGWINCH_MASTER_FD.store(master_raw_fd, Ordering::Release);
+        let old: libc::sigaction = unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = handle_sigwinch as *const () as usize;
+            sa.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&raw mut sa.sa_mask);
+            let mut old: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(libc::SIGWINCH, &raw const sa, &raw mut old);
+            old
+        };
+        Self { old }
+    }
+}
+
+impl Drop for SigwinchGuard {
+    fn drop(&mut self) {
+        // Clear the master fd before restoring the old handler to ensure the
+        // signal handler never accesses a closed fd.
+        SIGWINCH_MASTER_FD.store(-1, Ordering::Release);
+        unsafe {
+            libc::sigaction(libc::SIGWINCH, &raw const self.old, std::ptr::null_mut());
         }
     }
 }
@@ -230,8 +293,19 @@ pub fn spawn_with_pty(
     }
     let _session_guard = SessionActiveGuard;
 
-    // 1. Open a PTY pair.
-    let pty = openpty(None, None).context("failed to open PTY")?;
+    // 1. Open a PTY pair, inheriting the parent terminal's dimensions.
+    let initial_winsize = {
+        // SAFETY: STDIN_FILENO is valid while the process is alive.
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        let ret = unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut ws) };
+        if ret == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+            Some(ws)
+        } else {
+            None
+        }
+    };
+    let pty =
+        openpty(initial_winsize.as_ref(), None).context("failed to open PTY")?;
     let master_fd = pty.master;
     let slave_fd = pty.slave;
 
@@ -265,6 +339,10 @@ pub fn spawn_with_pty(
     // We only need to survive SIGINT so we can clean up the terminal.
     // The RAII guard restores the previous handler on drop (including panics).
     let sigint_guard = SigactionGuard::install();
+
+    // Install a SIGWINCH handler that propagates terminal resize events to the
+    // child PTY. Without this the child sees a fixed size and never reflows.
+    let sigwinch_guard = SigwinchGuard::install(master_fd.as_raw_fd());
 
     // 4. Spawn the child process.
     let child = ChildGuard::new(cmd.spawn().with_context(|| {
@@ -463,6 +541,10 @@ pub fn spawn_with_pty(
     // Signal the stdin thread to stop by closing the shutdown pipe write end.
     // This causes POLLHUP on the read end, breaking the poll loop.
     drop(shutdown_write);
+
+    // Restore the SIGWINCH handler before closing the master fd, so the
+    // signal handler never accesses a closed fd.
+    drop(sigwinch_guard);
 
     // Drop the master fd to signal EOF to the capture thread.
     drop(master_fd);
