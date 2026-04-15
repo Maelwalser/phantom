@@ -111,6 +111,37 @@ impl Drop for SigactionGuard {
 }
 
 // ---------------------------------------------------------------------------
+// Child process guard
+// ---------------------------------------------------------------------------
+
+/// RAII guard that ensures a child process is terminated if it has not been
+/// successfully waited on before the guard is dropped (e.g., during panic unwind).
+struct ChildGuard(Option<std::process::Child>);
+
+impl ChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self(Some(child))
+    }
+
+    /// Wait for the child process, consuming the guard without triggering cleanup.
+    fn wait(mut self) -> io::Result<ExitStatus> {
+        // take() ensures Drop sees None and skips the kill.
+        self.0.take().unwrap().wait()
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            // Best-effort: SIGKILL the child to prevent orphaning.
+            let _ = child.kill();
+            // Reap the zombie to avoid pid leak.
+            let _ = child.wait();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Non-blocking write helper
 // ---------------------------------------------------------------------------
 
@@ -237,12 +268,12 @@ pub fn spawn_with_pty(
     let _sigint_guard = SigactionGuard::install();
 
     // 4. Spawn the child process.
-    let mut child = cmd.spawn().with_context(|| {
+    let child = ChildGuard::new(cmd.spawn().with_context(|| {
         format!(
             "failed to launch '{}' -- is it installed and on PATH?",
             adapter.name()
         )
-    })?;
+    })?);
 
     // Close the slave fd in the parent -- the child inherited copies.
     drop(slave_fd);
@@ -413,9 +444,10 @@ pub fn spawn_with_pty(
         tail_buf
     });
 
-    // 6. Wait for the child to exit.
+    // 6. Wait for the child to exit (consumes the guard, preventing kill-on-drop).
     let exit_status = child
         .wait()
+        .map_err(|e| anyhow::anyhow!(e))
         .context("failed to wait for interactive session")?;
 
     // Block SIGINT during cleanup to ensure terminal restoration completes.
@@ -484,15 +516,16 @@ pub fn spawn_direct(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
-    let mut child = cmd.spawn().with_context(|| {
+    let child = ChildGuard::new(cmd.spawn().with_context(|| {
         format!(
             "failed to launch '{}' -- is it installed and on PATH?",
             adapter.name()
         )
-    })?;
+    })?);
 
     let exit_status = child
         .wait()
+        .map_err(|e| anyhow::anyhow!(e))
         .context("failed to wait for interactive session")?;
 
     // No output capture possible without PTY -- session ID not available.
