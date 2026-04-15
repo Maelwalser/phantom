@@ -121,12 +121,12 @@ async fn submit_and_materialize_overlay(
         .upper_dir(agent_id)
         .map_err(|e| anyhow::anyhow!("no upper dir for agent '{agent_id}': {e}"))?;
 
-    let git = phantom_orchestrator::git::GitOps::open(repo_root)
+    let git = phantom_git::GitOps::open(repo_root)
         .map_err(|e| anyhow::anyhow!("failed to open git repo: {e}"))?;
     let analyzer = SemanticMerger::new();
 
     let materializer = Materializer::new(
-        phantom_orchestrator::git::GitOps::open(repo_root)
+        phantom_git::GitOps::open(repo_root)
             .map_err(|e| anyhow::anyhow!("failed to open git repo for materialization: {e}"))?,
     );
 

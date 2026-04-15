@@ -9,19 +9,7 @@ use std::path::Path;
 use phantom_core::SymbolEntry;
 
 use crate::error::SemanticError;
-use crate::languages::LanguageExtractor;
-use crate::languages::bash::BashExtractor;
-use crate::languages::css::CssExtractor;
-use crate::languages::dockerfile::DockerfileExtractor;
-use crate::languages::go::GoExtractor;
-use crate::languages::hcl::HclExtractor;
-use crate::languages::json::JsonExtractor;
-use crate::languages::makefile::MakefileExtractor;
-use crate::languages::python::PythonExtractor;
-use crate::languages::rust::RustExtractor;
-use crate::languages::toml::TomlExtractor;
-use crate::languages::typescript::TypeScriptExtractor;
-use crate::languages::yaml::YamlExtractor;
+use crate::languages::{self, LanguageExtractor};
 
 /// Multi-language parser that routes files to the right tree-sitter grammar.
 pub struct Parser {
@@ -42,21 +30,9 @@ impl Parser {
             name_to_index: HashMap::new(),
             extractors: Vec::new(),
         };
-        // Programming languages
-        parser.register(Box::new(RustExtractor));
-        parser.register(Box::new(TypeScriptExtractor::new()));
-        parser.register(Box::new(TypeScriptExtractor::tsx()));
-        parser.register(Box::new(PythonExtractor));
-        parser.register(Box::new(GoExtractor));
-        // Config & infrastructure files
-        parser.register(Box::new(YamlExtractor));
-        parser.register(Box::new(TomlExtractor));
-        parser.register(Box::new(JsonExtractor));
-        parser.register(Box::new(DockerfileExtractor));
-        parser.register(Box::new(BashExtractor));
-        parser.register(Box::new(HclExtractor));
-        parser.register(Box::new(CssExtractor));
-        parser.register(Box::new(MakefileExtractor));
+        for extractor in languages::all_extractors() {
+            parser.register(extractor);
+        }
         parser
     }
 
@@ -193,5 +169,55 @@ impl Default for Parser {
 }
 
 #[cfg(test)]
-#[path = "parser_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
+    use phantom_core::symbol::SymbolKind;
+
+    #[test]
+    fn parses_rust_file() {
+        let parser = Parser::new();
+        let src = b"fn hello() {}";
+        let symbols = parser.parse_file(Path::new("test.rs"), src).unwrap();
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn parses_typescript_file() {
+        let parser = Parser::new();
+        let src = b"function greet(): void {}";
+        let symbols = parser.parse_file(Path::new("test.ts"), src).unwrap();
+        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function));
+    }
+
+    #[test]
+    fn parses_python_file() {
+        let parser = Parser::new();
+        let src = b"def hello():\n    pass";
+        let symbols = parser.parse_file(Path::new("test.py"), src).unwrap();
+        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function));
+    }
+
+    #[test]
+    fn unsupported_extension_errors() {
+        let parser = Parser::new();
+        let result = parser.parse_file(Path::new("test.txt"), b"hello");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SemanticError::UnsupportedLanguage { .. }
+        ));
+    }
+
+    #[test]
+    fn supports_language_checks() {
+        let parser = Parser::new();
+        assert!(parser.supports_language(Path::new("foo.rs")));
+        assert!(parser.supports_language(Path::new("bar.ts")));
+        assert!(parser.supports_language(Path::new("baz.py")));
+        assert!(parser.supports_language(Path::new("qux.go")));
+        assert!(parser.supports_language(Path::new("comp.tsx")));
+        assert!(!parser.supports_language(Path::new("readme.md")));
+        assert!(!parser.supports_language(Path::new("noext")));
+    }
+}

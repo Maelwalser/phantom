@@ -1,4 +1,4 @@
-//! Filesystem collection helpers and test-only git utilities.
+//! Filesystem collection helpers.
 
 use std::path::{Path, PathBuf};
 
@@ -35,4 +35,3 @@ fn collect_files_inner(
     }
     Ok(())
 }
-

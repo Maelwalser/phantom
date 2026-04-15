@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/phantom-core",
+    "crates/phantom-git",
     "crates/phantom-events",
     "crates/phantom-overlay",
     "crates/phantom-semantic",
@@ -19,6 +20,7 @@ license = "MIT"
 
 [workspace.dependencies]
 phantom-core = { path = "crates/phantom-core" }
+phantom-git = { path = "crates/phantom-git" }
 phantom-events = { path = "crates/phantom-events" }
 phantom-overlay = { path = "crates/phantom-overlay" }
 phantom-semantic = { path = "crates/phantom-semantic" }
@@ -59,3 +61,10 @@ regex = "1"
 dialoguer = "0.11"
 console = "0.15"
 uuid = { version = "1", features = ["v7"] }
+
+[workspace.lints.rust]
+unsafe_code = "allow"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"

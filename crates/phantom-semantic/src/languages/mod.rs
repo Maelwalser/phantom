@@ -51,6 +51,30 @@ pub trait LanguageExtractor: Send + Sync {
     }
 }
 
+/// Return all built-in language extractors.
+///
+/// Centralizes registration so adding a new language only requires adding
+/// the module above and a line here — `Parser::new()` just iterates this list.
+pub fn all_extractors() -> Vec<Box<dyn LanguageExtractor>> {
+    vec![
+        // Programming languages
+        Box::new(rust::RustExtractor),
+        Box::new(typescript::TypeScriptExtractor::new()),
+        Box::new(typescript::TypeScriptExtractor::tsx()),
+        Box::new(python::PythonExtractor),
+        Box::new(go::GoExtractor),
+        // Config & infrastructure files
+        Box::new(yaml::YamlExtractor),
+        Box::new(toml::TomlExtractor),
+        Box::new(json::JsonExtractor),
+        Box::new(dockerfile::DockerfileExtractor),
+        Box::new(bash::BashExtractor),
+        Box::new(hcl::HclExtractor),
+        Box::new(css::CssExtractor),
+        Box::new(makefile::MakefileExtractor),
+    ]
+}
+
 // ── Shared helpers used by all language extractors ──────────────────────
 
 /// Extract text of a child field from a tree-sitter node.

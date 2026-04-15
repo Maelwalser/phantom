@@ -14,7 +14,7 @@ use phantom_core::event::EventKind;
 use phantom_core::id::AgentId;
 use phantom_core::traits::EventStore;
 use phantom_events::{Projection, SnapshotManager, SqliteEventStore};
-use phantom_orchestrator::git::GitOps;
+use phantom_git::GitOps;
 use phantom_overlay::OverlayManager;
 
 use super::agent_monitor;

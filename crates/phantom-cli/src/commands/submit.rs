@@ -72,7 +72,7 @@ pub async fn submit_agent(
     let analyzer = ctx.semantic();
 
     let materializer = Materializer::new(
-        phantom_orchestrator::git::GitOps::open(&ctx.repo_root)
+        phantom_git::GitOps::open(&ctx.repo_root)
             .context("failed to open git repo for materialization")?,
     );
 

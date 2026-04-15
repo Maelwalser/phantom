@@ -36,15 +36,16 @@ phantom down                         # Unmount all overlays, remove .phantom/
 
 ## Workspace Structure
 
-8 crates + 1 integration test crate:
+9 crates + 1 integration test crate:
 
 ```
 crates/
 ├── phantom-core/           # Core types, traits, errors (zero deps on other phantom crates)
+├── phantom-git/            # Git operations (git2 wrapper, tree building, text merge)
 ├── phantom-events/         # SQLite WAL event store (sqlx)
 ├── phantom-overlay/        # FUSE overlay filesystem (fuser, feature-gated)
 ├── phantom-semantic/       # Tree-sitter parsing + semantic merge engine
-├── phantom-orchestrator/   # Git ops, materializer, ripple, live rebase, submit service
+├── phantom-orchestrator/   # Materializer, ripple, live rebase, submit service (uses phantom-git)
 ├── phantom-session/        # PTY management, CLI adapters, context files, post-session automation
 ├── phantom-cli/            # Binary crate — the `phantom` command
 └── phantom-testkit/        # Shared test utilities (builders, mocks, test repos)
@@ -63,6 +64,14 @@ Zero dependencies on other phantom crates. Defines all shared types:
 - **Traits**: `EventStore` (async), `SymbolIndex`, `SemanticAnalyzer` (extract_symbols, diff_symbols, three_way_merge)
 - **Plan**: multi-domain task decomposition (`Plan`, `PlanDomain`, `PlanStatus`)
 - **Notification**: `TrunkNotification` with per-file `TrunkFileStatus` (TrunkVisible/Shadowed/RebaseMerged/RebaseConflict)
+
+### phantom-git (`crates/phantom-git/`)
+Git operations built on `git2`. Depends only on `phantom-core` and `git2` — no event store, semantic analysis, or overlay dependencies.
+- `GitOps`: thin wrapper around `git2::Repository` — `head_oid()`, `read_file_at_commit()`, `changed_files()`, `revert_commit_oid()`, `reset_to_commit()`, `text_merge()`
+- `GitError`: typed error enum for git operations
+- `tree`: tree building from blobs/overlay — `build_tree_from_oids()`, `create_blobs_from_overlay()`, `create_blobs_from_content()`
+- `oid_to_git_oid` / `git_oid_to_oid`: lossless conversions between `GitOid` and `git2::Oid`
+- `test_support`: test repo helpers (`init_repo`, `advance_trunk`, `commit_file`)
 
 ### phantom-events (`crates/phantom-events/`)
 SQLite WAL-mode event store via `sqlx`. Schema versioned (currently v2 with `kind_version` column).
@@ -88,7 +97,7 @@ Tree-sitter-based parsing and Weave-style entity matching.
 - Symbol extraction per language via `LanguageExtractor` trait
 
 ### phantom-orchestrator (`crates/phantom-orchestrator/`)
-- `GitOps`: libgit2 wrapper — `head_oid()`, `read_file_at_commit()`, `changed_files()`, `commit_tree()`, etc. Handles `GitOid ↔ git2::Oid` conversion.
+Pure coordination layer that composes `phantom-git`, `phantom-events`, `phantom-semantic`, and `phantom-overlay`. Re-exports `phantom-git` types via `phantom_orchestrator::git` for backward compatibility.
 - `Materializer`: applies changeset to trunk with semantic merge check. Three-way merge per file, atomic commit.
 - `submit_service`: unified submit-and-materialize pipeline — extracts semantic operations from overlay, appends `ChangesetSubmitted` event, calls materialization service to merge and commit to trunk
 - `materialization_service`: materialize-and-ripple orchestration — materialize, classify trunk changes per agent, live rebase shadowed files, emit notifications and audit events

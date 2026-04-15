@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use phantom_events::SqliteEventStore;
-use phantom_orchestrator::git::GitOps;
+use phantom_git::GitOps;
 use phantom_overlay::OverlayManager;
 use phantom_semantic::SemanticMerger;
 use tracing::{debug, warn};

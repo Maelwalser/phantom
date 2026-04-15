@@ -12,7 +12,7 @@ use chrono::Utc;
 use phantom_core::changeset::{Changeset, ChangesetStatus};
 use phantom_core::id::{AgentId, ChangesetId, GitOid};
 use phantom_events::SqliteEventStore;
-use phantom_orchestrator::git::GitOps;
+use phantom_git::GitOps;
 use phantom_orchestrator::materializer::Materializer;
 use phantom_semantic::SemanticMerger;
 use tempfile::TempDir;
@@ -127,7 +127,7 @@ impl TestContext {
             .commit(Some("HEAD"), &sig, &sig, "test commit", &tree, &[&parent])
             .unwrap();
 
-        phantom_orchestrator::git::oid_to_git_oid(new_oid)
+        phantom_git::oid_to_git_oid(new_oid)
     }
 
     /// Create a temporary upper directory for an agent with the given files.

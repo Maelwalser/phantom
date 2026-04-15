@@ -3,7 +3,7 @@
 use phantom_core::id::AgentId;
 use phantom_core::EventKind;
 use phantom_events::EventQuery;
-use phantom_orchestrator::git::{GitOps, git_oid_to_oid};
+use phantom_git::{GitOps, git_oid_to_oid};
 
 use super::agent_color::AgentPalette;
 use super::ui;

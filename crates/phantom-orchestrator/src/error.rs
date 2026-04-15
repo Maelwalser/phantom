@@ -3,9 +3,9 @@
 /// Errors produced by orchestrator operations (git, materialization, scheduling).
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
-    /// A `git2` operation failed.
-    #[error("git error: {0}")]
-    Git(#[from] git2::Error),
+    /// A git operation failed.
+    #[error(transparent)]
+    Git(#[from] phantom_git::error::GitError),
 
     /// The event store returned an error.
     #[error("event store error: {0}")]
@@ -55,5 +55,11 @@ impl From<phantom_core::CoreError> for OrchestratorError {
 impl From<phantom_semantic::SemanticError> for OrchestratorError {
     fn from(e: phantom_semantic::SemanticError) -> Self {
         OrchestratorError::Semantic(e.to_string())
+    }
+}
+
+impl From<git2::Error> for OrchestratorError {
+    fn from(e: git2::Error) -> Self {
+        OrchestratorError::Git(phantom_git::error::GitError::Git(e))
     }
 }

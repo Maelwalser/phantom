@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 phantom-core = { workspace = true }
+phantom-git = { workspace = true }
 phantom-events = { workspace = true }
 phantom-overlay = { workspace = true, features = ["fuse"] }
 phantom-semantic = { workspace = true }
@@ -35,3 +36,7 @@ uuid = { workspace = true }
 assert_cmd = "2"
 tempfile = { workspace = true }
 predicates = "3"
+
+[lints]
+workspace = true
+

@@ -7,7 +7,7 @@ use phantom_core::id::ChangesetId;
 use phantom_core::is_binary_or_non_utf8;
 use phantom_core::traits::MergeResult;
 
-use crate::error::OrchestratorError;
+use crate::error::GitError;
 
 /// Three-way merge using LCS-based diff alignment.
 ///
@@ -18,7 +18,7 @@ pub(crate) fn three_way_merge(
     base: &[u8],
     ours: &[u8],
     theirs: &[u8],
-) -> Result<MergeResult, OrchestratorError> {
+) -> Result<MergeResult, GitError> {
     // Reject binary or non-UTF-8 content to prevent silent data corruption.
     if is_binary_or_non_utf8(base) || is_binary_or_non_utf8(ours) || is_binary_or_non_utf8(theirs) {
         let detail = ConflictDetail {
@@ -38,13 +38,13 @@ pub(crate) fn three_way_merge(
     // All three buffers were validated above, but use proper error propagation
     // rather than unwrap to stay robust against future changes in the guard.
     let base_s = std::str::from_utf8(base).map_err(|e| {
-        OrchestratorError::MaterializationFailed(format!("base is not valid UTF-8: {e}"))
+        GitError::MaterializationFailed(format!("base is not valid UTF-8: {e}"))
     })?;
     let ours_s = std::str::from_utf8(ours).map_err(|e| {
-        OrchestratorError::MaterializationFailed(format!("ours is not valid UTF-8: {e}"))
+        GitError::MaterializationFailed(format!("ours is not valid UTF-8: {e}"))
     })?;
     let theirs_s = std::str::from_utf8(theirs).map_err(|e| {
-        OrchestratorError::MaterializationFailed(format!("theirs is not valid UTF-8: {e}"))
+        GitError::MaterializationFailed(format!("theirs is not valid UTF-8: {e}"))
     })?;
 
     let result = diffy::merge(base_s, ours_s, theirs_s);

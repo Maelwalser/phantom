@@ -14,7 +14,7 @@ use phantom_events::ReplayEngine;
 use phantom_events::projection::Projection;
 use phantom_events::snapshot::SnapshotManager;
 use phantom_events::store::SqliteEventStore;
-use phantom_orchestrator::git::GitOps;
+use phantom_git::GitOps;
 
 use super::ui;
 use crate::context::PhantomContext;

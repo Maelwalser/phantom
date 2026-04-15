@@ -7,6 +7,7 @@ description = "Coordination layer: scheduling, materialization, and ripple notif
 
 [dependencies]
 phantom-core = { workspace = true }
+phantom-git = { workspace = true }
 phantom-events = { workspace = true }
 phantom-overlay = { workspace = true }
 phantom-semantic = { workspace = true }
@@ -22,3 +23,6 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+[lints]
+workspace = true
