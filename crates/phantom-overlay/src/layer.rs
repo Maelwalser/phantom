@@ -18,6 +18,17 @@ use crate::trunk_view::{read_dir_entries, walk_files};
 use crate::types::{DirEntry, FileType, is_hidden, is_passthrough, reparent_children};
 use crate::whiteout::{INTERNAL_FILES, WHITEOUT_FILE, WhiteoutSet, load_whiteouts};
 
+/// Atomically write `data` to `target` via a temporary sibling file.
+///
+/// On Unix, `rename` within the same filesystem is atomic, so readers never
+/// see a partially-written file.
+fn atomic_write(target: &Path, data: &[u8]) -> Result<(), OverlayError> {
+    let tmp = target.with_extension("tmp");
+    fs::write(&tmp, data)?;
+    fs::rename(&tmp, target)?;
+    Ok(())
+}
+
 /// Copy-on-write overlay layer.
 ///
 /// The lower layer is the trunk working tree (read-only source of truth).
@@ -409,6 +420,9 @@ impl OverlayLayer {
     }
 
     /// Persist the whiteout set to `upper/.whiteouts.json`.
+    ///
+    /// Uses write-then-rename so a crash mid-write cannot leave a truncated
+    /// file that fails to deserialize on the next [`load_whiteouts`] call.
     pub fn persist_whiteouts(&self) -> Result<(), OverlayError> {
         let ws = WhiteoutSet {
             paths: self
@@ -419,7 +433,7 @@ impl OverlayLayer {
         };
         let json = serde_json::to_string_pretty(&ws)
             .map_err(|e| OverlayError::Serialization(e.to_string()))?;
-        fs::write(self.upper.join(WHITEOUT_FILE), json)?;
+        atomic_write(&self.upper.join(WHITEOUT_FILE), json.as_bytes())?;
         Ok(())
     }
 
