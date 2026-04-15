@@ -17,8 +17,6 @@ use phantom_session::adapter;
 use phantom_session::context_file;
 use phantom_session::post_session::PostSessionOutcome;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
-
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
@@ -239,7 +237,7 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     // Auto-destroy overlay after successful submit. On conflict or failure
     // the overlay is preserved for `phantom resolve` or manual recovery.
     if should_destroy {
-        destroy_agent_overlay(&ctx, &agent_id, &changeset_id).await;
+        super::destroy::destroy_agent_overlay(&ctx, &agent_id, &changeset_id).await;
     }
 
     result.map(|_| ())
@@ -365,55 +363,6 @@ async fn run_post_completion(
         },
     )
     .await
-}
-
-/// Destroy an agent's overlay after successful materialization.
-///
-/// Best-effort: errors are logged but not propagated, since the submission
-/// already succeeded and the overlay is just stale at this point.
-async fn destroy_agent_overlay(
-    ctx: &PhantomContext,
-    agent_id: &AgentId,
-    changeset_id: &ChangesetId,
-) {
-    // Unmount FUSE if running.
-    super::destroy::unmount_fuse(&ctx.phantom_dir, &agent_id.0);
-
-    // Remove overlay directories.
-    let mut overlays = match ctx.open_overlays_restored() {
-        Ok(o) => o,
-        Err(e) => {
-            warn!(agent = %agent_id, error = %e, "failed to open overlays for post-submit cleanup");
-            return;
-        }
-    };
-
-    if let Err(e) = overlays.destroy_overlay(agent_id) {
-        warn!(agent = %agent_id, error = %e, "failed to destroy overlay after successful submit");
-        return;
-    }
-
-    // Emit TaskDestroyed event for audit trail.
-    let events = match ctx.open_events().await {
-        Ok(e) => e,
-        Err(e) => {
-            warn!(agent = %agent_id, error = %e, "failed to open event store for TaskDestroyed event");
-            return;
-        }
-    };
-
-    let event = Event {
-        id: EventId(0),
-        timestamp: Utc::now(),
-        changeset_id: changeset_id.clone(),
-        agent_id: agent_id.clone(),
-        causal_parent: None,
-        kind: EventKind::TaskDestroyed,
-    };
-
-    if let Err(e) = events.append(event).await {
-        warn!(agent = %agent_id, error = %e, "failed to emit TaskDestroyed event");
-    }
 }
 
 /// Status of a single upstream dependency.

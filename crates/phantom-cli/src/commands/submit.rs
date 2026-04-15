@@ -8,6 +8,7 @@ use phantom_events::Projection;
 use phantom_orchestrator::materialization_service::ActiveOverlay;
 use phantom_orchestrator::materializer::{MaterializeResult, Materializer};
 use phantom_orchestrator::submit_service;
+use tracing::info;
 
 use crate::context::PhantomContext;
 
@@ -35,6 +36,23 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
                 console::style("✓").green(),
                 console::style(&changeset_id.to_string()).bold()
             );
+
+            // Auto-destroy overlay for background agents after successful submit.
+            let agent_events = events.query_by_agent(&agent_id).await?;
+            let projection = Projection::from_events(&agent_events);
+            let is_background = projection
+                .changeset(&changeset_id)
+                .is_some_and(|cs| cs.agent_pid.is_some());
+
+            if is_background {
+                info!(agent = %agent_id, "auto-destroying background agent overlay after successful submit");
+                super::destroy::destroy_agent_overlay(&ctx, &agent_id, &changeset_id).await;
+                println!(
+                    "  {} Background agent '{}' overlay cleaned up.",
+                    console::style("♻").dim(),
+                    console::style(&args.agent).bold()
+                );
+            }
         }
         None => {
             println!(

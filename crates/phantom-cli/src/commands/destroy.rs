@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
-use phantom_core::id::{AgentId, EventId};
+use phantom_core::id::{AgentId, ChangesetId, EventId};
 use phantom_core::traits::EventStore;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::context::PhantomContext;
 
@@ -100,4 +100,51 @@ pub(crate) fn unmount_fuse(phantom_dir: &std::path::Path, agent: &str) {
     }
 
     let _ = std::fs::remove_file(&pid_file);
+}
+
+/// Best-effort overlay cleanup after successful materialization.
+///
+/// Unmounts FUSE, removes overlay directories, and emits a `TaskDestroyed`
+/// event. Errors are logged but not propagated — the submission already
+/// succeeded, so the overlay is just stale at this point.
+pub(crate) async fn destroy_agent_overlay(
+    ctx: &PhantomContext,
+    agent_id: &AgentId,
+    changeset_id: &ChangesetId,
+) {
+    unmount_fuse(&ctx.phantom_dir, &agent_id.0);
+
+    let mut overlays = match ctx.open_overlays_restored() {
+        Ok(o) => o,
+        Err(e) => {
+            warn!(agent = %agent_id, error = %e, "failed to open overlays for post-submit cleanup");
+            return;
+        }
+    };
+
+    if let Err(e) = overlays.destroy_overlay(agent_id) {
+        warn!(agent = %agent_id, error = %e, "failed to destroy overlay after successful submit");
+        return;
+    }
+
+    let events = match ctx.open_events().await {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(agent = %agent_id, error = %e, "failed to open event store for TaskDestroyed event");
+            return;
+        }
+    };
+
+    let event = Event {
+        id: EventId(0),
+        timestamp: Utc::now(),
+        changeset_id: changeset_id.clone(),
+        agent_id: agent_id.clone(),
+        causal_parent: None,
+        kind: EventKind::TaskDestroyed,
+    };
+
+    if let Err(e) = events.append(event).await {
+        warn!(agent = %agent_id, error = %e, "failed to emit TaskDestroyed event");
+    }
 }

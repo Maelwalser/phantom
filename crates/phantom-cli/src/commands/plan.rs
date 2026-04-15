@@ -279,7 +279,7 @@ fn build_plan(plan_id: &PlanId, request: &str, raw: RawPlanOutput) -> Plan {
         .domains
         .into_iter()
         .map(|d| {
-            let agent_id = format!("{}-{}", plan_id, d.name);
+            let agent_id = d.name.clone();
             PlanDomain {
                 name: d.name,
                 agent_id,
@@ -738,10 +738,7 @@ mod tests {
         };
         let plan_id = PlanId("plan-20260413-143022".into());
         let plan = build_plan(&plan_id, "test", raw);
-        assert_eq!(
-            plan.domains[0].agent_id,
-            "plan-20260413-143022-rate-limiting"
-        );
+        assert_eq!(plan.domains[0].agent_id, "rate-limiting");
         assert_eq!(plan.status, PlanStatus::Draft);
     }
 

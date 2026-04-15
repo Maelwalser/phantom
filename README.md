@@ -45,10 +45,10 @@ Phantom replaces branches with **changesets** — reorderable, atomic units of w
 - **FUSE overlays** — Each agent gets an isolated copy-on-write filesystem. Reads fall through to trunk; writes are captured. No git branches, no rebasing.
 - **Event sourcing** — Every agent action is an immutable event in an append-only log. Full auditability, surgical rollback, and "what-if" replay.
 - **Live rebase** — When one agent's work is materialized, Phantom automatically rebases other agents' overlapping files at the symbol level and notifies them of trunk changes.
-- **Auto-submit and auto-materialize** — Use `--auto-submit` or `--auto-materialize` to automatically submit and merge an agent's work when the session exits.
+- **Auto-submit** — Use `--auto-submit` (or its alias `--auto-materialize`) to automatically submit and merge an agent's work when the session exits.
 - **AI-driven planning** — `phantom plan` decomposes a feature request into parallel agent tasks using an AI planner, then dispatches background agents.
 - **AI-driven conflict resolution** — `phantom resolve` launches a background AI agent with three-way conflict context to automatically resolve merge conflicts.
-- **Multi-language support** — Symbol extraction for Rust, TypeScript, JavaScript, Python, and Go (including JSX/TSX) via tree-sitter grammars.
+- **Multi-language support** — Symbol extraction for Rust, TypeScript, JavaScript, Python, Go (including JSX/TSX), plus config formats (YAML, TOML, JSON, Bash, CSS, HCL/Terraform, Dockerfile, Makefile) via tree-sitter grammars.
 - **Zero-config conflict resolution** — Disjoint symbol changes auto-merge. True conflicts (same function modified by two agents) are detected and reported clearly.
 
 ## Quick Start
@@ -67,17 +67,15 @@ phantom agent-a
 # Or launch in the background with a task description
 phantom agent-b --background --task "add rate limiting"
 
-# When done, submit and materialize
+# When done, submit (automatically merges to trunk)
 phantom sub agent-a
-phantom mat agent-a
 
 # Agent B's overlay automatically sees Agent A's changes.
 # If Agent B touched different symbols, it merges cleanly.
 phantom sub agent-b
-phantom mat agent-b
 
-# Or do it all in one shot — session exits, auto-submit and merge
-phantom agent-c --auto-materialize
+# Or auto-submit when the session exits
+phantom agent-c --auto-submit
 
 # Decompose a feature into parallel agents
 phantom plan "add caching layer"
@@ -139,8 +137,7 @@ phantom --help
 |---------|-------|-------------|
 | `phantom init` | | Initialize Phantom in the current git repository |
 | `phantom <agent>` | | Create an overlay, bind a coding session, and assign a task |
-| `phantom submit` | `sub` | Package an agent's changes into a changeset with semantic operations |
-| `phantom materialize` | `mat` | Run semantic merge and commit a changeset to trunk |
+| `phantom submit` | `sub` | Submit an agent's work: semantic merge and commit to trunk |
 | `phantom plan` | | Decompose a feature into parallel agent tasks via AI planner |
 | `phantom resolve` | `res` | Auto-resolve merge conflicts by launching a background AI agent |
 | `phantom status` | `st` | Show active overlays, pending changesets, and trunk state |
@@ -176,11 +173,8 @@ phantom agent-a
 # Background — create overlay without launching a session (--task required)
 phantom agent-b --background --task "implement caching layer"
 
-# Auto-submit when the session exits
+# Auto-submit and merge when the session exits
 phantom agent-a --auto-submit
-
-# Auto-submit AND auto-materialize when the session exits
-phantom agent-a --auto-materialize
 
 # Use a custom CLI instead of Claude Code
 phantom agent-a --command aider
@@ -195,8 +189,7 @@ phantom agent-a --no-fuse
 |------|-------------|
 | `--background` / `-b` | Create overlay without launching a session (requires `--task`) |
 | `--task` | Task description (required with `--background`, used in context file) |
-| `--auto-submit` | Automatically submit the changeset when the session exits |
-| `--auto-materialize` | Auto-submit and auto-materialize on session exit |
+| `--auto-submit` | Automatically submit and merge the changeset when the session exits (alias: `--auto-materialize`) |
 | `--command` | Custom CLI command to run instead of `claude` |
 | `--no-fuse` | Skip FUSE mounting; agent writes to the upper layer directly |
 
@@ -204,27 +197,13 @@ The agent works in `.phantom/overlays/<agent>/mount/` (FUSE merged view) or `.ph
 
 ### `phantom submit` / `sub`
 
-When an agent finishes, submit its work. Phantom parses the modified files with tree-sitter, extracts semantic operations (functions added, structs modified, imports changed), and records everything in the event log.
+Submit an agent's work and merge it to trunk in a single step. Phantom parses the modified files with tree-sitter, extracts semantic operations (functions added, structs modified, imports changed), records a changeset in the event log, and runs a three-way semantic merge against trunk.
 
 ```bash
 phantom sub agent-a
-```
-
-### `phantom materialize` / `mat`
-
-Apply a submitted changeset to trunk. Accepts either a changeset ID or an agent name (resolves to the agent's latest submitted changeset).
-
-Phantom runs a three-way semantic merge: if the trunk has advanced since the changeset's base commit, it checks for symbol-level conflicts rather than line-level conflicts.
-
-```bash
-# By changeset ID
-phantom mat cs-0001-123456
-
-# By agent name (resolves to their latest submitted changeset)
-phantom mat agent-a
 
 # With a custom commit message
-phantom mat agent-a -m "feat: add user authentication"
+phantom sub agent-a -m "feat: add user authentication"
 ```
 
 **Possible outcomes:**
@@ -248,8 +227,8 @@ phantom plan "add caching" --dry-run
 # Skip confirmation prompt
 phantom plan "add caching" -y
 
-# Don't auto-materialize (just auto-submit)
-phantom plan "add caching" --no-materialize
+# Don't auto-submit (agents wait for manual submit)
+phantom plan "add caching" --no-submit
 ```
 
 ### `phantom resolve` / `res`
@@ -267,7 +246,14 @@ Guards against infinite resolution loops — if a resolution is already in progr
 Surgically remove a changeset. Phantom marks the changeset's events as dropped and creates a git revert commit. Identifies any downstream changesets that may need re-tasking.
 
 ```bash
+# By changeset ID
 phantom rb cs-0001-123456
+
+# By agent name (interactive selection of their changesets)
+phantom rb agent-a
+
+# Interactive — menu of all materialized changesets
+phantom rb
 ```
 
 ### `phantom log` / `l`
@@ -295,6 +281,9 @@ phantom l -v
 
 # Limit results
 phantom l --limit 20
+
+# Trace causal chain from a specific event
+phantom l --trace 42
 ```
 
 Duration units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
@@ -307,6 +296,9 @@ Show recent submits and materializations.
 # Default: last 25 entries
 phantom c
 
+# Filter by agent
+phantom c agent-a
+
 # Custom limit
 phantom c -n 10
 ```
@@ -316,7 +308,11 @@ phantom c -n 10
 View the current state: active agents, pending changesets, trunk HEAD, and event count.
 
 ```bash
+# Overview of all agents
 phantom st
+
+# Detailed status for a specific agent
+phantom st agent-a
 ```
 
 ### `phantom background` / `b`
@@ -363,7 +359,7 @@ Each task binds a **coding session** to the agent's overlay. This is a core conc
 
 3. **Resume task** — Running `phantom agent-a` again detects the existing overlay, loads the saved session ID, and launches the CLI with `--resume <session-id>`. The agent picks up exactly where it left off — same conversation context, same file state.
 
-4. **Session lifecycle** — The session persists as long as the overlay exists. Submitting or materializing the changeset ends the session. Destroying the overlay (`phantom rm agent-a`) clears the session data.
+4. **Session lifecycle** — The session persists as long as the overlay exists. Submitting the changeset ends the session. Destroying the overlay (`phantom rm agent-a`) clears the session data.
 
 ### Supported CLIs
 
@@ -403,8 +399,7 @@ trunk and other agents.
 - Base commit: abc123def456
 
 ## Commands
-- `phantom submit agent-a` — submit your changes
-- `phantom materialize cs-0001-123456` — merge to trunk
+- `phantom submit agent-a` — submit your changes and merge to trunk
 - `phantom status` — view all agents and changesets
 ```
 
@@ -471,11 +466,9 @@ Phantom sits between your AI agents and the Git repository. Each agent gets an i
 
 3. **Pause / Resume** — The agent can exit the session at any time. Running `phantom agent-a` again resumes the same coding session with the same overlay state. No work is lost.
 
-4. **Submit** — `phantom sub agent-a` parses the modified files with tree-sitter, extracts what changed at the symbol level (functions added, structs modified, imports changed), and records a changeset in the event log.
+4. **Submit** — `phantom sub agent-a` parses the modified files with tree-sitter, extracts what changed at the symbol level (functions added, structs modified, imports changed), records a changeset in the event log, and runs a three-way semantic merge against trunk. If the symbols the agent touched are disjoint from what changed on trunk, it auto-merges. If the same symbol was modified by two agents, it reports a conflict.
 
-5. **Materialize** — `phantom mat agent-a` runs a three-way semantic merge against trunk. If the symbols the agent touched are disjoint from what changed on trunk, it auto-merges. If the same symbol was modified by two agents, it reports a conflict.
-
-6. **Ripple** — After materialization, Phantom performs a live rebase on other active agents whose files overlap with the materialized changes. Files that were modified by both the agent and trunk are semantically merged in place. All agents are notified of the trunk change via a notification file.
+5. **Ripple** — After materialization, Phantom performs a live rebase on other active agents whose files overlap with the materialized changes. Files that were modified by both the agent and trunk are semantically merged in place. All agents are notified of the trunk change via a notification file.
 
 ### Conflict resolution
 
@@ -516,6 +509,8 @@ phantom/
 
 Phantom extracts symbols from source files using tree-sitter grammars:
 
+**Programming Languages:**
+
 | Language | Extensions | Extracted Symbols |
 |----------|-----------|-------------------|
 | Rust | `.rs` | Functions, structs, enums, traits, impls, imports, constants, modules, tests, macros, type aliases |
@@ -524,7 +519,20 @@ Phantom extracts symbols from source files using tree-sitter grammars:
 | Python | `.py` | Functions, classes, methods, imports |
 | Go | `.go` | Functions, methods (with receiver type), structs, interfaces, type declarations, imports |
 
-Files in unsupported languages fall back to text-level three-way merge via `diffy`.
+**Config & Infrastructure Files:**
+
+| Language | Extensions / Filenames | Extracted Symbols |
+|----------|----------------------|-------------------|
+| YAML | `.yml`, `.yaml` | Top-level keys |
+| TOML | `.toml` | Top-level tables and keys |
+| JSON | `.json` | Top-level keys |
+| Bash | `.sh`, `.bash`, `.zsh` | Functions, aliases, variables |
+| CSS | `.css` | Selectors, at-rules, custom properties |
+| HCL/Terraform | `.tf`, `.hcl` | Resources, variables, outputs, modules |
+| Dockerfile | `Dockerfile` | Stages, instructions |
+| Makefile | `.mk`, `Makefile` | Targets, variables |
+
+Files without a matching grammar fall back to text-level three-way merge via `diffy`.
 
 ## Development
 
@@ -565,8 +573,8 @@ cargo test --test event_log_query           # Event log querying
 
 - [x] Core types and event store
 - [x] FUSE overlay with copy-on-write
-- [x] All CLI commands (init, task, submit, materialize, status, log, changes, rollback, destroy, background, down)
-- [x] Semantic merging (Rust, TypeScript/JavaScript, Python, Go)
+- [x] All CLI commands (init, task, submit, status, log, changes, rollback, destroy, background, down)
+- [x] Semantic merging (Rust, TypeScript/JavaScript, Python, Go, YAML, TOML, JSON, Bash, CSS, HCL, Dockerfile, Makefile)
 - [x] Integration test suite
 - [x] Session-aware task with resume support
 - [x] Auto-submit and auto-materialize flags

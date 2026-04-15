@@ -23,7 +23,7 @@ phantom init                         # Initialize in a git repo
 phantom <agent-name>                 # Create/resume agent overlay (interactive)
 phantom <agent-name> --background    # Run agent in background
 phantom plan "add caching layer"     # Decompose feature into parallel agents
-phantom submit <agent>               # Submit overlay, merge to trunk, ripple to agents
+phantom submit <agent>               # Submit overlay: semantic merge to trunk, ripple to agents
 phantom resolve <agent>              # Auto-resolve conflicts via AI agent
 phantom status                       # Show overlays, changesets, queue
 phantom log [filter]                 # Query event log (agent name or cs-id)
@@ -90,7 +90,7 @@ FUSE overlay filesystem (feature-gated: `fuse` feature on by default).
 
 ### phantom-semantic (`crates/phantom-semantic/`)
 Tree-sitter-based parsing and Weave-style entity matching.
-- `Parser`: routes files by extension to language extractors. Built-in: Rust (`.rs`), TypeScript/JavaScript (`.ts`, `.js`, `.tsx`, `.jsx`), Python (`.py`), Go (`.go`)
+- `Parser`: routes files by extension (and exact filename for `Dockerfile`, `Makefile`) to language extractors. Built-in: Rust (`.rs`), TypeScript/JavaScript (`.ts`, `.js`, `.tsx`, `.jsx`), Python (`.py`), Go (`.go`), YAML (`.yml`, `.yaml`), TOML (`.toml`), JSON (`.json`), Bash (`.sh`, `.bash`, `.zsh`), CSS (`.css`), HCL/Terraform (`.tf`, `.hcl`), Dockerfile, Makefile (`.mk`)
 - `InMemorySymbolIndex`: implements `SymbolIndex` trait
 - `SemanticMerger`: implements `SemanticAnalyzer` trait — extract symbols, diff, three-way merge
 - `diff`: entity-key-based diffing (scope + name + kind)
@@ -124,15 +124,21 @@ Pure coordination layer that composes `phantom-git`, `phantom-events`, `phantom-
 | `sqlx` (not rusqlite) | Async SQLite with compile-time query checking, WAL mode |
 | `fuser` 0.17 | Rust FUSE impl, feature-gated to allow non-Linux builds |
 | `git2` 0.20 | libgit2 bindings — used only in orchestrator and CLI |
-| `tree-sitter` 0.25 | Incremental parsing for symbol extraction |
+| `tree-sitter` 0.25 | Incremental parsing for symbol extraction (13 language grammars) |
 | `diffy` 0.4 | Text-level three-way merge fallback |
 | `blake3` 1.x | Content hashing for symbol change detection |
 | `nix` 0.30 | PTY/terminal management in session crate |
 | `dialoguer` 0.11 | Interactive CLI prompts |
+| `uuid` 1.x | UUID v7 for time-ordered changeset IDs |
+| `console` 0.15 | Terminal styling and colors in CLI output |
 
 ## CLI Architecture
 
 The CLI uses external subcommand parsing: `phantom <agent-name>` is caught by `ExternalTask` and parsed as `TaskArgs`. This means any unrecognized subcommand becomes an agent name for task creation.
+
+`PhantomContext` (in `context.rs`) locates the `.phantom/` directory and repository root by walking up from cwd. Subsystems (git, events, overlays, semantic) are opened lazily via `open_*` methods.
+
+`submit` performs both submission and materialization in a single step via `submit_service::submit_and_materialize()`. There is no separate `materialize` command.
 
 Hidden internal commands: `_fuse-mount` (FUSE daemon), `_agent-monitor` (background agent watcher).
 
@@ -142,8 +148,8 @@ Key aliases: `st` (status), `sub` (submit), `res` (resolve), `rb` (rollback), `l
 
 1. **Task creation**: `phantom <agent>` → creates overlay dirs + FUSE mount → emits `TaskCreated` event → spawns CLI session (interactive or background)
 2. **Agent work**: agent reads/writes inside FUSE overlay (upper layer captures writes, lower falls through to trunk)
-3. **Submit**: `phantom submit` → scans `modified_files()` → tree-sitter extracts symbols from base and current → diffs to `SemanticOperation` list → appends `ChangesetSubmitted` event → three-way semantic merge per file → atomic git commit → ripple check → live rebase shadowed files in other agents' uppers → write `TrunkNotification` files → emit audit events
-5. **Conflict resolution**: `phantom resolve` → finds conflicted changeset → extracts base/ours/theirs → generates conflict-specific `.phantom-task.md` → launches background AI agent
+3. **Submit + materialize**: `phantom submit` → scans `modified_files()` → tree-sitter extracts symbols from base and current → diffs to `SemanticOperation` list → appends `ChangesetSubmitted` event → three-way semantic merge per file → atomic git commit → ripple check → live rebase shadowed files in other agents' uppers → write `TrunkNotification` files → emit audit events
+4. **Conflict resolution**: `phantom resolve` → finds conflicted changeset → extracts base/ours/theirs → generates conflict-specific `.phantom-task.md` → launches background AI agent
 
 ## Coding Conventions
 
@@ -163,7 +169,7 @@ Key aliases: `st` (status), `sub` (submit), `res` (resolve), `rb` (rollback), `l
 - Event store with SQLite WAL, schema versioning, forward-compatible deserialization
 - FUSE overlay filesystem with full Filesystem trait impl (read/write/create/delete/rename/hardlink)
 - Copy-on-write layer with whiteout markers
-- Tree-sitter parsing for Rust, TypeScript/JavaScript (including JSX/TSX), Python, Go
+- Tree-sitter parsing for Rust, TypeScript/JavaScript (including JSX/TSX), Python, Go, YAML, TOML, JSON, Bash, CSS, HCL/Terraform, Dockerfile, Makefile
 - Semantic diff and three-way merge engine
 - Git operations (commit, read tree, changed files)
 - Materialization with semantic merge + conflict detection
@@ -174,7 +180,7 @@ Key aliases: `st` (status), `sub` (submit), `res` (resolve), `rb` (rollback), `l
 - Background agent execution with monitoring
 - `phantom plan` — AI-driven task decomposition into parallel agents
 - `phantom resolve` — AI-driven conflict resolution
-- All core CLI commands (init, task, submit, status, log, changes, rollback, destroy, down, background, plan, resolve)
+- All core CLI commands (init, task, submit, plan, resolve, status, log, changes, rollback, destroy, background, down)
 - Integration tests for all major scenarios
 
 ### Not Yet Implemented
@@ -190,7 +196,7 @@ Key aliases: `st` (status), `sub` (submit), `res` (resolve), `rb` (rollback), `l
 | **Changeset** | Atomic unit of work from an agent. Contains semantic operations, test results, lifecycle status. Replaces branches. |
 | **Overlay** | FUSE-mounted COW filesystem per agent. Upper = writes, lower = trunk read-through. |
 | **Trunk** | `main` branch of the underlying git repo. Single source of truth. |
-| **Submit** | Commit a changeset to trunk after semantic merge checks pass (or mark as conflicted). |
+| **Submit** | Extract semantic operations from an overlay, run semantic merge against trunk, commit if clean (or mark as conflicted), and ripple to other agents. Single CLI step. |
 | **Semantic Operation** | Structured change description: AddSymbol, ModifySymbol, DeleteSymbol, etc. |
 | **Ripple** | Post-materialization notification to active agents about trunk changes. |
 | **Live Rebase** | Auto-merge trunk changes into an agent's upper layer for shadowed files. |
