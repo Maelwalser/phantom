@@ -19,7 +19,7 @@ pub struct LogArgs {
     #[arg(long)]
     pub since: Option<String>,
     /// Maximum number of events to show
-    #[arg(long, default_value = "50")]
+    #[arg(long, default_value = "10")]
     pub limit: u64,
     /// Show full event details (agent, event kind, payload)
     #[arg(short, long)]
@@ -106,6 +106,8 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let total = events_store.count(&query).await?;
+
     let mut palette = AgentPalette::new();
     let width = ui::term_width();
 
@@ -130,7 +132,18 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
         }
     }
 
-    println!("\n{}", ui::style_dim(&format!("{} event(s)", events.len())));
+    let shown = events.len() as u64;
+    if total > shown {
+        let remaining = total - shown;
+        println!(
+            "\n{}",
+            ui::style_dim(&format!(
+                "Showing {shown} of {total} events ({remaining} more). Use --limit <n> to see more."
+            ))
+        );
+    } else {
+        println!("\n{}", ui::style_dim(&format!("{total} event(s)")));
+    }
 
     Ok(())
 }

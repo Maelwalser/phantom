@@ -134,6 +134,20 @@ impl QueryBuilder {
         let rows = query.fetch_all(pool).await?;
         rows.iter().map(row_to_event).collect()
     }
+
+    /// Execute a COUNT(*) query with the same filters (ignoring limit/order).
+    async fn fetch_count(&self, pool: &SqlitePool) -> Result<u64, EventStoreError> {
+        let where_clause = self.where_clause();
+        let sql = format!("SELECT COUNT(*) as cnt FROM events WHERE {where_clause}");
+
+        let mut query = sqlx::query_scalar::<_, i64>(&sql);
+        for param in &self.params {
+            query = query.bind(param);
+        }
+
+        let count = query.fetch_one(pool).await?;
+        Ok(count as u64)
+    }
 }
 
 /// An append-only event store backed by a SQLite database in WAL mode.
@@ -280,6 +294,45 @@ impl SqliteEventStore {
         }
 
         qb.fetch(&self.pool, q.order.as_sql(), q.limit).await
+    }
+
+    /// Count events matching the query filters (ignores limit).
+    pub async fn count(&self, q: &crate::query::EventQuery) -> Result<u64, EventStoreError> {
+        let mut qb = QueryBuilder::new();
+
+        if let Some(ref agent) = q.agent_id {
+            let p = qb.bind(agent.0.clone());
+            qb.push(format!("agent_id = {p}"));
+        }
+
+        if let Some(ref cs) = q.changeset_id {
+            let p = qb.bind(cs.0.clone());
+            qb.push(format!("changeset_id = {p}"));
+        }
+
+        if let Some(ref sym) = q.symbol_id {
+            let p = qb.bind(sym.0.clone());
+            qb.push(format!("kind LIKE '%' || {p} || '%'"));
+        }
+
+        if let Some(ref since) = q.since {
+            let p = qb.bind(since.to_rfc3339());
+            qb.push(format!("timestamp >= {p}"));
+        }
+
+        if !q.kind_prefixes.is_empty() {
+            let or_parts: Vec<String> = q
+                .kind_prefixes
+                .iter()
+                .map(|prefix| {
+                    let p = qb.bind(format!("{{\"{prefix}\""));
+                    format!("kind LIKE {p} || '%'")
+                })
+                .collect();
+            qb.push(format!("({})", or_parts.join(" OR ")));
+        }
+
+        qb.fetch_count(&self.pool).await
     }
 
     /// Return all causal descendants of the given event (including itself).
