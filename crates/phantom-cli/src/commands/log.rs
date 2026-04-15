@@ -54,8 +54,7 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
             let depth = event
                 .causal_parent
                 .and_then(|p| depths.get(&p.0).copied())
-                .map(|d| d + 1)
-                .unwrap_or(0);
+                .map_or(0, |d| d + 1);
             depths.insert(event.id.0, depth);
 
             let indent = "  ".repeat(depth);
@@ -278,9 +277,10 @@ fn event_kind_label(kind: &phantom_core::EventKind) -> &'static str {
         EventKind::TaskDestroyed => "task destroyed",
         EventKind::FileWritten { .. } => "file written",
         EventKind::FileDeleted { .. } => "file deleted",
-        EventKind::ChangesetSubmitted { .. } => "submitted",
+        EventKind::ChangesetSubmitted { .. } | EventKind::ChangesetMaterialized { .. } => {
+            "submitted"
+        }
         EventKind::ChangesetMergeChecked { .. } => "merge checked",
-        EventKind::ChangesetMaterialized { .. } => "submitted",
         EventKind::ChangesetConflicted { .. } => "conflicted",
         EventKind::ChangesetDropped { .. } => "dropped",
         EventKind::TrunkAdvanced { .. } => "trunk advanced",

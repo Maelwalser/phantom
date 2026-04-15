@@ -57,12 +57,13 @@ pub fn generate_trunk_update_md(
     let files_total = classified_files.len();
 
     for (i, (file, status)) in classified_files.iter().enumerate() {
-        let section = render_file_section(file, status.clone(), ops_by_file.get(file.as_path()), head, git);
+        let section = render_file_section(file, status, ops_by_file.get(file.as_path()), head, git);
 
         if md.len() + section.len() > BYTE_BUDGET {
             let remaining = files_total - i;
             if remaining > 0 {
-                md.push_str(&format!("\n... and {remaining} more file(s) affected.\n"));
+                use std::fmt::Write;
+                let _ = write!(md, "\n... and {remaining} more file(s) affected.\n");
             }
             break;
         }
@@ -135,7 +136,7 @@ pub fn remove_trunk_update_md(upper_dir: &Path) {
 /// Render a markdown section for a single file.
 fn render_file_section(
     file: &Path,
-    status: TrunkFileStatus,
+    status: &TrunkFileStatus,
     ops: Option<&Vec<&SemanticOperation>>,
     head: &GitOid,
     git: &GitOps,
@@ -217,6 +218,7 @@ fn line_info(byte_offset: usize, content: Option<&[u8]>) -> String {
 }
 
 /// Convert a byte offset to a 1-indexed line number.
+#[allow(clippy::naive_bytecount)]
 fn byte_offset_to_line(content: &[u8], offset: usize) -> usize {
     content[..offset.min(content.len())]
         .iter()
@@ -226,7 +228,7 @@ fn byte_offset_to_line(content: &[u8], offset: usize) -> usize {
 }
 
 /// Human-readable label for a `TrunkFileStatus`.
-fn status_label(status: TrunkFileStatus) -> &'static str {
+fn status_label(status: &TrunkFileStatus) -> &'static str {
     match status {
         TrunkFileStatus::TrunkVisible => "trunk visible -- you see the new version",
         TrunkFileStatus::Shadowed => "shadowed -- you still see your version",
@@ -318,10 +320,10 @@ mod tests {
 
     #[test]
     fn status_labels_are_readable() {
-        assert!(status_label(TrunkFileStatus::TrunkVisible).contains("trunk visible"));
-        assert!(status_label(TrunkFileStatus::Shadowed).contains("shadowed"));
-        assert!(status_label(TrunkFileStatus::RebaseMerged).contains("merged cleanly"));
-        assert!(status_label(TrunkFileStatus::RebaseConflict).contains("CONFLICT"));
+        assert!(status_label(&TrunkFileStatus::TrunkVisible).contains("trunk visible"));
+        assert!(status_label(&TrunkFileStatus::Shadowed).contains("shadowed"));
+        assert!(status_label(&TrunkFileStatus::RebaseMerged).contains("merged cleanly"));
+        assert!(status_label(&TrunkFileStatus::RebaseConflict).contains("CONFLICT"));
     }
 
     #[test]

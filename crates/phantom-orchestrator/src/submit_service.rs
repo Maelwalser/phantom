@@ -106,15 +106,14 @@ pub async fn submit_and_materialize(
         .iter()
         .rev()
         .find_map(|e| {
-            if e.changeset_id == changeset_id {
-                if let EventKind::ConflictResolutionStarted {
+            if e.changeset_id == changeset_id
+                && let EventKind::ConflictResolutionStarted {
                     new_base: Some(base),
                     ..
                 } = &e.kind
                 {
                     return Some(*base);
                 }
-            }
             None
         })
         .unwrap_or(base_commit);
@@ -141,41 +140,29 @@ pub async fn submit_and_materialize(
 
         let base_content = git.read_file_at_commit(&base_commit, file);
 
-        let ops = match base_content {
-            Ok(base) => {
-                let base_symbols = match analyzer.extract_symbols(file, &base) {
-                    Ok(syms) => syms,
-                    Err(_) => {
-                        tracing::debug!(?file, "no semantic analysis available for base");
-                        Vec::new()
-                    }
-                };
-                let current_symbols = match analyzer.extract_symbols(file, &agent_content) {
-                    Ok(syms) => syms,
-                    Err(_) => {
-                        tracing::debug!(?file, "no semantic analysis available for current");
-                        Vec::new()
-                    }
-                };
-                analyzer.diff_symbols(&base_symbols, &current_symbols)
-            }
-            Err(_) => {
-                // New file -- all symbols are additions.
-                let symbols = match analyzer.extract_symbols(file, &agent_content) {
-                    Ok(syms) => syms,
-                    Err(_) => {
-                        tracing::debug!(?file, "no semantic analysis available for new file");
-                        Vec::new()
-                    }
-                };
-                symbols
-                    .into_iter()
-                    .map(|sym| SemanticOperation::AddSymbol {
-                        file: file.clone(),
-                        symbol: sym,
-                    })
-                    .collect()
-            }
+        let ops = if let Ok(base) = base_content {
+            let base_symbols = if let Ok(syms) = analyzer.extract_symbols(file, &base) { syms } else {
+                tracing::debug!(?file, "no semantic analysis available for base");
+                Vec::new()
+            };
+            let current_symbols = if let Ok(syms) = analyzer.extract_symbols(file, &agent_content) { syms } else {
+                tracing::debug!(?file, "no semantic analysis available for current");
+                Vec::new()
+            };
+            analyzer.diff_symbols(&base_symbols, &current_symbols)
+        } else {
+            // New file -- all symbols are additions.
+            let symbols = if let Ok(syms) = analyzer.extract_symbols(file, &agent_content) { syms } else {
+                tracing::debug!(?file, "no semantic analysis available for new file");
+                Vec::new()
+            };
+            symbols
+                .into_iter()
+                .map(|sym| SemanticOperation::AddSymbol {
+                    file: file.clone(),
+                    symbol: sym,
+                })
+                .collect()
         };
 
         for op in &ops {

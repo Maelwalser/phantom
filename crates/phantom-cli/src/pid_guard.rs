@@ -79,11 +79,7 @@ pub(crate) fn is_process_alive(record: &PidRecord) -> bool {
 
     // If we have a recorded start time, verify it still matches.
     if let Some(expected) = record.start_time {
-        match read_start_time(record.pid) {
-            Some(actual) if actual == expected => true,
-            Some(_) => false, // PID reused by a different process
-            None => false,    // Process vanished between kill(0) and procfs read
-        }
+        matches!(read_start_time(record.pid), Some(actual) if actual == expected)
     } else {
         // Legacy PID file without start time — fall back to kill-only check.
         true

@@ -8,22 +8,19 @@ use phantom_core::id::{AgentId, ChangesetId, SymbolId};
 
 /// Result ordering for [`EventQuery`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum QueryOrder {
     /// Oldest first (chronological).
     Asc,
     /// Newest first.
+    #[default]
     Desc,
 }
 
-impl Default for QueryOrder {
-    fn default() -> Self {
-        Self::Desc
-    }
-}
 
 impl QueryOrder {
     /// SQL keyword for this ordering direction.
-    pub(crate) fn as_sql(&self) -> &'static str {
+    pub(crate) fn as_sql(self) -> &'static str {
         match self {
             Self::Asc => "ASC",
             Self::Desc => "DESC",

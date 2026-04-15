@@ -99,10 +99,8 @@ pub(crate) fn walk_files(dir: &Path, base: &Path) -> Result<Vec<PathBuf>, Overla
         let path = entry.path();
         if path.is_dir() {
             result.extend(walk_files(&path, base)?);
-        } else {
-            if let Ok(rel) = path.strip_prefix(base) {
-                result.push(rel.to_path_buf());
-            }
+        } else if let Ok(rel) = path.strip_prefix(base) {
+            result.push(rel.to_path_buf());
         }
     }
     Ok(result)

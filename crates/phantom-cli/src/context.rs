@@ -70,6 +70,7 @@ impl PhantomContext {
     }
 
     /// Create a new semantic merger.
+    #[allow(clippy::unused_self)]
     pub fn semantic(&self) -> SemanticMerger {
         SemanticMerger::new()
     }
@@ -128,12 +129,9 @@ fn cleanup_stale_fuse_mount(overlay_dir: &Path, agent_name: &str) {
         return;
     }
 
-    let record = match crate::pid_guard::read_pid_file(&pid_file) {
-        Some(r) => r,
-        None => {
-            let _ = std::fs::remove_file(&pid_file);
-            return;
-        }
+    let Some(record) = crate::pid_guard::read_pid_file(&pid_file) else {
+        let _ = std::fs::remove_file(&pid_file);
+        return;
     };
 
     if !crate::pid_guard::is_process_alive(&record) {
@@ -157,12 +155,9 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
         return;
     }
 
-    let record = match crate::pid_guard::read_pid_file(&pid_file) {
-        Some(r) => r,
-        None => {
-            let _ = std::fs::remove_file(&pid_file);
-            return;
-        }
+    let Some(record) = crate::pid_guard::read_pid_file(&pid_file) else {
+        let _ = std::fs::remove_file(&pid_file);
+        return;
     };
 
     if !crate::pid_guard::is_process_alive(&record) {
@@ -196,9 +191,8 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
 /// Uses simple line parsing to avoid pulling in a TOML crate.
 pub fn default_cli(phantom_dir: &Path) -> String {
     let config_path = phantom_dir.join("config.toml");
-    let content = match std::fs::read_to_string(&config_path) {
-        Ok(c) => c,
-        Err(_) => return "claude".to_string(),
+    let Ok(content) = std::fs::read_to_string(&config_path) else {
+        return "claude".to_string();
     };
 
     for line in content.lines() {

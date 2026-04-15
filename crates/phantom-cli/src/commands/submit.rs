@@ -225,7 +225,7 @@ pub(crate) async fn build_active_overlays(
                         _ => None,
                     });
             let cs_data = agent_cs.and_then(|cs_id| projection.changeset(&cs_id).cloned());
-            let agent_upper = overlays.upper_dir(&a).ok().map(|p| p.to_path_buf());
+            let agent_upper = overlays.upper_dir(&a).ok().map(std::path::Path::to_path_buf);
             match (cs_data, agent_upper) {
                 (Some(cs), Some(upper)) => Some(ActiveOverlay {
                     agent_id: a.clone(),

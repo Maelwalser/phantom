@@ -1,3 +1,5 @@
+// PTY management requires libc calls (sigaction, read, BorrowedFd).
+#![allow(unsafe_code)]
 //! Agent session lifecycle: PTY management, CLI adapters, context files, and
 //! post-session automation (submit + materialize flow).
 //!

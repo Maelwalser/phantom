@@ -36,9 +36,8 @@ async fn test_rollback_middle_changeset_replays_downstream() {
         )
         .await
         .unwrap();
-    let commit_after_001 = match r1 {
-        MaterializeResult::Success { new_commit, .. } => new_commit,
-        _ => panic!("cs-001 should succeed"),
+    let MaterializeResult::Success { new_commit: commit_after_001, .. } = r1 else {
+        panic!("cs-001 should succeed");
     };
 
     // --- Materialize cs-002: adds fn two ---
@@ -64,9 +63,8 @@ async fn test_rollback_middle_changeset_replays_downstream() {
         )
         .await
         .unwrap();
-    let commit_after_002 = match r2 {
-        MaterializeResult::Success { new_commit, .. } => new_commit,
-        _ => panic!("cs-002 should succeed"),
+    let MaterializeResult::Success { new_commit: commit_after_002, .. } = r2 else {
+        panic!("cs-002 should succeed");
     };
 
     // --- Materialize cs-003: adds fn three (independent of cs-002) ---

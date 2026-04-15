@@ -69,6 +69,7 @@ impl ConflictSpan {
     ///
     /// Computes one-indexed line numbers by counting newlines in `src`
     /// up to the range boundaries.
+    #[allow(clippy::naive_bytecount)]
     pub fn from_byte_range(src: &[u8], byte_range: Range<usize>) -> Self {
         let start_line = src[..byte_range.start]
             .iter()

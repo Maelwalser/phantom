@@ -31,10 +31,10 @@ struct Insertion {
 
 /// Find the nearest preceding sibling of `new_sym` that also exists in `base_map`,
 /// returning its entity key.  Symbols are ordered by byte offset in `source_symbols`.
-fn find_preceding_base_sibling<'a>(
+fn find_preceding_base_sibling(
     new_sym: &SymbolEntry,
     source_symbols: &[SymbolEntry],
-    base_map: &HashMap<EntityKey, &'a SymbolEntry>,
+    base_map: &HashMap<EntityKey, &SymbolEntry>,
 ) -> Option<EntityKey> {
     // Symbols in the same source file, sorted by byte offset, that appear
     // before `new_sym` and also exist in base.
@@ -61,10 +61,10 @@ fn find_preceding_base_sibling<'a>(
 
 /// Find the nearest following sibling of `new_sym` that also exists in `base_map`,
 /// returning its entity key.
-fn find_following_base_sibling<'a>(
+fn find_following_base_sibling(
     new_sym: &SymbolEntry,
     source_symbols: &[SymbolEntry],
-    base_map: &HashMap<EntityKey, &'a SymbolEntry>,
+    base_map: &HashMap<EntityKey, &SymbolEntry>,
 ) -> Option<EntityKey> {
     let mut best: Option<(&SymbolEntry, EntityKey)> = None;
     for sym in source_symbols {
@@ -209,8 +209,7 @@ pub(super) fn reconstruct_merged_file(
         // Find position hint via neighboring base symbols
         if let Some(prev_key) =
             find_preceding_base_sibling(ours_sym, ours_symbols, &base_map)
-        {
-            if let Some(&pos) = base_output_end.get(&prev_key) {
+            && let Some(&pos) = base_output_end.get(&prev_key) {
                 insertions.push(Insertion {
                     after_output_pos: pos,
                     prepend: false,
@@ -219,12 +218,10 @@ pub(super) fn reconstruct_merged_file(
                 });
                 continue;
             }
-        }
 
         if let Some(next_key) =
             find_following_base_sibling(ours_sym, ours_symbols, &base_map)
-        {
-            if let Some(&pos) = base_output_start.get(&next_key) {
+            && let Some(&pos) = base_output_start.get(&next_key) {
                 insertions.push(Insertion {
                     after_output_pos: pos,
                     prepend: true,
@@ -233,7 +230,6 @@ pub(super) fn reconstruct_merged_file(
                 });
                 continue;
             }
-        }
 
         // Fallback: append to EOF
         insertions.push(Insertion {
@@ -257,8 +253,7 @@ pub(super) fn reconstruct_merged_file(
 
         if let Some(prev_key) =
             find_preceding_base_sibling(theirs_sym, theirs_symbols, &base_map)
-        {
-            if let Some(&pos) = base_output_end.get(&prev_key) {
+            && let Some(&pos) = base_output_end.get(&prev_key) {
                 insertions.push(Insertion {
                     after_output_pos: pos,
                     prepend: false,
@@ -267,12 +262,10 @@ pub(super) fn reconstruct_merged_file(
                 });
                 continue;
             }
-        }
 
         if let Some(next_key) =
             find_following_base_sibling(theirs_sym, theirs_symbols, &base_map)
-        {
-            if let Some(&pos) = base_output_start.get(&next_key) {
+            && let Some(&pos) = base_output_start.get(&next_key) {
                 insertions.push(Insertion {
                     after_output_pos: pos,
                     prepend: true,
@@ -281,7 +274,6 @@ pub(super) fn reconstruct_merged_file(
                 });
                 continue;
             }
-        }
 
         // Fallback: append to EOF
         insertions.push(Insertion {

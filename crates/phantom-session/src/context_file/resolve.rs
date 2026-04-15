@@ -282,26 +282,24 @@ fn write_compact_conflict(
     let file_path = &conflict.detail.file;
 
     // Require all three contents and a base span.
-    let (base_content, ours_content, theirs_content) = match (
+    let (Some(base_content), Some(ours_content), Some(theirs_content)) = (
         conflict.base_content.as_deref(),
         conflict.ours_content.as_deref(),
         conflict.theirs_content.as_deref(),
-    ) {
-        (Some(b), Some(o), Some(t)) => (b, o, t),
-        _ => return false,
+    ) else {
+        return false;
     };
 
-    let base_span = match conflict.detail.base_span.as_ref() {
-        Some(s) => s,
-        None => return false,
+    let Some(base_span) = conflict.detail.base_span.as_ref() else {
+        return false;
     };
 
     // Extract symbol text from BASE.
-    let (base_symbol, base_start_line) =
-        match extract_symbol_text(base_content, base_span, file_path, parser) {
-            Some(pair) => pair,
-            None => return false,
-        };
+    let Some((base_symbol, base_start_line)) =
+        extract_symbol_text(base_content, base_span, file_path, parser)
+    else {
+        return false;
+    };
 
     // Extract symbol text from OURS and THEIRS (None = side deleted the symbol).
     let ours_symbol = conflict
@@ -372,13 +370,12 @@ fn write_compact_raw_text_conflict(
 ) -> bool {
     use std::fmt::Write;
 
-    let (base_content, ours_content, theirs_content) = match (
+    let (Some(base_content), Some(ours_content), Some(theirs_content)) = (
         conflict.base_content.as_deref(),
         conflict.ours_content.as_deref(),
         conflict.theirs_content.as_deref(),
-    ) {
-        (Some(b), Some(o), Some(t)) => (b, o, t),
-        _ => return false,
+    ) else {
+        return false;
     };
 
     if base_content.len() > MAX_DIFF_BYTE_SIZE
@@ -537,7 +534,7 @@ fn find_matching_symbol_range(
     // Use the midpoint of the BASE range to find the corresponding line, then
     // probe the same line in the target content.  This is approximate but works
     // well when the symbol hasn't been drastically moved.
-    let base_mid = (base_range.start + base_range.end) / 2;
+    let base_mid = usize::midpoint(base_range.start, base_range.end);
     let base_line = base_content[..base_mid.min(base_content.len())]
         .matches('\n')
         .count()
@@ -578,8 +575,7 @@ fn line_to_byte_offset(content: &str, line: usize) -> usize {
         .enumerate()
         .filter(|&(_, b)| *b == b'\n')
         .nth(line - 2) // line 2 starts after the 1st newline (index 0)
-        .map(|(i, _)| i + 1)
-        .unwrap_or(content.len())
+        .map_or(content.len(), |(i, _)| i + 1)
 }
 
 /// Write a single diff section (OURS or THEIRS) relative to BASE.
@@ -626,9 +622,8 @@ fn build_conflict_marker_view(
     ours: Option<&str>,
     theirs: Option<&str>,
 ) -> Option<String> {
-    let (b, o, t) = match (base, ours, theirs) {
-        (Some(b), Some(o), Some(t)) => (b, o, t),
-        _ => return None,
+    let (Some(b), Some(o), Some(t)) = (base, ours, theirs) else {
+        return None;
     };
     // diffy::MergeOptions defaults to ConflictStyle::Diff3 which emits
     // <<<<<<< ours / ||||||| original / ======= / >>>>>>> theirs markers.
@@ -684,10 +679,10 @@ fn first_divergence_offset(a: &str, b: &str) -> Option<usize> {
         .zip(b.as_bytes().iter())
         .position(|(x, y)| x != y)
         .or_else(|| {
-            if a.len() != b.len() {
-                Some(a.len().min(b.len()))
-            } else {
+            if a.len() == b.len() {
                 None
+            } else {
+                Some(a.len().min(b.len()))
             }
         })
 }
@@ -736,15 +731,13 @@ fn write_truncated(out: &mut String, text: &str, center: usize) {
     } else {
         text[raw_start..]
             .find('\n')
-            .map(|i| raw_start + i + 1)
-            .unwrap_or(raw_start)
+            .map_or(raw_start, |i| raw_start + i + 1)
     };
 
     // Snap end backward to the last line boundary.
     let end = text[..raw_end]
         .rfind('\n')
-        .map(|i| i + 1)
-        .unwrap_or(raw_end);
+        .map_or(raw_end, |i| i + 1);
 
     // Ensure we still have a non-empty window after snapping.
     let end = end.max(start);
@@ -946,7 +939,7 @@ mod tests {
         // range strictly within the function, not at the trailing newline.
         let span_of = |src: &str| {
             let start = src.find("fn ").unwrap_or(0);
-            let end = src.rfind('}').map(|p| p + 1).unwrap_or(src.len());
+            let end = src.rfind('}').map_or(src.len(), |p| p + 1);
             ConflictSpan::from_byte_range(src.as_bytes(), start..end)
         };
 
@@ -1459,7 +1452,7 @@ mod tests {
         // All 9 rules present.
         for i in 1..=9 {
             assert!(
-                content.contains(&format!("{}.", i)),
+                content.contains(&format!("{i}.")),
                 "missing rule {i}"
             );
         }

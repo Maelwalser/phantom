@@ -53,8 +53,7 @@ impl phantom_core::traits::SemanticAnalyzer for SemanticMerger {
         let file = base
             .first()
             .or(current.first())
-            .map(|e| e.file.as_path())
-            .unwrap_or(Path::new("unknown"));
+            .map_or(Path::new("unknown"), |e| e.file.as_path());
         diff::diff_symbols(base, current, file)
     }
 
@@ -93,7 +92,7 @@ impl phantom_core::traits::SemanticAnalyzer for SemanticMerger {
         }
 
         // Fallback: line-based three-way merge
-        text::text_merge(base, ours, theirs, path)
+        Ok(text::text_merge(base, ours, theirs, path))
     }
 
     fn supports_language(&self, path: &Path) -> bool {

@@ -71,7 +71,7 @@ impl Parser {
         // Fall back to extension-based lookup.
         path.extension()
             .and_then(|e| e.to_str())
-            .and_then(|ext| self.ext_to_index.get(ext).copied())
+            .and_then(|ext| self.ext_to_index.get(&ext.to_lowercase()).copied())
     }
 
     /// Parse a file and extract its symbols.
@@ -120,9 +120,8 @@ impl Parser {
     /// Returns `false` for unsupported languages (no grammar to check against).
     #[must_use]
     pub fn has_syntax_errors(&self, path: &Path, content: &[u8]) -> bool {
-        let idx = match self.resolve_index(path) {
-            Some(i) => i,
-            None => return false,
+        let Some(idx) = self.resolve_index(path) else {
+            return false;
         };
 
         let language = self.extractors[idx].language();

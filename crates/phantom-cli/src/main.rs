@@ -1,3 +1,5 @@
+// PID guard, FUSE mount, and TTY detection require libc calls.
+#![allow(unsafe_code)]
 use std::ffi::OsString;
 
 use clap::{CommandFactory, Parser};
@@ -111,7 +113,7 @@ async fn main() {
         Some(Commands::Changes(args)) => commands::changes::run(args).await,
         Some(Commands::Destroy(args)) => commands::destroy::run(args).await,
         Some(Commands::Background(args)) => commands::background::run(args).await,
-        Some(Commands::Down(args)) => commands::down::run(args).await,
+        Some(Commands::Down(args)) => commands::down::run(&args),
         Some(Commands::FuseMount(args)) => commands::fuse_mount::run(args),
         Some(Commands::AgentMonitor(args)) => commands::agent_monitor::run(args).await,
         Some(Commands::ExternalTask(ext_args)) => {
@@ -131,7 +133,7 @@ async fn main() {
 
     if let Err(e) = result {
         error!("{:#}", e);
-        eprintln!("Error: {:#}", e);
+        eprintln!("Error: {e:#}");
         std::process::exit(1);
     }
 }

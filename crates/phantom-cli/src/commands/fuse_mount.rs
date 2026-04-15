@@ -43,6 +43,7 @@ pub struct FuseMountArgs {
 /// The FUSE event loop runs on a background thread via `fuser::spawn_mount2`.
 /// The main thread waits for SIGTERM and triggers a clean unmount when received.
 /// The calling code in `task.rs` spawns this as a detached child process.
+#[allow(clippy::needless_pass_by_value)]
 pub fn run(args: FuseMountArgs) -> anyhow::Result<()> {
     #[cfg(not(target_os = "linux"))]
     {
@@ -80,8 +81,8 @@ pub fn run(args: FuseMountArgs) -> anyhow::Result<()> {
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = handle_sigterm as *const () as usize;
             sa.sa_flags = libc::SA_RESTART;
-            libc::sigemptyset(&mut sa.sa_mask);
-            libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
+            libc::sigemptyset(&raw mut sa.sa_mask);
+            libc::sigaction(libc::SIGTERM, &raw const sa, std::ptr::null_mut());
         }
 
         let layer = OverlayLayer::new(args.lower_dir.clone(), args.upper_dir.clone())

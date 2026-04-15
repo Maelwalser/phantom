@@ -3,7 +3,7 @@
 //! Separated from [`crate::store`] to isolate DDL and version tracking
 //! from connection management and query execution.
 
-use sqlx::sqlite::SqlitePool;
+use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
 
 use crate::error::EventStoreError;
 
@@ -79,7 +79,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), EventStoreEr
             // after the ALTER but before the version update.
             .or_else(|e| {
                 if e.to_string().contains("duplicate column") {
-                    Ok(Default::default())
+                    Ok(SqliteQueryResult::default())
                 } else {
                     Err(e)
                 }
@@ -123,7 +123,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), EventStoreEr
             .await
             .or_else(|e| {
                 if e.to_string().contains("duplicate column") {
-                    Ok(Default::default())
+                    Ok(SqliteQueryResult::default())
                 } else {
                     Err(e)
                 }

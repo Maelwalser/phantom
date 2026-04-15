@@ -19,7 +19,7 @@ pub struct DownArgs {
     pub force: bool,
 }
 
-pub async fn run(args: DownArgs) -> anyhow::Result<()> {
+pub fn run(args: &DownArgs) -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("failed to determine current directory")?;
     let phantom_dir = find_phantom_dir(&cwd)?;
     let overlays_dir = phantom_dir.join("overlays");
@@ -150,9 +150,8 @@ fn list_agent_dirs(overlays_dir: &Path) -> Vec<String> {
 fn is_fuse_mounted(mount_point: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
 
-    let parent = match mount_point.parent() {
-        Some(p) => p,
-        None => return false,
+    let Some(parent) = mount_point.parent() else {
+        return false;
     };
 
     match (std::fs::metadata(mount_point), std::fs::metadata(parent)) {
@@ -182,11 +181,10 @@ fn kill_agent_processes(overlays_dir: &Path, agent: &str) {
 
     for pid_name in &["agent.pid", "monitor.pid"] {
         let pid_file = overlay_dir.join(pid_name);
-        if let Some(record) = crate::pid_guard::read_pid_file(&pid_file) {
-            if crate::pid_guard::kill_process(&record, libc::SIGTERM) {
+        if let Some(record) = crate::pid_guard::read_pid_file(&pid_file)
+            && crate::pid_guard::kill_process(&record, libc::SIGTERM) {
                 info!(agent, pid = record.pid, file = *pid_name, "sent SIGTERM");
             }
-        }
         let _ = std::fs::remove_file(&pid_file);
     }
 }

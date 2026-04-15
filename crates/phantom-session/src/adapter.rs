@@ -114,7 +114,7 @@ pub trait CliAdapter {
 pub struct ClaudeAdapter;
 
 impl CliAdapter for ClaudeAdapter {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "claude"
     }
 
@@ -204,7 +204,7 @@ impl CliAdapter for ClaudeAdapter {
 pub struct GeminiAdapter;
 
 impl CliAdapter for GeminiAdapter {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "gemini"
     }
 
@@ -299,7 +299,7 @@ impl CliAdapter for GeminiAdapter {
 pub struct OpenCodeAdapter;
 
 impl CliAdapter for OpenCodeAdapter {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "opencode"
     }
 

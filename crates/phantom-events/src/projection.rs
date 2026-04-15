@@ -168,22 +168,18 @@ fn apply_events(changesets: &mut HashMap<ChangesetId, Changeset>, events: &[Even
             EventKind::TaskCreated { base_commit, task } => {
                 cs.status = ChangesetStatus::InProgress;
                 cs.base_commit = *base_commit;
-                cs.task = task.clone();
+                cs.task.clone_from(task);
                 cs.created_at = event.timestamp;
             }
             EventKind::ChangesetSubmitted { operations } => {
                 cs.status = ChangesetStatus::Submitted;
-                cs.operations = operations.clone();
+                cs.operations.clone_from(operations);
                 for op in operations {
                     let p = op.file_path().to_path_buf();
                     if !cs.files_touched.contains(&p) {
                         cs.files_touched.push(p);
                     }
                 }
-            }
-            EventKind::ChangesetMaterialized { .. } => {
-                // Status stays Submitted — materialization is an internal
-                // detail, not a separate user-facing state.
             }
             EventKind::ChangesetConflicted { .. } => {
                 cs.status = ChangesetStatus::Conflicted;
@@ -194,12 +190,7 @@ fn apply_events(changesets: &mut HashMap<ChangesetId, Changeset>, events: &[Even
             EventKind::TestsRun(result) => {
                 cs.test_result = Some(*result);
             }
-            EventKind::FileWritten { path, .. } => {
-                if !cs.files_touched.contains(path) {
-                    cs.files_touched.push(path.clone());
-                }
-            }
-            EventKind::FileDeleted { path } => {
+            EventKind::FileWritten { path, .. } | EventKind::FileDeleted { path } => {
                 if !cs.files_touched.contains(path) {
                     cs.files_touched.push(path.clone());
                 }

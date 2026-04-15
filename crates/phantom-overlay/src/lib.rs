@@ -1,3 +1,5 @@
+// FUSE filesystem requires libc calls (getuid/getgid) for file ownership.
+#![allow(unsafe_code)]
 //! `phantom-overlay` — FUSE overlay filesystem for per-agent isolation.
 //!
 //! Each agent gets a copy-on-write overlay: reads fall through to trunk,

@@ -75,9 +75,8 @@ pub fn extract_cross_domain_signatures(
             }
         };
 
-        let source = match std::str::from_utf8(&content) {
-            Ok(s) => s,
-            Err(_) => continue,
+        let Ok(source) = std::str::from_utf8(&content) else {
+            continue;
         };
 
         let lang_tag = crate::context_file::lang_from_path(rel_path);
@@ -195,9 +194,8 @@ fn strip_brace_body(source: &str) -> String {
     let mut depth: i32 = 0;
     for (i, ch) in source.char_indices() {
         match ch {
-            '(' | '[' => depth += 1,
+            '(' | '[' | '<' => depth += 1,
             ')' | ']' => depth = (depth - 1).max(0),
-            '<' => depth += 1,
             '>' if depth > 0 => depth -= 1,
             '{' if depth == 0 => {
                 let sig = source[..i].trim_end();
@@ -234,6 +232,7 @@ fn strip_python_body(source: &str) -> String {
 }
 
 /// Check if a file path looks like a test file.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn is_test_file(path: &Path) -> bool {
     let name = path
         .file_stem()

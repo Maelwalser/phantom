@@ -182,7 +182,7 @@ async fn test_event_log_queries() {
     // --- Verify event ordering is chronological by ID ---
     let all_ids: Vec<u64> = all.iter().map(|e| e.id.0).collect();
     let mut sorted_ids = all_ids.clone();
-    sorted_ids.sort();
+    sorted_ids.sort_unstable();
     assert_eq!(
         all_ids, sorted_ids,
         "events should be ordered by ID (chronological)"

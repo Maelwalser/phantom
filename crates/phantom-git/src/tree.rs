@@ -1,5 +1,7 @@
 //! Git tree building from blobs and overlay files.
 
+#![allow(clippy::unreadable_literal)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

@@ -166,7 +166,7 @@ mod tests {
     use super::*;
     use phantom_core::conflict::ConflictKind;
 
-    use crate::test_support::init_repo;
+    
 
     fn init_repo_with_commit(
         files: &[(&str, &[u8])],

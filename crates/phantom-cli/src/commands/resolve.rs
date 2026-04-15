@@ -73,7 +73,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
             EventKind::ChangesetConflicted { conflicts } => Some(conflicts.clone()),
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap_or_default();
 
     if conflict_details.is_empty() {
@@ -172,9 +172,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     events.append(event).await?;
 
     // Determine CLI to use: saved session preference or config default.
-    let cli_command = phantom_session::adapter::load_session(&ctx.phantom_dir, &agent_id)
-        .map(|s| s.cli_name)
-        .unwrap_or_else(|| crate::context::default_cli(&ctx.phantom_dir));
+    let cli_command = phantom_session::adapter::load_session(&ctx.phantom_dir, &agent_id).map_or_else(|| crate::context::default_cli(&ctx.phantom_dir), |s| s.cli_name);
 
     if groups.len() <= 1 {
         // Single file group — existing single-agent background path.
@@ -213,7 +211,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
             console::style("✓").green(),
             console::style("(background)").dim()
         );
-        super::ui::key_value("Changeset", &changeset.id.to_string());
+        super::ui::key_value("Changeset", changeset.id.to_string());
         super::ui::key_value("Log", log_file.display());
         super::ui::key_value("Overlay", work_dir.display());
     } else {
@@ -318,9 +316,8 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
 fn is_fuse_mounted(mount_point: &std::path::Path) -> bool {
     use std::os::unix::fs::MetadataExt;
 
-    let parent = match mount_point.parent() {
-        Some(p) => p,
-        None => return false,
+    let Some(parent) = mount_point.parent() else {
+        return false;
     };
 
     match (std::fs::metadata(mount_point), std::fs::metadata(parent)) {
@@ -419,7 +416,7 @@ fn spawn_parallel_resolve_agents(
         } else {
             console::style(format!(
                 "exit {}",
-                code.map(|c| c.to_string()).unwrap_or_else(|| "signal".into())
+                code.map_or_else(|| "signal".into(), |c| c.to_string())
             ))
             .red()
             .to_string()

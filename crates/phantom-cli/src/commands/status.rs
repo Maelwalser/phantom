@@ -147,8 +147,7 @@ async fn run_summary(
                     .strip_prefix(&format!("{plan_prefix}-"))
                     .unwrap_or(&agent.0);
                 println!(
-                    "    {indicator} {domain_name:<20} {state_text:<12} {}",
-                    status
+                    "    {indicator} {domain_name:<20} {state_text:<12} {status}"
                 );
             }
             println!();
@@ -225,8 +224,7 @@ async fn run_summary(
         );
         for (agent_id, file_count) in &pending_overlays {
             println!(
-                "  {:<14} {:>5}",
-                agent_id, file_count,
+                "  {agent_id:<14} {file_count:>5}",
             );
         }
     }
@@ -249,7 +247,7 @@ async fn run_summary(
                 cs.id,
                 cs.agent_id,
                 cs.files_touched.len(),
-                ui::status_label(&cs.status),
+                ui::status_label(cs.status),
             );
         }
         println!();
@@ -298,13 +296,13 @@ async fn run_detailed(
     let changeset = projection.changeset(&changeset_id);
 
     ui::key_value("Agent", agent_name);
-    ui::key_value("Changeset", &changeset_id.to_string());
+    ui::key_value("Changeset", changeset_id.to_string());
     if !task.is_empty() {
         ui::key_value("Task", task);
     }
 
     if let Some(cs) = changeset {
-        let status_styled = ui::status_label(&cs.status);
+        let status_styled = ui::status_label(cs.status);
         println!(
             "  {}  {status_styled}",
             console::Style::new().dim().apply_to(format!("{:<12}", "Status"))
@@ -443,9 +441,7 @@ fn format_run_state_long(state: &AgentRunState) -> String {
         AgentRunState::Failed { status } => {
             if let Some(s) = status {
                 let code = s
-                    .exit_code
-                    .map(|c| format!("exit code {c}"))
-                    .unwrap_or_else(|| "killed by signal".into());
+                    .exit_code.map_or_else(|| "killed by signal".into(), |c| format!("exit code {c}"));
                 let err = s
                     .error
                     .as_deref()
@@ -500,7 +496,7 @@ fn extract_plan_prefix(agent_id: &str) -> Option<String> {
 fn latest_changeset_status(projection: &Projection, agent_id: &AgentId) -> String {
     let changesets = projection.changesets_for_agent(agent_id);
     match changesets.first() {
-        Some(cs) => format!("{}", ui::status_label(&cs.status)),
+        Some(cs) => format!("{}", ui::status_label(cs.status)),
         None => format!("{}", ui::style_dim("no changeset")),
     }
 }

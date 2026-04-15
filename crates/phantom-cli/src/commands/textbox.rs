@@ -138,8 +138,12 @@ impl EditorState {
         }
     }
 
-    fn to_string(&self) -> String {
-        self.lines.join("\n")
+}
+
+impl std::fmt::Display for EditorState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = self.lines.join("\n");
+        f.write_str(&s)
     }
 }
 

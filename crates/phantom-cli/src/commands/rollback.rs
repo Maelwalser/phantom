@@ -32,10 +32,10 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     match args.target {
         None => run_interactive(&ctx, &events).await?,
         Some(ref target) if target.starts_with("cs-") => {
-            rollback_single(&ctx, &events, &ChangesetId(target.clone())).await?
+            rollback_single(&ctx, &events, &ChangesetId(target.clone())).await?;
         }
         Some(agent_name) => {
-            run_interactive_for_agent(&ctx, &events, &AgentId(agent_name)).await?
+            run_interactive_for_agent(&ctx, &events, &AgentId(agent_name)).await?;
         }
     }
 
@@ -143,7 +143,7 @@ async fn run_interactive(ctx: &PhantomContext, events: &SqliteEventStore) -> any
         .iter()
         .map(|id| match projection.changeset(id) {
             Some(cs) => format_menu_item(id, cs),
-            None => format!("{}", id),
+            None => format!("{id}"),
         })
         .collect();
 

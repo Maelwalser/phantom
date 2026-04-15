@@ -198,7 +198,11 @@ impl OverlayLayer {
 
         let upper_path = self.upper.join(rel_path);
 
-        if !upper_path.exists() {
+        if upper_path.exists() {
+            // File already in upper layer — truncate in place.
+            let file = OpenOptions::new().write(true).open(&upper_path)?;
+            file.set_len(new_size)?;
+        } else {
             // File only exists in the lower layer — COW copy to upper before truncating.
             let lower_path = self.lower_path().join(rel_path);
             let is_whiteout = self.whiteouts.read().unwrap().contains(rel_path);
@@ -227,10 +231,6 @@ impl OverlayLayer {
                 let file = fs::File::create(&upper_path)?;
                 file.set_len(new_size)?;
             }
-        } else {
-            // File already in upper layer — truncate in place.
-            let file = OpenOptions::new().write(true).open(&upper_path)?;
-            file.set_len(new_size)?;
         }
 
         if self.whiteouts.write().unwrap().remove(rel_path) {
@@ -1246,12 +1246,12 @@ mod tests {
 
     #[test]
     fn rename_within_passthrough() {
-        let (lower, _upper) = setup();
+        let (lower, upper) = setup();
         fs::create_dir_all(lower.path().join(".git/refs")).unwrap();
         fs::write(lower.path().join(".git/refs/old"), b"ref").unwrap();
 
         let layer =
-            OverlayLayer::new(lower.path().to_path_buf(), _upper.path().to_path_buf()).unwrap();
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer
             .rename_file(Path::new(".git/refs/old"), Path::new(".git/refs/new"))
             .unwrap();

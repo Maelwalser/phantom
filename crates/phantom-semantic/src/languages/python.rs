@@ -44,10 +44,10 @@ fn extract_py_node(
         "function_definition" => {
             if let Some(name) = child_field_text(node, "name", source) {
                 let scope = build_scope(scope_parts, "module");
-                let sym_kind = if !scope_parts.is_empty() {
-                    SymbolKind::Method
-                } else {
+                let sym_kind = if scope_parts.is_empty() {
                     SymbolKind::Function
+                } else {
+                    SymbolKind::Method
                 };
                 push_symbol(symbols, &scope, &name, sym_kind, node, source, file_path);
             }

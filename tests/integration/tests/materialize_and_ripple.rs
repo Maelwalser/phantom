@@ -110,7 +110,7 @@ async fn test_overlay_lower_layer_reflects_new_trunk() {
 
     // Create an overlay layer for agent-b pointing at current trunk.
     let upper_dir = tempfile::TempDir::new().unwrap();
-    let mut layer = OverlayLayer::new(trunk_path.clone(), upper_dir.path().to_path_buf())
+    let layer = OverlayLayer::new(trunk_path.clone(), upper_dir.path().to_path_buf())
         .expect("failed to create overlay");
 
     // Agent-b can see the original file via lower layer.

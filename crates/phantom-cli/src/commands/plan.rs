@@ -51,7 +51,7 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     let events = ctx.open_events().await?;
 
     // Step 1: Generate plan via AI planner.
-    println!("Planning... analyzing codebase for: {:?}", description);
+    println!("Planning... analyzing codebase for: {description:?}");
     println!();
 
     let raw_output = run_planner(&ctx.repo_root, &ctx.phantom_dir, &description)?;
@@ -136,7 +136,7 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
-        changeset_id: ChangesetId(format!("plan-{}", plan_id)),
+        changeset_id: ChangesetId(format!("plan-{plan_id}")),
         agent_id: AgentId("phantom-planner".into()),
         causal_parent: None,
         kind: EventKind::PlanCreated {
@@ -319,7 +319,7 @@ fn display_plan(plan: &Plan) {
 
         if max_wave > 0 {
             if wave == 0 {
-                println!("  Wave {} (immediate):", wave);
+                println!("  Wave {wave} (immediate):");
             } else {
                 let after: Vec<&str> = domains_in_wave
                     .iter()
@@ -589,18 +589,16 @@ fn spawn_fuse_if_available(
     mount_point: &Path,
     upper_dir: &Path,
 ) -> bool {
-    let phantom_bin = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(_) => return false,
+    let Ok(phantom_bin) = std::env::current_exe() else {
+        return false;
     };
 
     let overlay_root = phantom_dir.join("overlays").join(agent);
     let pid_file = overlay_root.join("fuse.pid");
     let log_file = overlay_root.join("fuse.log");
 
-    let log_handle = match std::fs::File::create(&log_file) {
-        Ok(h) => h,
-        Err(_) => return false,
+    let Ok(log_handle) = std::fs::File::create(&log_file) else {
+        return false;
     };
 
     let child = std::process::Command::new(&phantom_bin)
@@ -618,9 +616,8 @@ fn spawn_fuse_if_available(
         .stderr(log_handle)
         .spawn();
 
-    let child = match child {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Ok(child) = child else {
+        return false;
     };
 
     let _ = crate::pid_guard::write_pid_file(&pid_file, child.id() as i32);
@@ -633,9 +630,8 @@ fn spawn_fuse_if_available(
 fn wait_for_mount(mount_point: &Path, timeout: std::time::Duration) -> bool {
     use std::os::unix::fs::MetadataExt;
 
-    let parent = match mount_point.parent() {
-        Some(p) => p,
-        None => return false,
+    let Some(parent) = mount_point.parent() else {
+        return false;
     };
     let start = std::time::Instant::now();
 
@@ -720,7 +716,7 @@ mod tests {
             files_not_to_modify: vec![],
             requirements: vec![],
             verification: vec![],
-            depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
+            depends_on: depends_on.iter().map(std::string::ToString::to_string).collect(),
         }
     }
 

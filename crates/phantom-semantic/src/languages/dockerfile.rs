@@ -42,9 +42,8 @@ impl LanguageExtractor for DockerfileExtractor {
         source: &[u8],
         file_path: &Path,
     ) -> Vec<SymbolEntry> {
-        let text = match std::str::from_utf8(source) {
-            Ok(t) => t,
-            Err(_) => return Vec::new(),
+        let Ok(text) = std::str::from_utf8(source) else {
+            return Vec::new();
         };
         extract_dockerfile_symbols(text, source, file_path)
     }
@@ -71,36 +70,33 @@ fn extract_dockerfile_symbols(
 
         // Build a fake node-like span by slicing source directly.
         // We use push_symbol_raw to avoid needing a tree-sitter Node.
-        match keyword.as_str() {
-            "FROM" => {
-                let stage_name = parse_from_stage(&instr.full_line);
-                current_stage = stage_name.clone();
-                directive_idx = 0;
-                push_symbol_raw(
-                    &mut symbols,
-                    "dockerfile",
-                    &stage_name,
-                    SymbolKind::Section,
-                    start,
-                    end,
-                    source,
-                    file_path,
-                );
-            }
-            _ => {
-                let name = format!("{}_{}", keyword, directive_idx);
-                directive_idx += 1;
-                push_symbol_raw(
-                    &mut symbols,
-                    &current_stage,
-                    &name,
-                    SymbolKind::Directive,
-                    start,
-                    end,
-                    source,
-                    file_path,
-                );
-            }
+        if keyword.as_str() == "FROM" {
+            let stage_name = parse_from_stage(&instr.full_line);
+            current_stage.clone_from(&stage_name);
+            directive_idx = 0;
+            push_symbol_raw(
+                &mut symbols,
+                "dockerfile",
+                &stage_name,
+                SymbolKind::Section,
+                start,
+                end,
+                source,
+                file_path,
+            );
+        } else {
+            let name = format!("{keyword}_{directive_idx}");
+            directive_idx += 1;
+            push_symbol_raw(
+                &mut symbols,
+                &current_stage,
+                &name,
+                SymbolKind::Directive,
+                start,
+                end,
+                source,
+                file_path,
+            );
         }
     }
     symbols

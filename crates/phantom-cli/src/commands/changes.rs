@@ -92,13 +92,10 @@ fn format_change(
                 commit.summary().map(String::from)
             });
 
-            let detail = match message {
-                Some(msg) => msg,
-                None => {
-                    let hex = new_commit.to_hex();
-                    let short = &hex[..12.min(hex.len())];
-                    format!("commit {short}")
-                }
+            let detail = if let Some(msg) = message { msg } else {
+                let hex = new_commit.to_hex();
+                let short = &hex[..12.min(hex.len())];
+                format!("commit {short}")
             };
             (console::style("SUBMITTED").green(), detail)
         }

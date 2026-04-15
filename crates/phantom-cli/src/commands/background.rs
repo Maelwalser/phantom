@@ -161,8 +161,9 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
         let run_state = status::read_agent_run_state(&ctx.phantom_dir, &agent.0);
 
         match &run_state {
-            AgentRunState::Running { .. } => running += 1,
-            AgentRunState::WaitingForDependencies { .. } => running += 1,
+            AgentRunState::Running { .. } | AgentRunState::WaitingForDependencies { .. } => {
+                running += 1;
+            }
             AgentRunState::Finished => finished += 1,
             AgentRunState::Failed { .. } => failed += 1,
             AgentRunState::Idle => idle += 1,

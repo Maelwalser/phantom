@@ -260,20 +260,16 @@ mod inner {
 
             // Snapshot the directory listing at open time so paginated readdir
             // calls use collision-free sequential offsets.
-            let entries = match self.layer.read_dir(&path) {
-                Ok(e) => e,
-                Err(_) => {
-                    reply.error(Errno::ENOENT);
-                    return;
-                }
+            let Ok(entries) = self.layer.read_dir(&path) else {
+                reply.error(Errno::ENOENT);
+                return;
             };
 
             let parent_ino = if ino.0 == 1 {
                 1
             } else {
                 path.parent()
-                    .map(|p| self.inodes.get_or_create_inode(&p.to_path_buf()))
-                    .unwrap_or(1)
+                    .map_or(1, |p| self.inodes.get_or_create_inode(&p.to_path_buf()))
             };
 
             let mut all_entries: Vec<(u64, FileType, String)> = vec![
@@ -357,20 +353,14 @@ mod inner {
             let truncate = raw & libc::O_TRUNC != 0;
 
             let real_path = if writable {
-                match self.layer.ensure_upper_copy(&path) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        reply.error(Errno::ENOENT);
-                        return;
-                    }
+                if let Ok(p) = self.layer.ensure_upper_copy(&path) { p } else {
+                    reply.error(Errno::ENOENT);
+                    return;
                 }
             } else {
-                match self.layer.resolve_path(&path) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        reply.error(Errno::ENOENT);
-                        return;
-                    }
+                if let Ok(p) = self.layer.resolve_path(&path) { p } else {
+                    reply.error(Errno::ENOENT);
+                    return;
                 }
             };
 

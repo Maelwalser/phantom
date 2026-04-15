@@ -100,7 +100,7 @@ pub fn key_value(key: &str, value: impl std::fmt::Display) {
 // ── Changeset status styling ─────────────────────────────────────────
 
 /// Return a colored, human-readable label for a changeset status.
-pub fn status_label(status: &ChangesetStatus) -> console::StyledObject<&'static str> {
+pub fn status_label(status: ChangesetStatus) -> console::StyledObject<&'static str> {
     match status {
         ChangesetStatus::InProgress => style("in progress").dim(),
         ChangesetStatus::Submitted => style("submitted").green(),

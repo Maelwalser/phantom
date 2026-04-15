@@ -188,7 +188,7 @@ pub(super) fn semantic_merge(
             ?path,
             "semantic merge produced invalid syntax, falling back to text merge"
         );
-        return text_merge(base, ours, theirs, path);
+        return Ok(text_merge(base, ours, theirs, path));
     }
 
     Ok(MergeResult::Clean(merged))

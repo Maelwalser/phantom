@@ -92,9 +92,9 @@ impl SigactionGuard {
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = handle_sigint as *const () as usize;
             sa.sa_flags = libc::SA_RESTART;
-            libc::sigemptyset(&mut sa.sa_mask);
+            libc::sigemptyset(&raw mut sa.sa_mask);
             let mut old: libc::sigaction = std::mem::zeroed();
-            libc::sigaction(libc::SIGINT, &sa, &mut old);
+            libc::sigaction(libc::SIGINT, &raw const sa, &raw mut old);
             old
         };
         SIGINT_RECEIVED.store(false, Ordering::Release);
@@ -105,7 +105,7 @@ impl SigactionGuard {
 impl Drop for SigactionGuard {
     fn drop(&mut self) {
         unsafe {
-            libc::sigaction(libc::SIGINT, &self.old, std::ptr::null_mut());
+            libc::sigaction(libc::SIGINT, &raw const self.old, std::ptr::null_mut());
         }
     }
 }
@@ -180,8 +180,7 @@ fn nb_write_all(fd: RawFd, shutdown_fd: RawFd, data: &[u8]) -> bool {
             PollFd::new(shutdown_borrow, PollFlags::POLLIN),
         ];
         match nix::poll::poll(&mut fds, PollTimeout::from(5000u16)) {
-            Ok(0) => continue,
-            Err(nix::errno::Errno::EINTR) => continue,
+            Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
             Err(_) => return false,
             Ok(_) => {}
         }
@@ -265,7 +264,7 @@ pub fn spawn_with_pty(
     // The child process (Claude Code) handles Ctrl+C itself via the PTY.
     // We only need to survive SIGINT so we can clean up the terminal.
     // The RAII guard restores the previous handler on drop (including panics).
-    let _sigint_guard = SigactionGuard::install();
+    let sigint_guard = SigactionGuard::install();
 
     // 4. Spawn the child process.
     let child = ChildGuard::new(cmd.spawn().with_context(|| {
@@ -323,8 +322,7 @@ pub fn spawn_with_pty(
             ];
 
             match nix::poll::poll(&mut fds, PollTimeout::NONE) {
-                Ok(0) => continue,
-                Err(nix::errno::Errno::EINTR) => continue,
+                Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
                 Err(_) => break,
                 Ok(_) => {}
             }
@@ -392,8 +390,7 @@ pub fn spawn_with_pty(
             ];
 
             match nix::poll::poll(&mut fds, PollTimeout::NONE) {
-                Ok(0) => continue,
-                Err(nix::errno::Errno::EINTR) => continue,
+                Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
                 Err(_) => break,
                 Ok(_) => {}
             }
@@ -480,7 +477,7 @@ pub fn spawn_with_pty(
     //    Both are RAII guards — drop order is reverse declaration order, but
     //    we drop explicitly here for clarity: terminal first, then signal handler.
     drop(termios_guard);
-    drop(_sigint_guard);
+    drop(sigint_guard);
 
     // Unmask SIGINT.
     let _ = nix::sys::signal::sigprocmask(SigmaskHow::SIG_SETMASK, Some(&old_sigmask), None);

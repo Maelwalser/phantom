@@ -160,7 +160,7 @@ impl Materializer {
         let agent_ops_by_file = group_ops_by_file(&changeset.operations);
 
         for file in &changeset.files_touched {
-            self.validate_path(file, ctx.trunk_path)?;
+            Self::validate_path(file, ctx.trunk_path)?;
 
             let agent_file_ops = agent_ops_by_file.get(file);
             match self.merge_single_file(file, changeset, ctx, agent_file_ops)? {
@@ -369,7 +369,7 @@ impl Materializer {
     }
 
     /// Validate that a relative path does not escape the trunk directory.
-    fn validate_path(&self, file: &Path, trunk_path: &Path) -> Result<(), OrchestratorError> {
+    fn validate_path(file: &Path, trunk_path: &Path) -> Result<(), OrchestratorError> {
         // Reject absolute paths — joining an absolute path replaces the base entirely
         if file.is_absolute() {
             return Err(OrchestratorError::MaterializationFailed(format!(

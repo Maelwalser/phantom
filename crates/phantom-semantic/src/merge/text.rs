@@ -3,7 +3,6 @@
 use std::path::Path;
 
 use phantom_core::conflict::{ConflictDetail, ConflictKind};
-use phantom_core::error::CoreError;
 use phantom_core::id::ChangesetId;
 use phantom_core::is_binary_or_non_utf8;
 use phantom_core::traits::MergeResult;
@@ -17,10 +16,10 @@ pub(super) fn text_merge(
     ours: &[u8],
     theirs: &[u8],
     path: &Path,
-) -> Result<MergeResult, CoreError> {
+) -> MergeResult {
     // Reject binary or non-UTF-8 content to prevent silent data corruption.
     if is_binary_or_non_utf8(base) || is_binary_or_non_utf8(ours) || is_binary_or_non_utf8(theirs) {
-        return Ok(MergeResult::Conflict(vec![ConflictDetail {
+        return MergeResult::Conflict(vec![ConflictDetail {
             kind: ConflictKind::BinaryFile,
             file: path.to_path_buf(),
             symbol_id: None,
@@ -30,7 +29,7 @@ pub(super) fn text_merge(
             ours_span: None,
             theirs_span: None,
             base_span: None,
-        }]));
+        }]);
     }
 
     // Safe: all three buffers validated as UTF-8 above.
@@ -39,8 +38,8 @@ pub(super) fn text_merge(
     let theirs_str = std::str::from_utf8(theirs).unwrap();
 
     match diffy::merge(base_str, ours_str, theirs_str) {
-        Ok(merged) => Ok(MergeResult::Clean(merged.into_bytes())),
-        Err(_conflict_text) => Ok(MergeResult::Conflict(vec![ConflictDetail {
+        Ok(merged) => MergeResult::Clean(merged.into_bytes()),
+        Err(_conflict_text) => MergeResult::Conflict(vec![ConflictDetail {
             kind: ConflictKind::RawTextConflict,
             file: path.to_path_buf(),
             symbol_id: None,
@@ -50,7 +49,7 @@ pub(super) fn text_merge(
             ours_span: None,
             theirs_span: None,
             base_span: None,
-        }])),
+        }]),
     }
 }
 
@@ -64,7 +63,7 @@ mod tests {
         let ours = b"line1\x00binary\nline2\n";
         let theirs = b"line1\nline2\nline3\n";
 
-        let result = text_merge(base, ours, theirs, Path::new("data.bin")).unwrap();
+        let result = text_merge(base, ours, theirs, Path::new("data.bin"));
 
         match result {
             MergeResult::Conflict(conflicts) => {
@@ -81,7 +80,7 @@ mod tests {
         let ours = b"\xff\xfe invalid utf8\n";
         let theirs = b"also valid\n";
 
-        let result = text_merge(base, ours, theirs, Path::new("encoded.txt")).unwrap();
+        let result = text_merge(base, ours, theirs, Path::new("encoded.txt"));
 
         match result {
             MergeResult::Conflict(conflicts) => {
@@ -98,7 +97,7 @@ mod tests {
         let ours = b"line1\nmodified\nline3\n";
         let theirs = b"line1\nline2\nline3\nline4\n";
 
-        let result = text_merge(base, ours, theirs, Path::new("notes.txt")).unwrap();
+        let result = text_merge(base, ours, theirs, Path::new("notes.txt"));
 
         match result {
             MergeResult::Clean(merged) => {

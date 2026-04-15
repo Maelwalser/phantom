@@ -295,7 +295,7 @@ async fn run_post_completion(
 
     // Record completion event.
     let causal_parent = events
-        .latest_event_for_changeset(&changeset_id)
+        .latest_event_for_changeset(changeset_id)
         .await
         .unwrap_or(None);
     let event = Event {
@@ -314,9 +314,7 @@ async fn run_post_completion(
     if !success {
         anyhow::bail!(
             "background agent exited with code {}",
-            exit_code
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signal".into())
+            exit_code.map_or_else(|| "signal".into(), |c| c.to_string())
         );
     }
 
@@ -410,14 +408,12 @@ async fn check_upstream_status(
             }
             EventKind::ChangesetConflicted { .. } => {
                 return Ok(DepStatus::Failed(format!(
-                    "upstream '{}' has merge conflicts",
-                    upstream
+                    "upstream '{upstream}' has merge conflicts"
                 )));
             }
             EventKind::ChangesetDropped { reason } => {
                 return Ok(DepStatus::Failed(format!(
-                    "upstream '{}' was dropped: {reason}",
-                    upstream
+                    "upstream '{upstream}' was dropped: {reason}"
                 )));
             }
             EventKind::AgentCompleted {
@@ -429,8 +425,7 @@ async fn check_upstream_status(
                         .map(|c| c.to_string())
                         .unwrap_or_else(|| "signal".into());
                     return Ok(DepStatus::Failed(format!(
-                        "upstream '{}' failed with exit code {code}",
-                        upstream
+                        "upstream '{upstream}' failed with exit code {code}"
                     )));
                 }
                 // Agent completed successfully but hasn't materialized yet —
@@ -501,8 +496,7 @@ async fn wait_for_dependencies(
                 DepStatus::Materialized(_) => {} // satisfied
                 DepStatus::Failed(reason) => {
                     anyhow::bail!(
-                        "dependency failed, cannot start agent '{}': {reason}",
-                        agent_id
+                        "dependency failed, cannot start agent '{agent_id}': {reason}"
                     );
                 }
                 DepStatus::Pending => {

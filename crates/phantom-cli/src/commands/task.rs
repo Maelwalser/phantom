@@ -201,7 +201,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             console::style(&args.agent).bold(),
             console::style("(background)").dim()
         );
-        super::ui::key_value("Changeset", &changeset_id.to_string());
+        super::ui::key_value("Changeset", changeset_id.to_string());
         super::ui::key_value("Task", task);
         super::ui::key_value("Log", log_file.display());
         super::ui::key_value("Overlay", work_dir.display());
@@ -234,7 +234,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
                 console::style(&args.agent).bold(),
                 console::style("tasked").green()
             );
-            super::ui::key_value("Changeset", &changeset_id.to_string());
+            super::ui::key_value("Changeset", changeset_id.to_string());
             super::ui::key_value("Overlay", work_dir.display());
             super::ui::key_value("Base", console::style(&base_short).cyan());
             if fuse_mounted {
@@ -389,8 +389,7 @@ async fn recover_changeset_from_events(
     }
 
     anyhow::bail!(
-        "overlay exists for agent '{}' but no TaskCreated event found in the event log",
-        agent_id
+        "overlay exists for agent '{agent_id}' but no TaskCreated event found in the event log"
     )
 }
 
@@ -526,9 +525,8 @@ fn has_background_agent(phantom_dir: &Path, agent: &str) -> bool {
 fn is_fuse_mounted(mount_point: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
 
-    let parent = match mount_point.parent() {
-        Some(p) => p,
-        None => return false,
+    let Some(parent) = mount_point.parent() else {
+        return false;
     };
 
     match (std::fs::metadata(mount_point), std::fs::metadata(parent)) {

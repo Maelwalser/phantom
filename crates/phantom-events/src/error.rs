@@ -41,7 +41,6 @@ impl From<EventStoreError> for CoreError {
             EventStoreError::Serialization(_) | EventStoreError::InvalidTimestamp(..) => {
                 CoreError::Serialization(err.to_string())
             }
-            EventStoreError::SchemaMismatch { .. } => CoreError::Storage(err.to_string()),
             _ => CoreError::Storage(err.to_string()),
         }
     }

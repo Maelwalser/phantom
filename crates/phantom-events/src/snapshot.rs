@@ -59,23 +59,20 @@ impl<'a> SnapshotManager<'a> {
     pub async fn build_projection(&self) -> Result<Projection, EventStoreError> {
         let snapshot = self.load_latest().await?;
 
-        let (projection, tail_len) = match snapshot {
-            Some(snap) => {
-                let tail = self.store.query_after_id(snap.snapshot_at).await?;
-                let tail_len = tail.len() as u64;
-                debug!(
-                    snapshot_at = snap.snapshot_at.0,
-                    tail_events = tail_len,
-                    "loaded projection from snapshot"
-                );
-                (Projection::from_snapshot(snap.changesets, &tail), tail_len)
-            }
-            None => {
-                let all = self.store.query_all_events().await?;
-                let len = all.len() as u64;
-                debug!(total_events = len, "full projection replay (no snapshot)");
-                (Projection::from_events(&all), len)
-            }
+        let (projection, tail_len) = if let Some(snap) = snapshot {
+            let tail = self.store.query_after_id(snap.snapshot_at).await?;
+            let tail_len = tail.len() as u64;
+            debug!(
+                snapshot_at = snap.snapshot_at.0,
+                tail_events = tail_len,
+                "loaded projection from snapshot"
+            );
+            (Projection::from_snapshot(snap.changesets, &tail), tail_len)
+        } else {
+            let all = self.store.query_all_events().await?;
+            let len = all.len() as u64;
+            debug!(total_events = len, "full projection replay (no snapshot)");
+            (Projection::from_events(&all), len)
         };
 
         // Auto-save a new snapshot if we replayed enough events.
