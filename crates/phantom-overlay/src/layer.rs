@@ -10,6 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Read as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use tracing::{debug, trace, warn};
 
@@ -35,10 +36,15 @@ fn atomic_write(target: &Path, data: &[u8]) -> Result<(), OverlayError> {
 /// The upper layer is the per-agent write directory. Deleted files from the
 /// lower layer are tracked in a whiteout set so reads correctly report them
 /// as absent.
+///
+/// Uses interior mutability for thread safety: the whiteout set and lower
+/// path are behind fine-grained `RwLock`s, allowing concurrent read
+/// operations while mutations only briefly lock the mutable state (never
+/// during slow I/O like COW copies).
 pub struct OverlayLayer {
-    lower: PathBuf,
+    lower: RwLock<PathBuf>,
     upper: PathBuf,
-    whiteouts: HashSet<PathBuf>,
+    whiteouts: RwLock<HashSet<PathBuf>>,
 }
 
 /// Result of classifying a relative path through the overlay layers.
@@ -74,10 +80,15 @@ impl OverlayLayer {
         );
 
         Ok(Self {
-            lower,
+            lower: RwLock::new(lower),
             upper,
-            whiteouts,
+            whiteouts: RwLock::new(whiteouts),
         })
+    }
+
+    /// Read the lower path. Helper to reduce lock boilerplate.
+    fn lower_path(&self) -> PathBuf {
+        self.lower.read().unwrap().clone()
     }
 
     /// Classify a relative path through the overlay layers.
@@ -90,8 +101,10 @@ impl OverlayLayer {
             return ResolvedPath::NotFound;
         }
 
+        let lower = self.lower_path();
+
         if is_passthrough(rel_path) {
-            let lower_path = self.lower.join(rel_path);
+            let lower_path = lower.join(rel_path);
             return if lower_path.exists() {
                 ResolvedPath::Passthrough(lower_path)
             } else {
@@ -99,7 +112,7 @@ impl OverlayLayer {
             };
         }
 
-        if self.whiteouts.contains(rel_path) {
+        if self.whiteouts.read().unwrap().contains(rel_path) {
             return ResolvedPath::NotFound;
         }
 
@@ -108,7 +121,7 @@ impl OverlayLayer {
             return ResolvedPath::Upper(upper_path);
         }
 
-        let lower_path = self.lower.join(rel_path);
+        let lower_path = lower.join(rel_path);
         if lower_path.exists() {
             return ResolvedPath::Lower(lower_path);
         }
@@ -142,9 +155,9 @@ impl OverlayLayer {
     ///
     /// Creates parent directories as needed. Automatically removes the path
     /// from the whiteout set if it was previously deleted.
-    pub fn write_file(&mut self, rel_path: &Path, data: &[u8]) -> Result<(), OverlayError> {
+    pub fn write_file(&self, rel_path: &Path, data: &[u8]) -> Result<(), OverlayError> {
         if is_passthrough(rel_path) {
-            let lower_path = self.lower.join(rel_path);
+            let lower_path = self.lower_path().join(rel_path);
             if let Some(parent) = lower_path.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -157,9 +170,10 @@ impl OverlayLayer {
         if let Some(parent) = upper_path.parent() {
             fs::create_dir_all(parent)?;
         }
+        // I/O happens before acquiring the whiteout lock.
         fs::write(&upper_path, data)?;
 
-        if self.whiteouts.remove(rel_path) {
+        if self.whiteouts.write().unwrap().remove(rel_path) {
             self.persist_whiteouts_or_warn();
         }
 
@@ -173,9 +187,9 @@ impl OverlayLayer {
     /// When the file only exists in the lower layer, it is first copied to the
     /// upper layer (only up to `new_size` bytes for truncation, avoiding a full
     /// read of large files).
-    pub fn truncate_file(&mut self, rel_path: &Path, new_size: u64) -> Result<(), OverlayError> {
+    pub fn truncate_file(&self, rel_path: &Path, new_size: u64) -> Result<(), OverlayError> {
         if is_passthrough(rel_path) {
-            let lower_path = self.lower.join(rel_path);
+            let lower_path = self.lower_path().join(rel_path);
             let file = OpenOptions::new().write(true).open(&lower_path)?;
             file.set_len(new_size)?;
             trace!(path = %rel_path.display(), new_size, layer = "lower-passthrough", "truncate");
@@ -186,8 +200,9 @@ impl OverlayLayer {
 
         if !upper_path.exists() {
             // File only exists in the lower layer — COW copy to upper before truncating.
-            let lower_path = self.lower.join(rel_path);
-            if !lower_path.exists() && !self.whiteouts.contains(rel_path) {
+            let lower_path = self.lower_path().join(rel_path);
+            let is_whiteout = self.whiteouts.read().unwrap().contains(rel_path);
+            if !lower_path.exists() && !is_whiteout {
                 return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
             }
 
@@ -195,6 +210,7 @@ impl OverlayLayer {
                 fs::create_dir_all(parent)?;
             }
 
+            // COW copy happens outside any lock.
             if lower_path.exists() {
                 let lower_size = fs::metadata(&lower_path)?.len();
                 let copy_bytes = new_size.min(lower_size);
@@ -217,7 +233,7 @@ impl OverlayLayer {
             file.set_len(new_size)?;
         }
 
-        if self.whiteouts.remove(rel_path) {
+        if self.whiteouts.write().unwrap().remove(rel_path) {
             self.persist_whiteouts_or_warn();
         }
 
@@ -230,7 +246,7 @@ impl OverlayLayer {
     /// Passthrough paths are modified directly in the lower layer.
     /// For normal paths, if the file only exists in the lower layer it is first
     /// copied to the upper layer (COW) before applying the permission change.
-    pub fn set_permissions(&mut self, rel_path: &Path, mode: u32) -> Result<(), OverlayError> {
+    pub fn set_permissions(&self, rel_path: &Path, mode: u32) -> Result<(), OverlayError> {
         if is_hidden(rel_path) {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
@@ -238,7 +254,7 @@ impl OverlayLayer {
         let perms = fs::Permissions::from_mode(mode);
 
         if is_passthrough(rel_path) {
-            let lower_path = self.lower.join(rel_path);
+            let lower_path = self.lower_path().join(rel_path);
             if !lower_path.exists() {
                 return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
             }
@@ -247,7 +263,7 @@ impl OverlayLayer {
             return Ok(());
         }
 
-        if self.whiteouts.contains(rel_path) {
+        if self.whiteouts.read().unwrap().contains(rel_path) {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
 
@@ -255,7 +271,8 @@ impl OverlayLayer {
 
         if !upper_path.exists() {
             // COW: copy from lower to upper before changing permissions.
-            let lower_path = self.lower.join(rel_path);
+            // I/O happens outside any lock.
+            let lower_path = self.lower_path().join(rel_path);
             if !lower_path.exists() {
                 return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
             }
@@ -277,9 +294,9 @@ impl OverlayLayer {
     /// Passthrough paths are deleted directly from the lower layer (no whiteout).
     /// For normal paths, if the file exists in the upper layer it is removed, and
     /// the path is added to the whiteout set so the lower layer's version is hidden.
-    pub fn delete_file(&mut self, rel_path: &Path) -> Result<(), OverlayError> {
+    pub fn delete_file(&self, rel_path: &Path) -> Result<(), OverlayError> {
         if is_passthrough(rel_path) {
-            let lower_path = self.lower.join(rel_path);
+            let lower_path = self.lower_path().join(rel_path);
             if lower_path.exists() {
                 fs::remove_file(&lower_path)?;
             }
@@ -288,11 +305,12 @@ impl OverlayLayer {
         }
 
         let upper_path = self.upper.join(rel_path);
+        // I/O happens before acquiring the whiteout lock.
         if upper_path.exists() {
             fs::remove_file(&upper_path)?;
         }
 
-        self.whiteouts.insert(rel_path.to_path_buf());
+        self.whiteouts.write().unwrap().insert(rel_path.to_path_buf());
         self.persist_whiteouts()?;
 
         debug!(path = %rel_path.display(), "file deleted (whiteout created)");
@@ -308,12 +326,15 @@ impl OverlayLayer {
     pub fn read_dir(&self, rel_path: &Path) -> Result<Vec<DirEntry>, OverlayError> {
         // Passthrough directories read exclusively from lower.
         if is_passthrough(rel_path) {
-            let lower_dir = self.lower.join(rel_path);
+            let lower_dir = self.lower_path().join(rel_path);
             if lower_dir.is_dir() {
                 return read_dir_entries(&lower_dir);
             }
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
+
+        // Snapshot whiteouts once for the duration of this listing.
+        let whiteouts = self.whiteouts.read().unwrap();
 
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
@@ -323,7 +344,7 @@ impl OverlayLayer {
         if upper_dir.is_dir() {
             for entry in read_dir_entries(&upper_dir)? {
                 let entry_rel = rel_path.join(&entry.name);
-                if !self.whiteouts.contains(&entry_rel) && !is_hidden(&entry_rel) {
+                if !whiteouts.contains(&entry_rel) && !is_hidden(&entry_rel) {
                     // Skip Phantom internal files.
                     let name_str = entry.name.to_string_lossy();
                     if !INTERNAL_FILES.iter().any(|f| name_str == *f) {
@@ -335,12 +356,12 @@ impl OverlayLayer {
         }
 
         // Lower layer (only entries not already seen, not whiteout'd, not hidden).
-        let lower_dir = self.lower.join(rel_path);
+        let lower_dir = self.lower_path().join(rel_path);
         if lower_dir.is_dir() {
             for entry in read_dir_entries(&lower_dir)? {
                 let entry_rel = rel_path.join(&entry.name);
                 if !seen.contains(&entry.name)
-                    && !self.whiteouts.contains(&entry_rel)
+                    && !whiteouts.contains(&entry_rel)
                     && !is_hidden(&entry_rel)
                 {
                     seen.insert(entry.name.clone());
@@ -348,6 +369,9 @@ impl OverlayLayer {
                 }
             }
         }
+
+        // Release the read lock before returning.
+        drop(whiteouts);
 
         if entries.is_empty() && !upper_dir.is_dir() && !lower_dir.is_dir() {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
@@ -396,17 +420,17 @@ impl OverlayLayer {
     /// Return the set of paths that have been deleted (whiteout'd).
     #[must_use]
     pub fn deleted_files(&self) -> Vec<PathBuf> {
-        self.whiteouts.iter().cloned().collect()
+        self.whiteouts.read().unwrap().iter().cloned().collect()
     }
 
     /// Update the lower layer pointer (e.g. when trunk advances).
-    pub fn update_lower(&mut self, new_lower: PathBuf) {
+    pub fn update_lower(&self, new_lower: PathBuf) {
         debug!(
-            old = %self.lower.display(),
+            old = %self.lower_path().display(),
             new = %new_lower.display(),
             "lower layer updated"
         );
-        self.lower = new_lower;
+        *self.lower.write().unwrap() = new_lower;
     }
 
     /// Persist the whiteout set, logging a warning on failure.
@@ -421,25 +445,28 @@ impl OverlayLayer {
 
     /// Persist the whiteout set to `upper/.whiteouts.json`.
     ///
-    /// Uses write-then-rename so a crash mid-write cannot leave a truncated
-    /// file that fails to deserialize on the next [`load_whiteouts`] call.
+    /// Acquires a read lock on whiteouts for serialization, releases it
+    /// before the I/O (atomic write).
     pub fn persist_whiteouts(&self) -> Result<(), OverlayError> {
-        let ws = WhiteoutSet {
-            paths: self
-                .whiteouts
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect(),
+        let json = {
+            let whiteouts = self.whiteouts.read().unwrap();
+            let ws = WhiteoutSet {
+                paths: whiteouts
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+            };
+            serde_json::to_string_pretty(&ws)
+                .map_err(|e| OverlayError::Serialization(e.to_string()))?
         };
-        let json = serde_json::to_string_pretty(&ws)
-            .map_err(|e| OverlayError::Serialization(e.to_string()))?;
+        // I/O happens after the read lock is released.
         atomic_write(&self.upper.join(WHITEOUT_FILE), json.as_bytes())?;
         Ok(())
     }
 
     /// Remove a path from the whiteout set (used when re-writing a deleted file).
-    pub fn remove_whiteout(&mut self, rel_path: &Path) {
-        if self.whiteouts.remove(rel_path) {
+    pub fn remove_whiteout(&self, rel_path: &Path) {
+        if self.whiteouts.write().unwrap().remove(rel_path) {
             // Best-effort persist; errors are non-fatal here.
             self.persist_whiteouts_or_warn();
         }
@@ -468,13 +495,13 @@ impl OverlayLayer {
     ///
     /// Used by the FUSE layer on writable `open()` so that subsequent
     /// `pwrite(2)` calls can operate directly on the upper-layer file.
-    pub fn ensure_upper_copy(&mut self, rel_path: &Path) -> Result<PathBuf, OverlayError> {
+    pub fn ensure_upper_copy(&self, rel_path: &Path) -> Result<PathBuf, OverlayError> {
         if is_hidden(rel_path) {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
 
         if is_passthrough(rel_path) {
-            let lower_path = self.lower.join(rel_path);
+            let lower_path = self.lower_path().join(rel_path);
             if lower_path.exists() {
                 return Ok(lower_path);
             }
@@ -485,15 +512,16 @@ impl OverlayLayer {
 
         if upper_path.exists() {
             // Already in the upper layer.
-            if self.whiteouts.remove(rel_path) {
+            if self.whiteouts.write().unwrap().remove(rel_path) {
                 self.persist_whiteouts_or_warn();
             }
             return Ok(upper_path);
         }
 
         // Not in upper — check lower for COW copy.
-        let lower_path = self.lower.join(rel_path);
-        if !lower_path.exists() && !self.whiteouts.contains(rel_path) {
+        let lower_path = self.lower_path().join(rel_path);
+        let is_whiteout = self.whiteouts.read().unwrap().contains(rel_path);
+        if !lower_path.exists() && !is_whiteout {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
 
@@ -501,8 +529,9 @@ impl OverlayLayer {
             fs::create_dir_all(parent)?;
         }
 
+        // Streaming COW copy happens OUTSIDE any lock — this is the key
+        // performance improvement over the old global RwLock<OverlayLayer>.
         if lower_path.exists() {
-            // Streaming COW copy — never loads entire file into memory.
             let mut src = fs::File::open(&lower_path)?;
             let mut dst = fs::File::create(&upper_path)?;
             std::io::copy(&mut src, &mut dst)?;
@@ -512,7 +541,8 @@ impl OverlayLayer {
             fs::File::create(&upper_path)?;
         }
 
-        if self.whiteouts.remove(rel_path) {
+        // Brief write lock to update whiteout set after I/O is done.
+        if self.whiteouts.write().unwrap().remove(rel_path) {
             self.persist_whiteouts_or_warn();
         }
 
@@ -525,10 +555,13 @@ impl OverlayLayer {
         &self.upper
     }
 
-    /// Return a reference to the lower directory path.
+    /// Return the lower directory path.
+    ///
+    /// Returns a clone because the lower path is behind an `RwLock` for
+    /// interior mutability (needed by `update_lower`).
     #[must_use]
-    pub fn lower_dir(&self) -> &Path {
-        &self.lower
+    pub fn lower_dir(&self) -> PathBuf {
+        self.lower_path()
     }
 
     /// Returns `true` if the given relative path is a passthrough path.
@@ -549,7 +582,7 @@ impl OverlayLayer {
     ///
     /// Per POSIX, if the destination already exists it is replaced (for files)
     /// or the rename fails with `ENOTEMPTY` (for non-empty directories).
-    pub fn rename_file(&mut self, old: &Path, new: &Path) -> Result<(), OverlayError> {
+    pub fn rename_file(&self, old: &Path, new: &Path) -> Result<(), OverlayError> {
         // Hidden paths are never accessible.
         if is_hidden(old) || is_hidden(new) {
             return Err(OverlayError::PathNotFound(old.to_path_buf()));
@@ -572,8 +605,17 @@ impl OverlayLayer {
             return Err(OverlayError::PathNotFound(old.to_path_buf()));
         }
 
-        // Snapshot child whiteouts BEFORE modifying the set — needed for migration.
-        let child_whiteouts = self.collect_child_whiteouts(old);
+        // Phase 1: Snapshot whiteout state under read lock.
+        let (child_whiteouts, lower_old_exists, lower) = {
+            let wo = self.whiteouts.read().unwrap();
+            let lower = self.lower_path();
+            let child_wo = reparent_children(wo.iter(), old, old)
+                .into_iter()
+                .map(|(old_w, _)| old_w)
+                .collect::<Vec<_>>();
+            let lower_old_exists = lower.join(old).exists() && !wo.contains(old);
+            (child_wo, lower_old_exists, lower)
+        };
 
         // Ensure destination parent directories exist in upper.
         let upper_new = self.upper.join(new);
@@ -581,15 +623,44 @@ impl OverlayLayer {
             fs::create_dir_all(parent)?;
         }
 
-        // Move or copy-up the source.
-        let mut whiteouts_changed = self.move_or_copy_up(old, new)?;
+        // Phase 2: Filesystem operations (no lock held).
+        let whiteout_inserts = self.do_rename_io(old, new, lower_old_exists, &lower)?;
 
-        // Reconcile whiteouts after the filesystem move.
-        if self.reconcile_whiteouts_after_rename(old, new, child_whiteouts) {
-            whiteouts_changed = true;
+        // Phase 3: Reconcile whiteouts atomically under write lock.
+        let mut wo = self.whiteouts.write().unwrap();
+        let mut changed = false;
+
+        for path in &whiteout_inserts {
+            wo.insert(path.clone());
+            changed = true;
         }
 
-        if whiteouts_changed {
+        // The new path is now live — remove its whiteout.
+        if wo.remove(new) {
+            changed = true;
+        }
+
+        // Remove child whiteouts under the new path (strict children only).
+        let to_remove: Vec<PathBuf> = reparent_children(wo.iter(), new, new)
+            .into_iter()
+            .map(|(old_w, _)| old_w)
+            .collect();
+        for w in &to_remove {
+            wo.remove(w);
+            changed = true;
+        }
+
+        // Migrate pre-existing child whiteouts from old prefix to new prefix.
+        let migrations = reparent_children(child_whiteouts.iter(), old, new);
+        for (old_w, new_w) in migrations {
+            wo.remove(&old_w);
+            wo.insert(new_w);
+            changed = true;
+        }
+
+        drop(wo);
+
+        if changed {
             self.persist_whiteouts()?;
         }
 
@@ -599,8 +670,9 @@ impl OverlayLayer {
 
     /// Rename directly in the lower layer (passthrough paths like `.git/`).
     fn rename_passthrough(&self, old: &Path, new: &Path) -> Result<(), OverlayError> {
-        let lower_old = self.lower.join(old);
-        let lower_new = self.lower.join(new);
+        let lower = self.lower_path();
+        let lower_old = lower.join(old);
+        let lower_new = lower.join(new);
         if let Some(parent) = lower_new.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -609,24 +681,21 @@ impl OverlayLayer {
         Ok(())
     }
 
-    /// Collect all strict child whiteouts under `prefix`.
-    fn collect_child_whiteouts(&self, prefix: &Path) -> Vec<PathBuf> {
-        // Reuse reparent_children with a dummy new_prefix to collect children.
-        reparent_children(self.whiteouts.iter(), prefix, prefix)
-            .into_iter()
-            .map(|(old, _)| old)
-            .collect()
-    }
-
-    /// Move the source to the destination, performing a COW copy-up if the
-    /// source only exists in the lower layer.
+    /// Perform the filesystem operations for a rename (no whiteout lock held).
     ///
-    /// Returns `true` if whiteouts were modified.
-    fn move_or_copy_up(&mut self, old: &Path, new: &Path) -> Result<bool, OverlayError> {
+    /// Returns the set of paths that should be inserted into the whiteout set.
+    fn do_rename_io(
+        &self,
+        old: &Path,
+        new: &Path,
+        lower_old_exists: bool,
+        lower: &Path,
+    ) -> Result<Vec<PathBuf>, OverlayError> {
         let upper_old = self.upper.join(old);
         let upper_new = self.upper.join(new);
         let upper_old_exists = upper_old.exists();
-        let lower_old_exists = self.lower.join(old).exists() && !self.whiteouts.contains(old);
+
+        let mut inserts = Vec::new();
 
         if upper_old_exists {
             // Source is in upper layer — move directly.
@@ -635,64 +704,29 @@ impl OverlayLayer {
             // If source also exists in lower, whiteout the old path to hide
             // the lower-layer ghost.
             if lower_old_exists {
-                self.whiteouts.insert(old.to_path_buf());
+                inserts.push(old.to_path_buf());
             }
-            Ok(lower_old_exists)
         } else {
             // Source is only in lower layer — copy up to new position.
-            let lower_old = self.lower.join(old);
+            let lower_old = lower.join(old);
             if lower_old.is_dir() {
                 self.copy_up_dir(old, new)?;
                 // Whiteout all files within the lower directory so they don't
                 // bleed through (the whiteout model is per-file, not
                 // hierarchical).
-                let lower_children = walk_files(&lower_old, &self.lower)?;
+                let lower_children = walk_files(&lower_old, lower)?;
                 for child in lower_children {
-                    self.whiteouts.insert(child);
+                    inserts.push(child);
                 }
             } else {
                 let content = fs::read(&lower_old)?;
                 fs::write(&upper_new, &content)?;
             }
 
-            self.whiteouts.insert(old.to_path_buf());
-            Ok(true)
-        }
-    }
-
-    /// Clean up destination whiteouts and migrate child whiteouts from old
-    /// prefix to new prefix after a rename.
-    ///
-    /// Returns `true` if any whiteouts were modified.
-    fn reconcile_whiteouts_after_rename(
-        &mut self,
-        old: &Path,
-        new: &Path,
-        pre_existing_child_whiteouts: Vec<PathBuf>,
-    ) -> bool {
-        let mut changed = false;
-
-        // The new path is now live — remove its whiteout.
-        if self.whiteouts.remove(new) {
-            changed = true;
+            inserts.push(old.to_path_buf());
         }
 
-        // Remove child whiteouts under the new path (strict children only).
-        let to_remove = self.collect_child_whiteouts(new);
-        for w in &to_remove {
-            self.whiteouts.remove(w);
-            changed = true;
-        }
-
-        // Migrate pre-existing child whiteouts from old prefix to new prefix.
-        let migrations = reparent_children(pre_existing_child_whiteouts.iter(), old, new);
-        for (old_w, new_w) in migrations {
-            self.whiteouts.remove(&old_w);
-            self.whiteouts.insert(new_w);
-            changed = true;
-        }
-
-        changed
+        Ok(inserts)
     }
 
     /// Copy a directory from the overlay-merged view to the upper layer at a
@@ -738,8 +772,9 @@ impl OverlayLayer {
     /// After a successful materialization, the agent's changes live in trunk.
     /// Clearing the upper layer ensures subsequent reads fall through to the
     /// now-updated trunk instead of returning stale overlay copies.
-    pub fn clear_upper(&mut self) -> Result<(), OverlayError> {
+    pub fn clear_upper(&self) -> Result<(), OverlayError> {
         // Remove every entry in the upper directory except the directory itself.
+        // I/O happens first, before the whiteout lock.
         for entry in fs::read_dir(&self.upper)? {
             let entry = entry?;
             let path = entry.path();
@@ -755,7 +790,7 @@ impl OverlayLayer {
             }
         }
 
-        self.whiteouts.clear();
+        self.whiteouts.write().unwrap().clear();
 
         debug!(upper = %self.upper.display(), "upper layer cleared after materialization");
         Ok(())
@@ -782,7 +817,7 @@ mod tests {
     #[test]
     fn write_to_upper_and_read_back() {
         let (lower, upper) = setup();
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         // Write and remove from whiteouts in case.
@@ -806,7 +841,7 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("shared.txt"), b"lower").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.write_file(Path::new("shared.txt"), b"upper").unwrap();
 
@@ -819,7 +854,7 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("victim.txt"), b"doomed").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.delete_file(Path::new("victim.txt")).unwrap();
 
@@ -840,7 +875,7 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("file.txt"), b"v1").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.delete_file(Path::new("file.txt")).unwrap();
         assert!(!layer.exists(Path::new("file.txt")));
@@ -857,7 +892,7 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("lower.txt"), b"trunk").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.write_file(Path::new("new.txt"), b"agent").unwrap();
 
@@ -880,7 +915,7 @@ mod tests {
         fs::write(lower1.path().join("a.txt"), b"lower1").unwrap();
         fs::write(lower2.path().join("b.txt"), b"lower2").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower1.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         assert!(layer.exists(Path::new("a.txt")));
         assert!(!layer.exists(Path::new("b.txt")));
@@ -895,7 +930,7 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("from_lower.txt"), b"l").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer.write_file(Path::new("from_upper.txt"), b"u").unwrap();
 
@@ -913,7 +948,7 @@ mod tests {
     #[test]
     fn nested_directory_creation() {
         let (lower, upper) = setup();
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         layer.write_file(Path::new("a/b/c.txt"), b"deep").unwrap();
@@ -928,7 +963,7 @@ mod tests {
         fs::write(lower.path().join("persist.txt"), b"data").unwrap();
 
         {
-            let mut layer =
+            let layer =
                 OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
             layer.delete_file(Path::new("persist.txt")).unwrap();
         }
@@ -944,7 +979,7 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("trunk.txt"), b"from trunk").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         // Write some files and create a whiteout.
@@ -1010,7 +1045,7 @@ mod tests {
         fs::write(lower.path().join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
         fs::write(lower.path().join("visible.txt"), b"hello").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         // .git should be visible and accessible.
@@ -1060,7 +1095,7 @@ mod tests {
         fs::create_dir_all(lower.path().join(".git")).unwrap();
         fs::write(lower.path().join(".git/MERGE_HEAD"), b"abc123").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         // Delete a .git file — should remove from lower directly.
@@ -1093,7 +1128,7 @@ mod tests {
     #[test]
     fn rename_file_in_upper() {
         let (lower, upper) = setup();
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         layer.write_file(Path::new("old.txt"), b"data").unwrap();
@@ -1110,7 +1145,7 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("src.txt"), b"from trunk").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer
             .rename_file(Path::new("src.txt"), Path::new("dst.txt"))
@@ -1133,7 +1168,7 @@ mod tests {
     #[test]
     fn rename_overwrites_existing_destination() {
         let (lower, upper) = setup();
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         layer.write_file(Path::new("a.txt"), b"content-a").unwrap();
@@ -1152,7 +1187,7 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("shared.txt"), b"lower").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         // Write to upper so the file exists in both layers.
         layer.write_file(Path::new("shared.txt"), b"upper").unwrap();
@@ -1172,7 +1207,7 @@ mod tests {
     #[test]
     fn rename_directory_in_upper() {
         let (lower, upper) = setup();
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         layer
@@ -1195,7 +1230,7 @@ mod tests {
         fs::create_dir_all(lower.path().join("pkg")).unwrap();
         fs::write(lower.path().join("pkg/mod.rs"), b"pub mod foo;").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         layer
             .rename_file(Path::new("pkg"), Path::new("lib"))
@@ -1215,7 +1250,7 @@ mod tests {
         fs::create_dir_all(lower.path().join(".git/refs")).unwrap();
         fs::write(lower.path().join(".git/refs/old"), b"ref").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), _upper.path().to_path_buf()).unwrap();
         layer
             .rename_file(Path::new(".git/refs/old"), Path::new(".git/refs/new"))
@@ -1237,7 +1272,7 @@ mod tests {
         fs::write(lower.path().join(".git/x"), b"data").unwrap();
         fs::write(lower.path().join("y"), b"data").unwrap();
 
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         // Passthrough → normal should fail.
@@ -1257,7 +1292,7 @@ mod tests {
     #[test]
     fn rename_hidden_path_fails() {
         let (lower, upper) = setup();
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         layer.write_file(Path::new("a.txt"), b"data").unwrap();
@@ -1276,10 +1311,60 @@ mod tests {
     #[test]
     fn rename_nonexistent_source_fails() {
         let (lower, upper) = setup();
-        let mut layer =
+        let layer =
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         let result = layer.rename_file(Path::new("ghost.txt"), Path::new("dst.txt"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn concurrent_read_write_no_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let (lower, upper) = setup();
+        fs::write(lower.path().join("shared.txt"), b"trunk data").unwrap();
+
+        let layer = Arc::new(
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap(),
+        );
+
+        let mut handles = Vec::new();
+
+        // Spawn reader threads.
+        for i in 0..4 {
+            let layer = Arc::clone(&layer);
+            handles.push(thread::spawn(move || {
+                for _ in 0..50 {
+                    let _ = layer.exists(Path::new("shared.txt"));
+                    let _ = layer.read_file(Path::new("shared.txt"));
+                    let _ = layer.getattr(Path::new("shared.txt"));
+                    let _ = layer.read_dir(Path::new(""));
+                    let _ = layer.deleted_files();
+                }
+                i
+            }));
+        }
+
+        // Spawn writer threads. Each thread writes to its own files to
+        // avoid racing on the same upper-layer path (which would cause
+        // benign I/O errors in the test).
+        for i in 0..4 {
+            let layer = Arc::clone(&layer);
+            handles.push(thread::spawn(move || {
+                for j in 0..50 {
+                    let name = format!("file_{i}_{j}.txt");
+                    let _ = layer.write_file(Path::new(&name), b"data");
+                    let _ = layer.delete_file(Path::new(&name));
+                }
+                i
+            }));
+        }
+
+        // All threads must complete without deadlock or panic.
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
     }
 }

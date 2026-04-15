@@ -141,6 +141,12 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             &args.agent,
             &mount_point,
             &upper_dir,
+            &FsOverrides {
+                uid: None,
+                gid: None,
+                file_mode: None,
+                dir_mode: None,
+            },
         )?
     };
 
@@ -254,6 +260,18 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Optional overrides for the FUSE filesystem identity and permissions.
+///
+/// When `None`, the FUSE daemon defaults to the current process's UID/GID.
+/// For production deployments, set explicit values to project a restricted
+/// identity into the overlay.
+pub(crate) struct FsOverrides {
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub file_mode: Option<u32>,
+    pub dir_mode: Option<u32>,
+}
+
 /// Spawn a FUSE daemon process that mounts `PhantomFs` at the overlay's mount point.
 ///
 /// Returns `true` if the mount was successful, `false` if FUSE is unavailable.
@@ -263,6 +281,7 @@ fn spawn_fuse_daemon(
     agent: &str,
     mount_point: &Path,
     upper_dir: &Path,
+    overrides: &FsOverrides,
 ) -> anyhow::Result<bool> {
     let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
     let overlay_root = phantom_dir.join("overlays").join(agent);
@@ -272,8 +291,8 @@ fn spawn_fuse_daemon(
     let log_handle = std::fs::File::create(&log_file)
         .with_context(|| format!("failed to create FUSE log at {}", log_file.display()))?;
 
-    let child = std::process::Command::new(&phantom_bin)
-        .arg("_fuse-mount")
+    let mut cmd = std::process::Command::new(&phantom_bin);
+    cmd.arg("_fuse-mount")
         .arg("--agent")
         .arg(agent)
         .arg("--mount-point")
@@ -281,7 +300,22 @@ fn spawn_fuse_daemon(
         .arg("--upper-dir")
         .arg(upper_dir)
         .arg("--lower-dir")
-        .arg(repo_root)
+        .arg(repo_root);
+
+    if let Some(uid) = overrides.uid {
+        cmd.arg("--uid").arg(uid.to_string());
+    }
+    if let Some(gid) = overrides.gid {
+        cmd.arg("--gid").arg(gid.to_string());
+    }
+    if let Some(mode) = overrides.file_mode {
+        cmd.arg("--file-mode").arg(mode.to_string());
+    }
+    if let Some(mode) = overrides.dir_mode {
+        cmd.arg("--dir-mode").arg(mode.to_string());
+    }
+
+    let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log_handle)

@@ -24,6 +24,18 @@ pub struct FuseMountArgs {
     /// Path to the trunk (lower/read-only) layer — the git working tree root.
     #[arg(long)]
     pub lower_dir: PathBuf,
+    /// UID projected for all files in the overlay. Defaults to the current user.
+    #[arg(long)]
+    pub uid: Option<u32>,
+    /// GID projected for all files in the overlay. Defaults to the current group.
+    #[arg(long)]
+    pub gid: Option<u32>,
+    /// Permission mode for regular files (octal, e.g. 644). Defaults to 644.
+    #[arg(long)]
+    pub file_mode: Option<u32>,
+    /// Permission mode for directories (octal, e.g. 755). Defaults to 755.
+    #[arg(long)]
+    pub dir_mode: Option<u32>,
 }
 
 /// Run the FUSE mount daemon. Blocks until unmount or SIGTERM.
@@ -44,7 +56,7 @@ pub fn run(args: FuseMountArgs) -> anyhow::Result<()> {
 
         use fuser::{Config, MountOption, SessionACL};
         use phantom_core::AgentId;
-        use phantom_overlay::PhantomFs;
+        use phantom_overlay::{FsConfig, PhantomFs};
         use phantom_overlay::layer::OverlayLayer;
 
         // Flag set by the SIGTERM handler to request shutdown.
@@ -76,7 +88,22 @@ pub fn run(args: FuseMountArgs) -> anyhow::Result<()> {
             .context("failed to create overlay layer")?;
 
         let agent_id = AgentId(args.agent.clone());
-        let fs = PhantomFs::new(layer, agent_id);
+
+        let mut fs_config = FsConfig::default();
+        if let Some(uid) = args.uid {
+            fs_config.uid = uid;
+        }
+        if let Some(gid) = args.gid {
+            fs_config.gid = gid;
+        }
+        if let Some(mode) = args.file_mode {
+            fs_config.file_mode = (mode & 0o7777) as u16;
+        }
+        if let Some(mode) = args.dir_mode {
+            fs_config.dir_mode = (mode & 0o7777) as u16;
+        }
+
+        let fs = PhantomFs::new(layer, agent_id, fs_config);
 
         let mut config = Config::default();
         config.mount_options = vec![

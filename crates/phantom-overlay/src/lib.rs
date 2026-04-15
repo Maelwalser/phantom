@@ -21,4 +21,4 @@ pub use trunk_view::TrunkView;
 pub use types::{DirEntry, FileType};
 
 #[cfg(feature = "fuse")]
-pub use fuse_fs::PhantomFs;
+pub use fuse_fs::{FsConfig, PhantomFs};

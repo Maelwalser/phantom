@@ -109,8 +109,8 @@ impl OverlayManager {
     ///
     /// Updates each layer's lower pointer so subsequent reads fall through
     /// to the new trunk state.
-    pub fn notify_trunk_advanced(&mut self, new_trunk_path: &Path) {
-        for handle in self.active_overlays.values_mut() {
+    pub fn notify_trunk_advanced(&self, new_trunk_path: &Path) {
+        for handle in self.active_overlays.values() {
             handle.layer.update_lower(new_trunk_path.to_path_buf());
         }
         debug!(
@@ -128,20 +128,12 @@ impl OverlayManager {
             .ok_or_else(|| OverlayError::NotFound(agent_id.clone()))
     }
 
-    /// Get a mutable reference to the [`OverlayLayer`] for an agent.
-    pub fn get_layer_mut(&mut self, agent_id: &AgentId) -> Result<&mut OverlayLayer, OverlayError> {
-        self.active_overlays
-            .get_mut(agent_id)
-            .map(|h| &mut h.layer)
-            .ok_or_else(|| OverlayError::NotFound(agent_id.clone()))
-    }
-
     /// Clear the upper layer for an agent after successful materialization.
     ///
     /// Removes all files from the agent's upper directory so reads fall through
     /// to the now-updated trunk.
-    pub fn clear_overlay(&mut self, agent_id: &AgentId) -> Result<(), OverlayError> {
-        let layer = self.get_layer_mut(agent_id)?;
+    pub fn clear_overlay(&self, agent_id: &AgentId) -> Result<(), OverlayError> {
+        let layer = self.get_layer(agent_id)?;
         layer.clear_upper()
     }
 }
@@ -217,12 +209,12 @@ mod tests {
         let data = layer.read_file(Path::new("trunk.txt")).unwrap();
         assert_eq!(data, b"hello");
 
-        // Write via mutable layer.
-        let layer_mut = mgr.get_layer_mut(&agent).unwrap();
-        layer_mut
+        // Write via layer (interior mutability — no &mut needed).
+        let layer = mgr.get_layer(&agent).unwrap();
+        layer
             .write_file(Path::new("new.txt"), b"agent wrote this")
             .unwrap();
-        layer_mut.remove_whiteout(Path::new("new.txt"));
+        layer.remove_whiteout(Path::new("new.txt"));
 
         let layer = mgr.get_layer(&agent).unwrap();
         let data = layer.read_file(Path::new("new.txt")).unwrap();

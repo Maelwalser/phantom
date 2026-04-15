@@ -8,7 +8,7 @@ mod inner {
     use std::collections::HashMap;
     use std::ffi::OsStr;
     use std::fs::OpenOptions;
-    use std::os::unix::fs::{FileExt, PermissionsExt};
+    use std::os::unix::fs::FileExt;
     use std::sync::RwLock;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -46,9 +46,50 @@ mod inner {
         entries: Vec<(u64, FileType, String)>,
     }
 
+    /// Configuration for the projected filesystem identity and permissions.
+    ///
+    /// Controls the UID/GID and permission modes reported by the FUSE
+    /// filesystem. When `MountOption::DefaultPermissions` is set, the kernel
+    /// enforces access checks based on these values — projecting a restricted
+    /// UID/GID creates a real privilege boundary between the agent process and
+    /// the overlay.
+    pub struct FsConfig {
+        /// Owner UID projected for all files and directories.
+        pub uid: u32,
+        /// Owner GID projected for all files and directories.
+        pub gid: u32,
+        /// Permission mode for regular files (default: `0o644`).
+        pub file_mode: u16,
+        /// Permission mode for directories (default: `0o755`).
+        pub dir_mode: u16,
+    }
+
+    impl Default for FsConfig {
+        /// Returns a config that inherits the current process's UID/GID.
+        ///
+        /// This preserves backward-compatible behavior but provides no
+        /// privilege separation. For production deployments, configure
+        /// explicit UID/GID values for sandboxed agent identities.
+        fn default() -> Self {
+            // SAFETY: getuid/getgid are always safe — they read process
+            // credentials with no side effects.
+            Self {
+                uid: unsafe { libc::getuid() },
+                gid: unsafe { libc::getgid() },
+                file_mode: 0o644,
+                dir_mode: 0o755,
+            }
+        }
+    }
+
     /// FUSE filesystem backed by an [`OverlayLayer`].
+    ///
+    /// `OverlayLayer` uses interior mutability (fine-grained `RwLock`s on
+    /// whiteouts and the lower-path), so no external lock is needed here.
+    /// This allows concurrent FUSE operations on different files without
+    /// global serialization.
     pub struct PhantomFs {
-        layer: RwLock<OverlayLayer>,
+        layer: OverlayLayer,
         agent_id: AgentId,
         inodes: InodeTable,
         /// Counter for allocating unique file handles (shared for files and dirs).
@@ -60,18 +101,21 @@ mod inner {
         /// `opendir()`.  Each entry holds a snapshotted listing so that
         /// paginated `readdir` calls use collision-free sequential offsets.
         open_dirs: RwLock<HashMap<u64, DirSnapshot>>,
+        /// Projected filesystem identity and permission configuration.
+        config: FsConfig,
     }
 
     impl PhantomFs {
         /// Create a new FUSE filesystem for the given agent.
-        pub fn new(layer: OverlayLayer, agent_id: AgentId) -> Self {
+        pub fn new(layer: OverlayLayer, agent_id: AgentId, config: FsConfig) -> Self {
             Self {
-                layer: RwLock::new(layer),
+                layer,
                 agent_id,
                 inodes: InodeTable::new(),
                 next_fh: AtomicU64::new(1),
                 open_files: RwLock::new(HashMap::new()),
                 open_dirs: RwLock::new(HashMap::new()),
+                config,
             }
         }
 
@@ -96,7 +140,7 @@ mod inner {
     }
 
     /// Convert [`std::fs::Metadata`] to [`fuser::FileAttr`].
-    fn metadata_to_attr(ino: u64, meta: &std::fs::Metadata) -> FileAttr {
+    fn metadata_to_attr(ino: u64, meta: &std::fs::Metadata, config: &FsConfig) -> FileAttr {
         let kind = if meta.is_dir() {
             FileType::Directory
         } else if meta.is_symlink() {
@@ -109,6 +153,11 @@ mod inner {
         let mtime = meta.modified().unwrap_or(UNIX_EPOCH);
         let ctime = mtime; // Unix ctime ≈ mtime for our purposes.
 
+        let perm = match kind {
+            FileType::Directory => config.dir_mode,
+            _ => config.file_mode,
+        };
+
         FileAttr {
             ino: INodeNo(ino),
             size: meta.len(),
@@ -118,10 +167,10 @@ mod inner {
             ctime,
             crtime: UNIX_EPOCH,
             kind,
-            perm: (meta.permissions().mode() as u16) & 0o7777,
+            perm,
             nlink: if meta.is_dir() { 2 } else { 1 },
-            uid: unsafe { libc::getuid() },
-            gid: unsafe { libc::getgid() },
+            uid: config.uid,
+            gid: config.gid,
             rdev: 0,
             blksize: 4096,
             flags: 0,
@@ -129,7 +178,7 @@ mod inner {
     }
 
     /// Build a default directory attr for the root or when metadata is unavailable.
-    fn default_dir_attr(ino: u64) -> FileAttr {
+    fn default_dir_attr(ino: u64, config: &FsConfig) -> FileAttr {
         let now = SystemTime::now();
         FileAttr {
             ino: INodeNo(ino),
@@ -140,10 +189,10 @@ mod inner {
             ctime: now,
             crtime: UNIX_EPOCH,
             kind: FileType::Directory,
-            perm: 0o755,
+            perm: config.dir_mode,
             nlink: 2,
-            uid: unsafe { libc::getuid() },
-            gid: unsafe { libc::getgid() },
+            uid: config.uid,
+            gid: config.gid,
             rdev: 0,
             blksize: 4096,
             flags: 0,
@@ -163,12 +212,11 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let layer = self.layer.read().unwrap();
 
-            match layer.getattr(&child_path) {
+            match self.layer.getattr(&child_path) {
                 Ok(meta) => {
                     let ino = self.inodes.get_or_create_inode(&child_path);
-                    let attr = metadata_to_attr(ino, &meta);
+                    let attr = metadata_to_attr(ino, &meta, &self.config);
                     reply.entry(&TTL, &attr, Generation(0));
                 }
                 Err(_) => {
@@ -185,18 +233,16 @@ mod inner {
 
             // Root directory special case.
             if ino.0 == 1 {
-                let layer = self.layer.read().unwrap();
-                match layer.getattr(&path) {
-                    Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
-                    Err(_) => reply.attr(&TTL, &default_dir_attr(ino.0)),
+                match self.layer.getattr(&path) {
+                    Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta, &self.config)),
+                    Err(_) => reply.attr(&TTL, &default_dir_attr(ino.0, &self.config)),
                 }
                 return;
             }
 
-            let layer = self.layer.read().unwrap();
-            match layer.getattr(&path) {
+            match self.layer.getattr(&path) {
                 Ok(meta) => {
-                    let mut attr = metadata_to_attr(ino.0, &meta);
+                    let mut attr = metadata_to_attr(ino.0, &meta, &self.config);
                     if self.inodes.is_unlinked(ino.0) {
                         attr.nlink = 0;
                     }
@@ -214,14 +260,11 @@ mod inner {
 
             // Snapshot the directory listing at open time so paginated readdir
             // calls use collision-free sequential offsets.
-            let entries = {
-                let layer = self.layer.read().unwrap();
-                match layer.read_dir(&path) {
-                    Ok(e) => e,
-                    Err(_) => {
-                        reply.error(Errno::ENOENT);
-                        return;
-                    }
+            let entries = match self.layer.read_dir(&path) {
+                Ok(e) => e,
+                Err(_) => {
+                    reply.error(Errno::ENOENT);
+                    return;
                 }
             };
 
@@ -314,8 +357,7 @@ mod inner {
             let truncate = raw & libc::O_TRUNC != 0;
 
             let real_path = if writable {
-                let mut layer = self.layer.write().unwrap();
-                match layer.ensure_upper_copy(&path) {
+                match self.layer.ensure_upper_copy(&path) {
                     Ok(p) => p,
                     Err(_) => {
                         reply.error(Errno::ENOENT);
@@ -323,8 +365,7 @@ mod inner {
                     }
                 }
             } else {
-                let layer = self.layer.read().unwrap();
-                match layer.resolve_path(&path) {
+                match self.layer.resolve_path(&path) {
                     Ok(p) => p,
                     Err(_) => {
                         reply.error(Errno::ENOENT);
@@ -449,14 +490,13 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let mut layer = self.layer.write().unwrap();
 
-            match layer.write_file(&child_path, &[]) {
+            match self.layer.write_file(&child_path, &[]) {
                 Ok(()) => {
-                    layer.remove_whiteout(&child_path);
+                    self.layer.remove_whiteout(&child_path);
 
                     // Open a real file handle so subsequent writes use pwrite.
-                    let real_path = match layer.resolve_path(&child_path) {
+                    let real_path = match self.layer.resolve_path(&child_path) {
                         Ok(p) => p,
                         Err(e) => {
                             warn!(error = %e, "create: resolve after write failed");
@@ -465,7 +505,6 @@ mod inner {
                         }
                     };
                     let ino = self.inodes.get_or_create_inode(&child_path);
-                    drop(layer);
 
                     let file = match OpenOptions::new().read(true).write(true).open(&real_path) {
                         Ok(f) => f,
@@ -494,10 +533,10 @@ mod inner {
                         ctime: now,
                         crtime: UNIX_EPOCH,
                         kind: FileType::RegularFile,
-                        perm: 0o644,
+                        perm: self.config.file_mode,
                         nlink: 1,
-                        uid: unsafe { libc::getuid() },
-                        gid: unsafe { libc::getgid() },
+                        uid: self.config.uid,
+                        gid: self.config.gid,
                         rdev: 0,
                         blksize: 4096,
                         flags: 0,
@@ -524,12 +563,10 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let mut layer = self.layer.write().unwrap();
 
-            match layer.delete_file(&child_path) {
+            match self.layer.delete_file(&child_path) {
                 Ok(()) => {
                     self.inodes.unlink(&child_path);
-                    drop(layer);
                     reply.ok();
                 }
                 Err(e) => {
@@ -565,11 +602,8 @@ mod inner {
             let needs_write = mode.is_some() || size.is_some();
 
             if needs_write {
-                // Single write lock for all mutations + final getattr.
-                let mut layer = self.layer.write().unwrap();
-
                 if let Some(new_mode) = mode
-                    && let Err(e) = layer.set_permissions(&path, new_mode)
+                    && let Err(e) = self.layer.set_permissions(&path, new_mode)
                 {
                     warn!(error = %e, "setattr chmod failed");
                     reply.error(Errno::EIO);
@@ -577,24 +611,17 @@ mod inner {
                 }
 
                 if let Some(new_size) = size
-                    && let Err(e) = layer.truncate_file(&path, new_size)
+                    && let Err(e) = self.layer.truncate_file(&path, new_size)
                 {
                     warn!(error = %e, "setattr truncate failed");
                     reply.error(Errno::EIO);
                     return;
                 }
+            }
 
-                match layer.getattr(&path) {
-                    Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
-                    Err(_) => reply.error(Errno::ENOENT),
-                }
-            } else {
-                // Read-only: just fetch attributes.
-                let layer = self.layer.read().unwrap();
-                match layer.getattr(&path) {
-                    Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta)),
-                    Err(_) => reply.error(Errno::ENOENT),
-                }
+            match self.layer.getattr(&path) {
+                Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta, &self.config)),
+                Err(_) => reply.error(Errno::ENOENT),
             }
         }
 
@@ -613,23 +640,22 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let mut layer = self.layer.write().unwrap();
 
             // Passthrough paths create directories directly in the lower layer.
-            let target_path = if layer.is_passthrough(&child_path) {
-                layer.lower_dir().join(&child_path)
+            let target_path = if self.layer.is_passthrough(&child_path) {
+                self.layer.lower_dir().join(&child_path)
             } else {
-                layer.upper_dir().join(&child_path)
+                self.layer.upper_dir().join(&child_path)
             };
 
             match std::fs::create_dir_all(&target_path) {
                 Ok(()) => {
-                    if !layer.is_passthrough(&child_path) {
+                    if !self.layer.is_passthrough(&child_path) {
                         // Clear whiteout if this dir was previously deleted.
-                        layer.remove_whiteout(&child_path);
+                        self.layer.remove_whiteout(&child_path);
                     }
                     let ino = self.inodes.get_or_create_inode(&child_path);
-                    reply.entry(&TTL, &default_dir_attr(ino), Generation(0));
+                    reply.entry(&TTL, &default_dir_attr(ino, &self.config), Generation(0));
                     debug!(path = %child_path.display(), "mkdir");
                 }
                 Err(e) => {
@@ -667,18 +693,15 @@ mod inner {
             let old_path = old_parent_path.join(name);
             let new_path = new_parent_path.join(newname);
 
-            let mut layer = self.layer.write().unwrap();
-
             // RENAME_NOREPLACE: fail if destination already exists.
-            if flags.contains(RenameFlags::RENAME_NOREPLACE) && layer.exists(&new_path) {
+            if flags.contains(RenameFlags::RENAME_NOREPLACE) && self.layer.exists(&new_path) {
                 reply.error(Errno::EEXIST);
                 return;
             }
 
-            match layer.rename_file(&old_path, &new_path) {
+            match self.layer.rename_file(&old_path, &new_path) {
                 Ok(()) => {
                     self.inodes.rename(&old_path, &new_path);
-                    drop(layer);
                     reply.ok();
                 }
                 Err(crate::error::OverlayError::PathNotFound(_)) => {
@@ -703,23 +726,22 @@ mod inner {
             };
 
             let child_path = parent_path.join(name);
-            let mut layer = self.layer.write().unwrap();
 
             // Passthrough directories (e.g. .git) must not be removed via the overlay.
-            if layer.is_passthrough(&child_path) {
+            if self.layer.is_passthrough(&child_path) {
                 reply.error(Errno::EPERM);
                 return;
             }
 
             // Check the merged view — the directory must exist in the overlay.
-            if !layer.exists(&child_path) {
+            if !self.layer.exists(&child_path) {
                 reply.error(Errno::ENOENT);
                 return;
             }
 
             // POSIX: rmdir must fail with ENOTEMPTY if the directory is non-empty.
             // Evaluate the merged view (upper + lower minus whiteouts).
-            match layer.read_dir(&child_path) {
+            match self.layer.read_dir(&child_path) {
                 Ok(entries) if !entries.is_empty() => {
                     reply.error(Errno::ENOTEMPTY);
                     return;
@@ -732,7 +754,7 @@ mod inner {
             }
 
             // Remove the upper-layer copy if it exists.
-            let upper_path = layer.upper_dir().join(&child_path);
+            let upper_path = self.layer.upper_dir().join(&child_path);
             if upper_path.is_dir()
                 && let Err(e) = std::fs::remove_dir(&upper_path)
             {
@@ -742,9 +764,8 @@ mod inner {
             }
 
             // Write whiteout to hide any lower-layer copy.
-            let _ = layer.delete_file(&child_path);
+            let _ = self.layer.delete_file(&child_path);
             self.inodes.unlink(&child_path);
-            drop(layer);
             reply.ok();
         }
 
@@ -875,4 +896,4 @@ mod inner {
 }
 
 #[cfg(target_os = "linux")]
-pub use inner::PhantomFs;
+pub use inner::{FsConfig, PhantomFs};
