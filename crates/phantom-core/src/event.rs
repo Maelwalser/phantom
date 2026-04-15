@@ -136,6 +136,11 @@ pub enum EventKind {
         /// Agent IDs dispatched for each domain.
         agent_ids: Vec<AgentId>,
     },
+    /// An agent is waiting for upstream dependencies to materialize before starting.
+    AgentWaitingForDependencies {
+        /// Agent IDs this agent is blocked on.
+        upstream_agents: Vec<AgentId>,
+    },
     /// A plan completed (all agents finished).
     PlanCompleted {
         /// Unique plan identifier.

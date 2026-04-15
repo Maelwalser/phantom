@@ -107,7 +107,8 @@ pub fn write_plan_domain_instructions(
         }
         let _ = writeln!(
             content,
-            "Their changes may or may not be on trunk yet. Code defensively."
+            "This agent did not start until all dependencies were materialized to trunk. \
+             Their changes are already visible in your overlay — you can rely on them being present."
         );
         let _ = writeln!(content);
     }

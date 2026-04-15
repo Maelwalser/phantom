@@ -29,18 +29,35 @@ pub struct PostSessionContext<'a> {
     pub auto_submit: bool,
 }
 
+/// Outcome of the post-session submit flow.
+///
+/// Callers use this to decide follow-up actions (e.g. destroying the overlay
+/// after a successful submit).
+#[derive(Debug)]
+pub enum PostSessionOutcome {
+    /// The overlay had no modifications.
+    NoChanges,
+    /// Changes were detected but `auto_submit` was false.
+    PendingSubmit,
+    /// Changeset was submitted and successfully materialized to trunk.
+    Submitted { changeset_id: ChangesetId },
+    /// Changeset was submitted but could not be merged due to conflicts.
+    Conflict { changeset_id: ChangesetId },
+}
+
 /// Handle post-session submit automation.
 ///
 /// Checks the overlay for modifications and optionally submits and materializes
-/// the changeset in a single step.
-pub async fn post_session_flow(ctx: PostSessionContext<'_>) -> anyhow::Result<()> {
+/// the changeset in a single step. Returns an [`PostSessionOutcome`] so the
+/// caller can decide follow-up actions (e.g. destroying the overlay on success).
+pub async fn post_session_flow(ctx: PostSessionContext<'_>) -> anyhow::Result<PostSessionOutcome> {
     let layer = ctx.overlays.get_layer(ctx.agent_id)?;
 
     let modified = layer.modified_files()?;
 
     if modified.is_empty() {
         println!("No changes detected in overlay.");
-        return Ok(());
+        return Ok(PostSessionOutcome::NoChanges);
     }
 
     println!("{} file(s) modified in overlay.", modified.len());
@@ -49,21 +66,24 @@ pub async fn post_session_flow(ctx: PostSessionContext<'_>) -> anyhow::Result<()
 
     if !ctx.auto_submit {
         println!("Run `phantom submit {agent_id}` to submit and merge to trunk.");
-        return Ok(());
+        return Ok(PostSessionOutcome::PendingSubmit);
     }
 
     // Auto-submit (which now includes materialization).
     println!("Auto-submitting changeset...");
     match submit_and_materialize_overlay(ctx.phantom_dir, ctx.repo_root, ctx.events, ctx.overlays, agent_id).await? {
-        Some(cs_id) => {
-            println!("Changeset {cs_id} submitted.");
+        SubmitOutcome::Submitted { changeset_id } => {
+            println!("Changeset {changeset_id} submitted.");
+            Ok(PostSessionOutcome::Submitted { changeset_id })
         }
-        None => {
+        SubmitOutcome::Conflict { changeset_id } => {
+            Ok(PostSessionOutcome::Conflict { changeset_id })
+        }
+        SubmitOutcome::NoChanges => {
             println!("No changes to submit (files may have been reverted).");
+            Ok(PostSessionOutcome::NoChanges)
         }
     }
-
-    Ok(())
 }
 
 /// Clean up context files from both the work directory and the upper directory.
@@ -78,17 +98,21 @@ pub fn cleanup_context_files(work_dir: &Path, overlays: &OverlayManager, agent_i
 // Internal helpers wrapping orchestrator services
 // ---------------------------------------------------------------------------
 
+/// Internal result from the submit-and-materialize step.
+enum SubmitOutcome {
+    Submitted { changeset_id: ChangesetId },
+    Conflict { changeset_id: ChangesetId },
+    NoChanges,
+}
+
 /// Submit an agent's overlay work and materialize it to trunk.
-///
-/// Returns `Some(changeset_id)` if changes were found and processed,
-/// or `None` if the overlay has no modifications.
 async fn submit_and_materialize_overlay(
     phantom_dir: &Path,
     repo_root: &Path,
     events: &dyn EventStore,
     overlays: &OverlayManager,
     agent_id: &AgentId,
-) -> anyhow::Result<Option<ChangesetId>> {
+) -> anyhow::Result<SubmitOutcome> {
     let layer = overlays
         .get_layer(agent_id)
         .map_err(|e| anyhow::anyhow!("no overlay found for agent '{agent_id}': {e}"))?;
@@ -153,6 +177,7 @@ async fn submit_and_materialize_overlay(
                             text_fallback_files.len()
                         );
                     }
+                    Ok(SubmitOutcome::Submitted { changeset_id: out.submit.changeset_id })
                 }
                 MaterializeResult::Conflict { details } => {
                     eprintln!("Submission failed with {} conflict(s):", details.len());
@@ -173,13 +198,11 @@ async fn submit_and_materialize_overlay(
                          `phantom rollback --changeset {}` to drop it.",
                         out.submit.changeset_id
                     );
-                    anyhow::bail!("submission failed due to conflicts");
+                    Ok(SubmitOutcome::Conflict { changeset_id: out.submit.changeset_id })
                 }
             }
-
-            Ok(Some(out.submit.changeset_id))
         }
-        None => Ok(None),
+        None => Ok(SubmitOutcome::NoChanges),
     }
 }
 

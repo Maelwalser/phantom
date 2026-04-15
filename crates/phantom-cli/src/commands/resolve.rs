@@ -192,6 +192,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
             task,
             &work_dir,
             Some(&rules_path),
+            &[],
         )?;
 
         let log_file = ctx
@@ -278,7 +279,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
 
         // Run post-session flow once for the whole overlay (submit + materialize).
         let mut overlays = ctx.open_overlays_restored()?;
-        phantom_session::post_session::post_session_flow(
+        let _outcome = phantom_session::post_session::post_session_flow(
             phantom_session::post_session::PostSessionContext {
                 phantom_dir: &ctx.phantom_dir,
                 repo_root: &ctx.repo_root,

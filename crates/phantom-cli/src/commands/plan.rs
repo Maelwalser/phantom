@@ -96,12 +96,27 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     let plan_json = serde_json::to_string_pretty(&plan).context("failed to serialize plan")?;
     std::fs::write(plan_dir.join("plan.json"), &plan_json).context("failed to write plan.json")?;
 
+    // Step 5b: Validate no cycles in dependency graph.
+    validate_no_cycles(&plan.domains)?;
+
     // Step 6: Dispatch agents.
     let mut plan = plan;
     let mut dispatched_agents = Vec::new();
     let mut overlays = ctx.open_overlays_restored()?;
 
     for domain in &plan.domains {
+        // Resolve domain name dependencies to agent IDs.
+        let upstream_agent_ids: Vec<String> = domain
+            .depends_on
+            .iter()
+            .filter_map(|dep_name| {
+                plan.domains
+                    .iter()
+                    .find(|d| d.name == *dep_name)
+                    .map(|d| d.agent_id.clone())
+            })
+            .collect();
+
         dispatch_domain(
             &ctx,
             &events,
@@ -109,6 +124,7 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
             &plan,
             domain,
             &plan_dir,
+            &upstream_agent_ids,
         )
         .await?;
         dispatched_agents.push(AgentId(domain.agent_id.clone()));
@@ -275,31 +291,164 @@ fn build_plan(plan_id: &PlanId, request: &str, raw: RawPlanOutput) -> Plan {
     }
 }
 
-/// Display the plan to the user.
+/// Display the plan to the user, grouped by execution wave.
 fn display_plan(plan: &Plan) {
     println!("Plan: {}", plan.id);
     println!("  {} domain(s) identified:", plan.domains.len());
     println!();
 
-    for (i, domain) in plan.domains.iter().enumerate() {
-        println!("  {}. {}", i + 1, domain.name);
-        println!("     {}", domain.description);
-        if !domain.files_to_modify.is_empty() {
-            let files: Vec<_> = domain
-                .files_to_modify
-                .iter()
-                .map(|f| f.display().to_string())
-                .collect();
-            println!("     Files: {}", files.join(", "));
+    // Compute wave depth for each domain.
+    let waves = compute_waves(&plan.domains);
+    let max_wave = waves.values().copied().max().unwrap_or(0);
+
+    for wave in 0..=max_wave {
+        let domains_in_wave: Vec<&PlanDomain> = plan
+            .domains
+            .iter()
+            .filter(|d| waves.get(d.name.as_str()).copied().unwrap_or(0) == wave)
+            .collect();
+
+        if domains_in_wave.is_empty() {
+            continue;
         }
-        if !domain.depends_on.is_empty() {
-            println!("     Depends on: {}", domain.depends_on.join(", "));
+
+        if max_wave > 0 {
+            if wave == 0 {
+                println!("  Wave {} (immediate):", wave);
+            } else {
+                let after: Vec<&str> = domains_in_wave
+                    .iter()
+                    .flat_map(|d| d.depends_on.iter().map(String::as_str))
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                println!("  Wave {} (after: {}):", wave, after.join(", "));
+            }
         }
-        println!();
+
+        for domain in &domains_in_wave {
+            println!("    - {}", domain.name);
+            println!("      {}", domain.description);
+            if !domain.files_to_modify.is_empty() {
+                let files: Vec<_> = domain
+                    .files_to_modify
+                    .iter()
+                    .map(|f| f.display().to_string())
+                    .collect();
+                println!("      Files: {}", files.join(", "));
+            }
+            if !domain.depends_on.is_empty() {
+                println!("      Depends on: {}", domain.depends_on.join(", "));
+            }
+            println!();
+        }
     }
 }
 
+/// Compute the wave (topological depth) for each domain.
+/// Wave 0 = no dependencies, wave 1 = depends only on wave-0 domains, etc.
+fn compute_waves(domains: &[PlanDomain]) -> std::collections::HashMap<&str, usize> {
+    use std::collections::HashMap;
+    let mut waves: HashMap<&str, usize> = HashMap::new();
+
+    // Iterative fixed-point: keep resolving until stable.
+    loop {
+        let mut changed = false;
+        for domain in domains {
+            let wave = if domain.depends_on.is_empty() {
+                0
+            } else {
+                domain
+                    .depends_on
+                    .iter()
+                    .map(|dep| waves.get(dep.as_str()).copied().unwrap_or(0) + 1)
+                    .max()
+                    .unwrap_or(0)
+            };
+            let prev = waves.insert(domain.name.as_str(), wave);
+            if prev != Some(wave) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    waves
+}
+
+/// Validate that the dependency graph has no cycles.
+///
+/// Uses Kahn's algorithm (topological sort via in-degree counting).
+/// Returns `Err` with a descriptive message if a cycle is found.
+fn validate_no_cycles(domains: &[PlanDomain]) -> anyhow::Result<()> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    let names: HashSet<&str> = domains.iter().map(|d| d.name.as_str()).collect();
+
+    // Build adjacency list and in-degree counts.
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+
+    for domain in domains {
+        in_degree.entry(domain.name.as_str()).or_insert(0);
+        for dep in &domain.depends_on {
+            if !names.contains(dep.as_str()) {
+                anyhow::bail!(
+                    "domain '{}' depends on '{}' which does not exist in the plan",
+                    domain.name,
+                    dep
+                );
+            }
+            *in_degree.entry(domain.name.as_str()).or_insert(0) += 1;
+            dependents
+                .entry(dep.as_str())
+                .or_default()
+                .push(domain.name.as_str());
+        }
+    }
+
+    // Process nodes with zero in-degree.
+    let mut queue: VecDeque<&str> = in_degree
+        .iter()
+        .filter(|entry| *entry.1 == 0)
+        .map(|entry| *entry.0)
+        .collect();
+
+    let mut processed = 0usize;
+
+    while let Some(node) = queue.pop_front() {
+        processed += 1;
+        if let Some(deps) = dependents.get(node) {
+            for &dependent in deps {
+                if let Some(deg) = in_degree.get_mut(dependent) {
+                    *deg -= 1;
+                    if *deg == 0 {
+                        queue.push_back(dependent);
+                    }
+                }
+            }
+        }
+    }
+
+    if processed < names.len() {
+        let in_cycle: Vec<&str> = in_degree
+            .iter()
+            .filter(|entry| *entry.1 > 0)
+            .map(|entry| *entry.0)
+            .collect();
+        anyhow::bail!(
+            "dependency cycle detected among domains: {}",
+            in_cycle.join(" -> ")
+        );
+    }
+
+    Ok(())
+}
+
 /// Dispatch a single domain as a background agent.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_domain(
     ctx: &PhantomContext,
     events: &SqliteEventStore,
@@ -307,6 +456,7 @@ async fn dispatch_domain(
     plan: &Plan,
     domain: &PlanDomain,
     plan_dir: &Path,
+    upstream_agent_ids: &[String],
 ) -> anyhow::Result<()> {
     let agent_id = AgentId(domain.agent_id.clone());
     let git = ctx.open_git()?;
@@ -396,6 +546,7 @@ async fn dispatch_domain(
         &domain.description,
         &work_dir,
         Some(&instructions_path),
+        upstream_agent_ids,
     )?;
 
     let log_file = ctx
@@ -411,6 +562,9 @@ async fn dispatch_domain(
     println!("  Overlay:   {}", work_dir.display());
     if fuse_mounted {
         println!("  FUSE:      mounted");
+    }
+    if !upstream_agent_ids.is_empty() {
+        println!("  Waiting:   {}", upstream_agent_ids.join(", "));
     }
     println!();
 

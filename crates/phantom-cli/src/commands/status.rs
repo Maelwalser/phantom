@@ -31,8 +31,9 @@ pub struct StatusArgs {
 #[derive(Debug)]
 pub enum AgentRunState {
     /// Agent process is currently running.
-    /// Agent process is currently running.
     Running { pid: u32, elapsed: Duration },
+    /// Agent monitor is waiting for upstream dependencies to materialize.
+    WaitingForDependencies { upstream: Vec<String> },
     /// Agent process finished successfully.
     Finished,
     /// Agent process failed or crashed.
@@ -390,6 +391,27 @@ pub fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
         };
     }
 
+    // Check for dependency wait marker (monitor running, claude not yet spawned).
+    let waiting_file = phantom_dir
+        .join("overlays")
+        .join(agent)
+        .join("waiting.json");
+    if let Ok(content) = std::fs::read_to_string(&waiting_file) {
+        // Verify the monitor is still alive.
+        let monitor_pid_file = agent_monitor::monitor_pid_path(phantom_dir, agent);
+        let monitor_alive = std::fs::read_to_string(&monitor_pid_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .is_some_and(|pid| unsafe { libc::kill(pid as libc::pid_t, 0) } == 0);
+
+        if monitor_alive {
+            let upstream: Vec<String> = serde_json::from_str(&content).unwrap_or_default();
+            return AgentRunState::WaitingForDependencies { upstream };
+        }
+        // Monitor died while waiting — clean up marker and fall through to Failed.
+        let _ = std::fs::remove_file(&waiting_file);
+    }
+
     // Check for running process.
     let pid_file = agent_monitor::pid_path(phantom_dir, agent);
     if let Ok(content) = std::fs::read_to_string(&pid_file)
@@ -436,6 +458,9 @@ fn format_run_state_long(state: &AgentRunState) -> String {
             } else {
                 "Failed (process crashed — no status written)".into()
             }
+        }
+        AgentRunState::WaitingForDependencies { upstream } => {
+            format!("Waiting for: {}", upstream.join(", "))
         }
         AgentRunState::Idle => "Idle (no background process)".into(),
     }

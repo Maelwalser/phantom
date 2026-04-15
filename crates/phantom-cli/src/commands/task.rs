@@ -179,6 +179,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             task,
             &work_dir,
             None,
+            &[],
         )?;
 
         let verb_styled = if is_new {
@@ -436,6 +437,7 @@ pub(crate) fn spawn_agent_monitor(
     task: &str,
     work_dir: &Path,
     system_prompt_file: Option<&Path>,
+    depends_on_agents: &[String],
 ) -> anyhow::Result<()> {
     let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
     let overlay_root = phantom_dir.join("overlays").join(agent);
@@ -456,6 +458,11 @@ pub(crate) fn spawn_agent_monitor(
 
     if let Some(path) = system_prompt_file {
         cmd.arg("--system-prompt-file").arg(path);
+    }
+
+    if !depends_on_agents.is_empty() {
+        cmd.arg("--depends-on-agents")
+            .arg(depends_on_agents.join(","));
     }
 
     let child = cmd

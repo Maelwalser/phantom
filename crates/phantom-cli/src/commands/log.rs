@@ -260,6 +260,12 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
         } => {
             format!("PlanCompleted {{ {plan_id}, {succeeded} ok, {failed} failed }}")
         }
+        EventKind::AgentWaitingForDependencies {
+            upstream_agents,
+        } => {
+            let names: Vec<&str> = upstream_agents.iter().map(|a| a.0.as_str()).collect();
+            format!("AgentWaitingForDependencies {{ waiting on: {} }}", names.join(", "))
+        }
         EventKind::Unknown => "Unknown".into(),
     }
 }
@@ -286,6 +292,7 @@ fn event_kind_label(kind: &phantom_core::EventKind) -> &'static str {
         EventKind::AgentCompleted { .. } => "agent completed",
         EventKind::PlanCreated { .. } => "plan created",
         EventKind::PlanCompleted { .. } => "plan completed",
+        EventKind::AgentWaitingForDependencies { .. } => "waiting for deps",
         EventKind::Unknown => "unknown",
     }
 }

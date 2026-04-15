@@ -70,7 +70,7 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
 }
 
 /// Attempt to cleanly unmount a FUSE overlay and kill its daemon.
-fn unmount_fuse(phantom_dir: &std::path::Path, agent: &str) {
+pub(crate) fn unmount_fuse(phantom_dir: &std::path::Path, agent: &str) {
     let overlay_root = phantom_dir.join("overlays").join(agent);
     let pid_file = overlay_root.join("fuse.pid");
     let mount_point = overlay_root.join("mount");

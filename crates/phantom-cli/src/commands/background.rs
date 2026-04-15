@@ -162,6 +162,7 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
 
         match &run_state {
             AgentRunState::Running { .. } => running += 1,
+            AgentRunState::WaitingForDependencies { .. } => running += 1,
             AgentRunState::Finished => finished += 1,
             AgentRunState::Failed { .. } => failed += 1,
             AgentRunState::Idle => idle += 1,

@@ -115,7 +115,7 @@ pub async fn run_interactive_session(
     let events = ctx.open_events().await?;
     let mut overlays = ctx.open_overlays_restored()?;
 
-    post_session::post_session_flow(post_session::PostSessionContext {
+    let _outcome = post_session::post_session_flow(post_session::PostSessionContext {
         phantom_dir: &ctx.phantom_dir,
         repo_root: &ctx.repo_root,
         events: &events,
@@ -124,5 +124,7 @@ pub async fn run_interactive_session(
         changeset_id,
         auto_submit,
     })
-    .await
+    .await?;
+
+    Ok(())
 }

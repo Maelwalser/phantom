@@ -116,6 +116,7 @@ pub fn status_label(status: &ChangesetStatus) -> console::StyledObject<&'static 
 pub fn run_state_indicator(state: &AgentRunState) -> console::StyledObject<&'static str> {
     match state {
         AgentRunState::Running { .. } => style("●").yellow(),
+        AgentRunState::WaitingForDependencies { .. } => style("◌").cyan(),
         AgentRunState::Finished => style("✓").green(),
         AgentRunState::Failed { .. } => style("✗").red(),
         AgentRunState::Idle => style("○").dim(),
@@ -126,6 +127,7 @@ pub fn run_state_indicator(state: &AgentRunState) -> console::StyledObject<&'sta
 pub fn run_state_text(state: &AgentRunState) -> console::StyledObject<&'static str> {
     match state {
         AgentRunState::Running { .. } => style("running").yellow(),
+        AgentRunState::WaitingForDependencies { .. } => style("waiting").cyan(),
         AgentRunState::Finished => style("finished").green(),
         AgentRunState::Failed { .. } => style("failed").red(),
         AgentRunState::Idle => style("idle").dim(),

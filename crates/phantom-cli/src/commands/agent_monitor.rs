@@ -10,11 +10,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
-use phantom_core::id::{AgentId, ChangesetId, EventId};
+use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid};
 use phantom_core::traits::EventStore;
+use phantom_events::SqliteEventStore;
 use phantom_session::adapter;
 use phantom_session::context_file;
+use phantom_session::post_session::PostSessionOutcome;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::context::PhantomContext;
 
@@ -38,6 +41,10 @@ pub struct AgentMonitorArgs {
     /// Path to a system prompt file to append to the claude invocation
     #[arg(long)]
     pub system_prompt_file: Option<String>,
+    /// Comma-separated list of upstream agent IDs that must materialize before
+    /// this agent starts. Empty means no dependencies.
+    #[arg(long, default_value = "")]
+    pub depends_on_agents: String,
 }
 
 /// Completion status written to `.phantom/overlays/<agent>/agent.status`.
@@ -89,6 +96,37 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     let changeset_id = ChangesetId(args.changeset_id.clone());
     let work_dir = PathBuf::from(&args.work_dir);
 
+    // Wait for upstream dependencies to materialize before starting.
+    let upstream_agents: Vec<AgentId> = args
+        .depends_on_agents
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| AgentId(s.to_string()))
+        .collect();
+
+    if !upstream_agents.is_empty() {
+        wait_for_dependencies(&ctx.phantom_dir, &events, &agent_id, &changeset_id, &upstream_agents).await?;
+
+        // Refresh base_commit and context file now that upstream work is on trunk.
+        let git = ctx.open_git()?;
+        let new_head = git.head_oid().context("failed to read HEAD after deps resolved")?;
+        phantom_orchestrator::live_rebase::write_current_base(
+            &ctx.phantom_dir,
+            &agent_id,
+            &new_head,
+        )
+        .context("failed to update current_base after deps resolved")?;
+
+        // Rewrite the context file with the updated base commit.
+        context_file::write_context_file(
+            &work_dir,
+            &agent_id,
+            &changeset_id,
+            &new_head,
+            Some(&args.task),
+        )?;
+    }
+
     // Spawn the claude process as our child so we can waitpid for it.
     let system_prompt_file = args.system_prompt_file.as_deref().map(PathBuf::from);
     let (claude_pid, exit_code) = spawn_and_wait_claude(
@@ -121,22 +159,36 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     // Run post-completion flow: always auto-submit on success.
     let result = run_post_completion(&agent_id, &changeset_id, exit_code).await;
 
-    // Write status file regardless of success/failure.
-    let status = match &result {
-        Ok(materialized) => AgentStatus {
-            exit_code,
-            completed_at: Utc::now(),
-            materialized: *materialized,
-            error: None,
-        },
-        Err(e) => AgentStatus {
-            exit_code,
-            completed_at: Utc::now(),
-            materialized: false,
-            error: Some(format!("{e:#}")),
-        },
+    // Build status from the outcome.
+    let (status, should_destroy) = match &result {
+        Ok(outcome) => {
+            let materialized = matches!(outcome, PostSessionOutcome::Submitted { .. });
+            (
+                AgentStatus {
+                    exit_code,
+                    completed_at: Utc::now(),
+                    materialized,
+                    error: if matches!(outcome, PostSessionOutcome::Conflict { .. }) {
+                        Some("submission failed due to conflicts".into())
+                    } else {
+                        None
+                    },
+                },
+                materialized, // destroy overlay only on successful materialization
+            )
+        }
+        Err(e) => (
+            AgentStatus {
+                exit_code,
+                completed_at: Utc::now(),
+                materialized: false,
+                error: Some(format!("{e:#}")),
+            },
+            false,
+        ),
     };
 
+    // Write status file while the overlay still exists.
     let status_file = status_path(&ctx.phantom_dir, &args.agent);
     if let Ok(json) = serde_json::to_string_pretty(&status) {
         let _ = std::fs::write(&status_file, json);
@@ -145,6 +197,12 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     // Clean up PID files.
     let _ = std::fs::remove_file(pid_path(&ctx.phantom_dir, &args.agent));
     let _ = std::fs::remove_file(monitor_pid_path(&ctx.phantom_dir, &args.agent));
+
+    // Auto-destroy overlay after successful submit. On conflict or failure
+    // the overlay is preserved for `phantom resolve` or manual recovery.
+    if should_destroy {
+        destroy_agent_overlay(&ctx, &agent_id, &changeset_id).await;
+    }
 
     result.map(|_| ())
 }
@@ -206,14 +264,11 @@ fn spawn_and_wait_claude(
 
 /// Run the post-completion flow: record completion, then auto-submit on
 /// success (submit now includes materialization).
-///
-/// Returns `Ok(true)` if the changeset was submitted and materialized,
-/// `Ok(false)` if the agent had no changes.
 async fn run_post_completion(
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
     exit_code: Option<i32>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<PostSessionOutcome> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
     let mut overlays = ctx.open_overlays_restored()?;
@@ -271,7 +326,200 @@ async fn run_post_completion(
             auto_submit: true,
         },
     )
-    .await?;
+    .await
+}
 
-    Ok(true)
+/// Destroy an agent's overlay after successful materialization.
+///
+/// Best-effort: errors are logged but not propagated, since the submission
+/// already succeeded and the overlay is just stale at this point.
+async fn destroy_agent_overlay(
+    ctx: &PhantomContext,
+    agent_id: &AgentId,
+    changeset_id: &ChangesetId,
+) {
+    // Unmount FUSE if running.
+    super::destroy::unmount_fuse(&ctx.phantom_dir, &agent_id.0);
+
+    // Remove overlay directories.
+    let mut overlays = match ctx.open_overlays_restored() {
+        Ok(o) => o,
+        Err(e) => {
+            warn!(agent = %agent_id, error = %e, "failed to open overlays for post-submit cleanup");
+            return;
+        }
+    };
+
+    if let Err(e) = overlays.destroy_overlay(agent_id) {
+        warn!(agent = %agent_id, error = %e, "failed to destroy overlay after successful submit");
+        return;
+    }
+
+    // Emit TaskDestroyed event for audit trail.
+    let events = match ctx.open_events().await {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(agent = %agent_id, error = %e, "failed to open event store for TaskDestroyed event");
+            return;
+        }
+    };
+
+    let event = Event {
+        id: EventId(0),
+        timestamp: Utc::now(),
+        changeset_id: changeset_id.clone(),
+        agent_id: agent_id.clone(),
+        causal_parent: None,
+        kind: EventKind::TaskDestroyed,
+    };
+
+    if let Err(e) = events.append(event).await {
+        warn!(agent = %agent_id, error = %e, "failed to emit TaskDestroyed event");
+    }
+}
+
+/// Status of a single upstream dependency.
+#[allow(dead_code)]
+enum DepStatus {
+    /// The upstream changeset was materialized to trunk.
+    Materialized(GitOid),
+    /// The upstream is still in progress (no terminal event yet).
+    Pending,
+    /// The upstream failed (conflicted, dropped, or agent exited non-zero).
+    Failed(String),
+}
+
+/// Check the status of a single upstream agent by scanning its events.
+async fn check_upstream_status(
+    events: &SqliteEventStore,
+    upstream: &AgentId,
+) -> anyhow::Result<DepStatus> {
+    let agent_events = events.query_by_agent(upstream).await?;
+
+    // Walk backwards to find the most recent terminal event.
+    for event in agent_events.iter().rev() {
+        match &event.kind {
+            EventKind::ChangesetMaterialized { new_commit } => {
+                return Ok(DepStatus::Materialized(*new_commit));
+            }
+            EventKind::ChangesetConflicted { .. } => {
+                return Ok(DepStatus::Failed(format!(
+                    "upstream '{}' has merge conflicts",
+                    upstream
+                )));
+            }
+            EventKind::ChangesetDropped { reason } => {
+                return Ok(DepStatus::Failed(format!(
+                    "upstream '{}' was dropped: {reason}",
+                    upstream
+                )));
+            }
+            EventKind::AgentCompleted {
+                exit_code,
+                materialized,
+            } => {
+                if *exit_code != Some(0) {
+                    let code = exit_code
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".into());
+                    return Ok(DepStatus::Failed(format!(
+                        "upstream '{}' failed with exit code {code}",
+                        upstream
+                    )));
+                }
+                // Agent completed successfully but hasn't materialized yet —
+                // materialization event should follow shortly.
+                if !materialized {
+                    return Ok(DepStatus::Pending);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(DepStatus::Pending)
+}
+
+/// Wait for all upstream dependencies to materialize to trunk.
+///
+/// Emits an `AgentWaitingForDependencies` event, then polls the event store
+/// until all upstream agents have a `ChangesetMaterialized` event. Bails if
+/// any upstream fails.
+async fn wait_for_dependencies(
+    phantom_dir: &Path,
+    events: &SqliteEventStore,
+    agent_id: &AgentId,
+    changeset_id: &ChangesetId,
+    upstream_agents: &[AgentId],
+) -> anyhow::Result<()> {
+    // Emit waiting event for observability.
+    let causal_parent = events
+        .latest_event_for_changeset(changeset_id)
+        .await
+        .unwrap_or(None);
+    let wait_event = Event {
+        id: EventId(0),
+        timestamp: Utc::now(),
+        changeset_id: changeset_id.clone(),
+        agent_id: agent_id.clone(),
+        causal_parent,
+        kind: EventKind::AgentWaitingForDependencies {
+            upstream_agents: upstream_agents.to_vec(),
+        },
+    };
+    events.append(wait_event).await?;
+
+    // Write marker file so `phantom background` / `phantom status` can show
+    // the waiting state and the names of upstream agents.
+    let waiting_file = phantom_dir
+        .join("overlays")
+        .join(&agent_id.0)
+        .join("waiting.json");
+    let upstream_names: Vec<&str> = upstream_agents.iter().map(|a| a.0.as_str()).collect();
+    if let Ok(json) = serde_json::to_string(&upstream_names) {
+        let _ = std::fs::write(&waiting_file, json);
+    }
+
+    const INITIAL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+    const MAX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(7200); // 2 hours
+
+    let start = std::time::Instant::now();
+    let mut poll_interval = INITIAL_POLL_INTERVAL;
+
+    loop {
+        let mut all_satisfied = true;
+
+        for upstream in upstream_agents {
+            match check_upstream_status(events, upstream).await? {
+                DepStatus::Materialized(_) => {} // satisfied
+                DepStatus::Failed(reason) => {
+                    anyhow::bail!(
+                        "dependency failed, cannot start agent '{}': {reason}",
+                        agent_id
+                    );
+                }
+                DepStatus::Pending => {
+                    all_satisfied = false;
+                }
+            }
+        }
+
+        if all_satisfied {
+            // Remove the waiting marker — agent is about to start.
+            let _ = std::fs::remove_file(&waiting_file);
+            return Ok(());
+        }
+
+        if start.elapsed() > MAX_WAIT {
+            let pending: Vec<&str> = upstream_agents.iter().map(|a| a.0.as_str()).collect();
+            anyhow::bail!(
+                "timed out waiting for upstream dependencies: {}",
+                pending.join(", ")
+            );
+        }
+
+        tokio::time::sleep(poll_interval).await;
+        poll_interval = poll_interval.mul_f32(1.5).min(MAX_POLL_INTERVAL);
+    }
 }
