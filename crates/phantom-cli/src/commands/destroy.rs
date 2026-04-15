@@ -91,17 +91,12 @@ pub(crate) fn unmount_fuse(phantom_dir: &std::path::Path, agent: &str) {
     if unmount_ok {
         info!(agent, "FUSE unmounted cleanly");
     } else {
-        // Fallback: kill the daemon process
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-            && let Ok(pid) = pid_str.trim().parse::<i32>()
-        {
-            // SAFETY: Sending SIGTERM to a process has no memory-safety
-            // implications. The PID comes from a file we wrote.
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
+        // Fallback: kill the daemon process (with PID reuse protection).
+        if let Some(record) = crate::pid_guard::read_pid_file(&pid_file) {
+            if crate::pid_guard::kill_process(&record, libc::SIGTERM) {
+                std::thread::sleep(Duration::from_millis(200));
+                info!(agent, pid = record.pid, "killed FUSE daemon");
             }
-            std::thread::sleep(Duration::from_millis(200));
-            info!(agent, pid, "killed FUSE daemon");
         }
     }
 

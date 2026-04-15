@@ -128,23 +128,15 @@ fn cleanup_stale_fuse_mount(overlay_dir: &Path, agent_name: &str) {
         return;
     }
 
-    let pid_str = match std::fs::read_to_string(&pid_file) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let pid: i32 = match pid_str.trim().parse() {
-        Ok(p) => p,
-        Err(_) => {
+    let record = match crate::pid_guard::read_pid_file(&pid_file) {
+        Some(r) => r,
+        None => {
             let _ = std::fs::remove_file(&pid_file);
             return;
         }
     };
 
-    // SAFETY: kill(pid, 0) checks if a process exists without sending a signal.
-    let alive = unsafe { libc::kill(pid, 0) } == 0;
-
-    if !alive {
+    if !crate::pid_guard::is_process_alive(&record) {
         let mount_point = overlay_dir.join("mount");
         let _ = std::process::Command::new("fusermount3")
             .arg("-u")
@@ -153,7 +145,7 @@ fn cleanup_stale_fuse_mount(overlay_dir: &Path, agent_name: &str) {
             .stderr(std::process::Stdio::null())
             .status();
         let _ = std::fs::remove_file(&pid_file);
-        debug!(agent = agent_name, pid, "cleaned up stale FUSE mount");
+        debug!(agent = agent_name, pid = record.pid, "cleaned up stale FUSE mount");
     }
 }
 
@@ -165,23 +157,15 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
         return;
     }
 
-    let pid_str = match std::fs::read_to_string(&pid_file) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let pid: i32 = match pid_str.trim().parse() {
-        Ok(p) => p,
-        Err(_) => {
+    let record = match crate::pid_guard::read_pid_file(&pid_file) {
+        Some(r) => r,
+        None => {
             let _ = std::fs::remove_file(&pid_file);
             return;
         }
     };
 
-    // SAFETY: kill(pid, 0) checks if a process exists without sending a signal.
-    let alive = unsafe { libc::kill(pid, 0) } == 0;
-
-    if !alive {
+    if !crate::pid_guard::is_process_alive(&record) {
         let status_file = overlay_dir.join("agent.status");
         if !status_file.exists() {
             // Process died without writing a status file — write a failed marker.
@@ -196,7 +180,7 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
             }
             warn!(
                 agent = agent_name,
-                pid, "detected dead agent process without status"
+                pid = record.pid, "detected dead agent process without status"
             );
         }
         // Clean up PID files.

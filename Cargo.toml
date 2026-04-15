@@ -58,3 +58,4 @@ nix = { version = "0.30", features = ["term", "signal"] }
 regex = "1"
 dialoguer = "0.11"
 console = "0.15"
+uuid = { version = "1", features = ["v7"] }

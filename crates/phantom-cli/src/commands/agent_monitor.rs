@@ -250,7 +250,8 @@ fn spawn_and_wait_claude(
     let claude_pid = child.id();
 
     // Write PID file so status can find it.
-    std::fs::write(&pid_file, claude_pid.to_string()).context("failed to write agent PID file")?;
+    crate::pid_guard::write_pid_file(&pid_file, claude_pid as i32)
+        .context("failed to write agent PID file")?;
 
     // Wait for the child -- this is our direct child, so waitpid works.
     let status = child

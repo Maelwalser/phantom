@@ -5,6 +5,7 @@ use tracing::error;
 
 mod commands;
 mod context;
+mod pid_guard;
 
 fn print_banner() {
     println!(

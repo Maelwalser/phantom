@@ -172,14 +172,8 @@ fn agent_has_process(overlays_dir: &Path, agent: &str) -> bool {
 }
 
 fn is_pid_alive(pid_file: &Path) -> bool {
-    let Ok(pid_str) = std::fs::read_to_string(pid_file) else {
-        return false;
-    };
-    let Ok(pid) = pid_str.trim().parse::<i32>() else {
-        return false;
-    };
-    // SAFETY: kill(pid, 0) checks process existence without sending a signal.
-    unsafe { libc::kill(pid, 0) == 0 }
+    crate::pid_guard::read_pid_file(pid_file)
+        .is_some_and(|r| crate::pid_guard::is_process_alive(&r))
 }
 
 /// Kill agent and monitor processes for an agent.
@@ -188,21 +182,10 @@ fn kill_agent_processes(overlays_dir: &Path, agent: &str) {
 
     for pid_name in &["agent.pid", "monitor.pid"] {
         let pid_file = overlay_dir.join(pid_name);
-        let Ok(pid_str) = std::fs::read_to_string(&pid_file) else {
-            continue;
-        };
-        let Ok(pid) = pid_str.trim().parse::<i32>() else {
-            let _ = std::fs::remove_file(&pid_file);
-            continue;
-        };
-
-        // SAFETY: kill(pid, 0) checks existence, kill(pid, SIGTERM) sends termination.
-        let alive = unsafe { libc::kill(pid, 0) == 0 };
-        if alive {
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
+        if let Some(record) = crate::pid_guard::read_pid_file(&pid_file) {
+            if crate::pid_guard::kill_process(&record, libc::SIGTERM) {
+                info!(agent, pid = record.pid, file = *pid_name, "sent SIGTERM");
             }
-            info!(agent, pid, file = *pid_name, "sent SIGTERM");
         }
         let _ = std::fs::remove_file(&pid_file);
     }
@@ -213,6 +196,11 @@ fn unmount_agent_fuse(overlays_dir: &Path, agent: &str) -> bool {
     let overlay_dir = overlays_dir.join(agent);
     let mount_point = overlay_dir.join("mount");
     let pid_file = overlay_dir.join("fuse.pid");
+
+    // Read the PID record once up front so we can verify process identity
+    // before sending any signals. This also fixes a prior bug where the pid
+    // file was removed before being read in the clean-unmount path.
+    let fuse_record = crate::pid_guard::read_pid_file(&pid_file);
 
     if !is_fuse_mounted(&mount_point) {
         let _ = std::fs::remove_file(&pid_file);
@@ -230,27 +218,19 @@ fn unmount_agent_fuse(overlays_dir: &Path, agent: &str) -> bool {
 
     if unmount_ok {
         info!(agent, "FUSE unmounted cleanly");
-        let _ = std::fs::remove_file(&pid_file);
 
         // Kill the FUSE daemon process.
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-            && let Ok(pid) = pid_str.trim().parse::<i32>()
-        {
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
+        if let Some(ref record) = fuse_record {
+            crate::pid_guard::kill_process(record, libc::SIGTERM);
         }
+        let _ = std::fs::remove_file(&pid_file);
 
         return true;
     }
 
     // Kill the FUSE daemon and retry unmount.
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-        && let Ok(pid) = pid_str.trim().parse::<i32>()
-    {
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-        }
+    if let Some(ref record) = fuse_record {
+        crate::pid_guard::kill_process(record, libc::SIGTERM);
         std::thread::sleep(Duration::from_millis(300));
 
         let retry_ok = std::process::Command::new("fusermount3")

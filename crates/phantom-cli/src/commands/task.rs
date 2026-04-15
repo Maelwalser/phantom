@@ -60,7 +60,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             let mount_point = handle.mount_point.clone();
             let upper_dir = handle.upper_dir.clone();
 
-            let cs_id = generate_changeset_id(&events).await?;
+            let cs_id = generate_changeset_id();
 
             let event = Event {
                 id: EventId(0),
@@ -99,7 +99,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             // so the agent can continue working on the same overlay.
             let (cs_id, base) = match resume_status {
                 ResumeStatus::Materialized => {
-                    let new_cs_id = generate_changeset_id(&events).await?;
+                    let new_cs_id = generate_changeset_id();
                     let event = Event {
                         id: EventId(0),
                         timestamp: Utc::now(),
@@ -288,7 +288,8 @@ fn spawn_fuse_daemon(
         .spawn()
         .context("failed to spawn FUSE daemon")?;
 
-    std::fs::write(&pid_file, child.id().to_string()).context("failed to write FUSE PID file")?;
+    crate::pid_guard::write_pid_file(&pid_file, child.id() as i32)
+        .context("failed to write FUSE PID file")?;
 
     wait_for_mount(mount_point, Duration::from_secs(5)).with_context(|| {
         format!(
@@ -326,29 +327,13 @@ fn wait_for_mount(mount_point: &Path, timeout: Duration) -> anyhow::Result<()> {
     }
 }
 
-/// Generate a unique changeset ID.
+/// Generate a unique changeset ID using a UUID v7.
 ///
-/// Uses a monotonic counter from the event store combined with a timestamp
-/// suffix to avoid collisions from concurrent task calls.
-pub(crate) async fn generate_changeset_id(
-    events: &SqliteEventStore,
-) -> anyhow::Result<ChangesetId> {
-    let events = events.query_all().await?;
-
-    let overlay_count = events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::TaskCreated { .. }))
-        .count();
-
-    // Append timestamp micros to avoid race condition when two task calls
-    // read the same count concurrently.
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros()
-        % 1_000_000;
-
-    Ok(ChangesetId(format!("cs-{:04}-{ts:06}", overlay_count + 1)))
+/// UUID v7 is time-ordered (embeds a Unix timestamp) with random suffix bits,
+/// making collisions practically impossible even under concurrent invocations.
+pub(crate) fn generate_changeset_id() -> ChangesetId {
+    let id = uuid::Uuid::now_v7();
+    ChangesetId(format!("cs-{}", id.as_hyphenated()))
 }
 
 /// Recover the changeset ID and base commit for an existing agent overlay from
@@ -472,7 +457,7 @@ pub(crate) fn spawn_agent_monitor(
         .spawn()
         .context("failed to spawn agent monitor")?;
 
-    std::fs::write(&monitor_pid_file, child.id().to_string())
+    crate::pid_guard::write_pid_file(&monitor_pid_file, child.id() as i32)
         .context("failed to write monitor PID file")?;
 
     Ok(())

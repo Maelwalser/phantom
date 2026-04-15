@@ -105,7 +105,7 @@ fn phantom_task_background_and_status() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Agent 'agent-a' tasked"))
-        .stdout(predicate::str::contains("cs-0001"))
+        .stdout(predicate::str::contains("cs-"))
         .stdout(predicate::str::contains("add rate limiting"));
 
     phantom(dir.path())

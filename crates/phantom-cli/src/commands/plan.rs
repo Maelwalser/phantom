@@ -470,7 +470,7 @@ async fn dispatch_domain(
     let upper_dir = handle.upper_dir.clone();
 
     // Generate changeset ID.
-    let cs_id = generate_changeset_id(events).await?;
+    let cs_id = generate_changeset_id();
 
     // Emit TaskCreated event.
     let event = Event {
@@ -616,7 +616,7 @@ fn spawn_fuse_if_available(
         Err(_) => return false,
     };
 
-    let _ = std::fs::write(&pid_file, child.id().to_string());
+    let _ = crate::pid_guard::write_pid_file(&pid_file, child.id() as i32);
 
     // Wait briefly for mount.
     wait_for_mount(mount_point, std::time::Duration::from_secs(5))

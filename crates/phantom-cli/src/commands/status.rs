@@ -397,12 +397,10 @@ pub fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
         .join(agent)
         .join("waiting.json");
     if let Ok(content) = std::fs::read_to_string(&waiting_file) {
-        // Verify the monitor is still alive.
+        // Verify the monitor is still alive (with PID reuse protection).
         let monitor_pid_file = agent_monitor::monitor_pid_path(phantom_dir, agent);
-        let monitor_alive = std::fs::read_to_string(&monitor_pid_file)
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .is_some_and(|pid| unsafe { libc::kill(pid as libc::pid_t, 0) } == 0);
+        let monitor_alive = crate::pid_guard::read_pid_file(&monitor_pid_file)
+            .is_some_and(|r| crate::pid_guard::is_process_alive(&r));
 
         if monitor_alive {
             let upstream: Vec<String> = serde_json::from_str(&content).unwrap_or_default();
@@ -412,21 +410,20 @@ pub fn read_agent_run_state(phantom_dir: &Path, agent: &str) -> AgentRunState {
         let _ = std::fs::remove_file(&waiting_file);
     }
 
-    // Check for running process.
+    // Check for running process (with PID reuse protection).
     let pid_file = agent_monitor::pid_path(phantom_dir, agent);
-    if let Ok(content) = std::fs::read_to_string(&pid_file)
-        && let Ok(pid) = content.trim().parse::<u32>()
-    {
-        // Check if process is still alive.
-        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
-        if alive {
+    if let Some(record) = crate::pid_guard::read_pid_file(&pid_file) {
+        if crate::pid_guard::is_process_alive(&record) {
             // Estimate elapsed time from PID file modification time.
             let elapsed = std::fs::metadata(&pid_file)
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.elapsed().ok())
                 .unwrap_or_default();
-            return AgentRunState::Running { pid, elapsed };
+            return AgentRunState::Running {
+                pid: record.pid as u32,
+                elapsed,
+            };
         }
 
         // Process is dead but no status file — crashed.
