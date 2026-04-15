@@ -270,7 +270,12 @@ mod tests {
 
     use super::*;
 
-    fn dummy_symbol(name: &str, kind: SymbolKind, byte_start: usize, byte_end: usize) -> SymbolEntry {
+    fn dummy_symbol(
+        name: &str,
+        kind: SymbolKind,
+        byte_start: usize,
+        byte_end: usize,
+    ) -> SymbolEntry {
         SymbolEntry {
             id: SymbolId(format!("crate::mod::{name}::{kind:?}")),
             kind,
@@ -380,7 +385,8 @@ mod tests {
     fn write_appends_to_context_file_when_present() {
         let dir = tempfile::tempdir().unwrap();
         // Create a context file with a static preamble.
-        let preamble = "# Phantom Agent Session\n\n## Commands\n- submit\n\n---\n\n## Trunk Updates\n";
+        let preamble =
+            "# Phantom Agent Session\n\n## Commands\n- submit\n\n---\n\n## Trunk Updates\n";
         std::fs::write(dir.path().join(CONTEXT_FILE), preamble).unwrap();
 
         write_trunk_update_md(dir.path(), "# Update 1\n").unwrap();

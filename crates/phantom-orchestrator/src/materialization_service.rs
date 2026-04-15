@@ -82,7 +82,14 @@ pub async fn materialize_and_ripple(
     message: &str,
 ) -> Result<MaterializeOutput, OrchestratorError> {
     let result = materializer
-        .materialize(changeset, upper_dir, events, analyzer, message)
+        .materialize(
+            changeset,
+            upper_dir,
+            events,
+            analyzer,
+            message,
+            Some(phantom_dir),
+        )
         .await?;
 
     let MaterializeResult::Success { .. } = &result else {
@@ -327,7 +334,11 @@ fn write_trunk_update(
 ) {
     let relevant_ops: Vec<SemanticOperation> = operations
         .iter()
-        .filter(|op| overlapping_files.iter().any(|f| op.file_path() == f.as_path()))
+        .filter(|op| {
+            overlapping_files
+                .iter()
+                .any(|f| op.file_path() == f.as_path())
+        })
         .cloned()
         .collect();
 

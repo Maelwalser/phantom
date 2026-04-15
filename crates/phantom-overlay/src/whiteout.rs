@@ -5,7 +5,7 @@
 //! in the upper layer directory.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -37,5 +37,15 @@ pub(crate) fn load_whiteouts(upper: &Path) -> Result<HashSet<PathBuf>, OverlayEr
     let data = std::fs::read_to_string(&path)?;
     let ws: WhiteoutSet =
         serde_json::from_str(&data).map_err(|e| OverlayError::Serialization(e.to_string()))?;
-    Ok(ws.paths.into_iter().map(PathBuf::from).collect())
+    Ok(ws
+        .paths
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|p| is_safe_relative_path(p))
+        .collect())
+}
+
+/// Check that a path is safe for overlay use: must be relative with no `..` components.
+pub(crate) fn is_safe_relative_path(p: &Path) -> bool {
+    p.is_relative() && !p.components().any(|c| matches!(c, Component::ParentDir))
 }

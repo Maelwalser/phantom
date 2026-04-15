@@ -121,10 +121,26 @@ mod tests {
       test: cargo test
     "#;
         let symbols = parse_yaml(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "name"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "version"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "dependencies"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "scripts"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "name")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "version")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "dependencies")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "scripts")
+        );
     }
 
     #[test]

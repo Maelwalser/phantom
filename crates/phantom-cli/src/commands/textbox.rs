@@ -4,7 +4,7 @@
 //! multi-line text. Enter confirms, Escape cancels, Alt+Enter inserts
 //! a newline. Long lines soft-wrap to fit the terminal width.
 
-use dialoguer::console::{style, Key, Term};
+use dialoguer::console::{Key, Term, style};
 
 const BOX_HEIGHT: usize = 8;
 const MIN_WIDTH: usize = 40;
@@ -381,12 +381,7 @@ fn build_visual_rows(state: &EditorState) -> Vec<String> {
 /// Layout: title, horizontal separator, content rows (soft-wrapped),
 /// horizontal separator, hint. No vertical borders — content is
 /// left-padded with 2 spaces.
-fn render(
-    state: &EditorState,
-    title: &str,
-    placeholder: &str,
-    width: usize,
-) -> Vec<String> {
+fn render(state: &EditorState, title: &str, placeholder: &str, width: usize) -> Vec<String> {
     let mut output = Vec::new();
 
     // Title line.

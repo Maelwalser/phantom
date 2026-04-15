@@ -6,16 +6,12 @@ use phantom_core::id::GitOid;
 use phantom_core::traits::MergeResult;
 use tracing::info;
 
-use super::{git_oid_to_oid, merge, oid_to_git_oid, GitOps};
+use super::{GitOps, git_oid_to_oid, merge, oid_to_git_oid};
 use crate::error::GitError;
 
 impl GitOps {
     /// Read the contents of `path` as it existed in the commit identified by `oid`.
-    pub fn read_file_at_commit(
-        &self,
-        oid: &GitOid,
-        path: &Path,
-    ) -> Result<Vec<u8>, GitError> {
+    pub fn read_file_at_commit(&self, oid: &GitOid, path: &Path) -> Result<Vec<u8>, GitError> {
         let git_oid = git_oid_to_oid(oid)?;
         let commit = self.repo.find_commit(git_oid)?;
         let tree = commit.tree()?;
@@ -113,11 +109,7 @@ impl GitOps {
     }
 
     /// Return the list of file paths that differ between two commits.
-    pub fn changed_files(
-        &self,
-        from: &GitOid,
-        to: &GitOid,
-    ) -> Result<Vec<PathBuf>, GitError> {
+    pub fn changed_files(&self, from: &GitOid, to: &GitOid) -> Result<Vec<PathBuf>, GitError> {
         let from_oid = git_oid_to_oid(from)?;
         let to_oid = git_oid_to_oid(to)?;
 
@@ -173,8 +165,6 @@ impl GitOps {
 mod tests {
     use super::*;
     use phantom_core::conflict::ConflictKind;
-
-    
 
     fn init_repo_with_commit(
         files: &[(&str, &[u8])],
@@ -323,8 +313,7 @@ mod tests {
 
     #[test]
     fn test_changed_files() {
-        let (_dir, ops) =
-            init_repo_with_commit(&[("a.txt", b"aaa"), ("b.txt", b"bbb")], "init");
+        let (_dir, ops) = init_repo_with_commit(&[("a.txt", b"aaa"), ("b.txt", b"bbb")], "init");
         let first_oid = ops.head_oid().unwrap();
 
         let trunk = ops.repo().workdir().unwrap().to_path_buf();
@@ -446,7 +435,10 @@ mod tests {
         let ops = GitOps::open(dir.path()).unwrap();
 
         // Gitignored paths
-        assert!(ops.is_ignored(Path::new("node_modules/foo/index.js")).unwrap());
+        assert!(
+            ops.is_ignored(Path::new("node_modules/foo/index.js"))
+                .unwrap()
+        );
         assert!(ops.is_ignored(Path::new("target/debug/build")).unwrap());
         assert!(ops.is_ignored(Path::new("lib/cache.pyc")).unwrap());
 

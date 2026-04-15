@@ -28,7 +28,8 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     let events = ctx.open_events().await?;
     let overlays = ctx.open_overlays_restored()?;
 
-    let agent_id = AgentId(args.agent.clone());
+    let agent_id = AgentId::validate(&args.agent)
+        .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {e}", args.agent))?;
     let head = git.head_oid().context("failed to read HEAD")?;
 
     // Find the latest conflicted changeset for this agent.
@@ -172,7 +173,11 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     events.append(event).await?;
 
     // Determine CLI to use: saved session preference or config default.
-    let cli_command = phantom_session::adapter::load_session(&ctx.phantom_dir, &agent_id).map_or_else(|| crate::context::default_cli(&ctx.phantom_dir), |s| s.cli_name);
+    let cli_command = phantom_session::adapter::load_session(&ctx.phantom_dir, &agent_id)
+        .map_or_else(
+            || crate::context::default_cli(&ctx.phantom_dir),
+            |s| s.cli_name,
+        );
 
     if groups.len() <= 1 {
         // Single file group — existing single-agent background path.
@@ -333,7 +338,10 @@ fn group_conflicts_by_file(
     use std::collections::BTreeMap;
     let mut by_file: BTreeMap<std::path::PathBuf, Vec<ResolveConflictContext>> = BTreeMap::new();
     for ctx in contexts {
-        by_file.entry(ctx.detail.file.clone()).or_default().push(ctx);
+        by_file
+            .entry(ctx.detail.file.clone())
+            .or_default()
+            .push(ctx);
     }
     by_file.into_values().collect()
 }
@@ -357,10 +365,8 @@ fn spawn_parallel_resolve_agents(
     let overlay_root = phantom_dir.join("overlays").join(agent);
     let cli_adapter = adapter::adapter_for(cli_command);
 
-    let env_vars: Vec<(&str, &str)> = vec![
-        ("PHANTOM_AGENT_ID", agent),
-        ("PHANTOM_INTERACTIVE", "0"),
-    ];
+    let env_vars: Vec<(&str, &str)> =
+        vec![("PHANTOM_AGENT_ID", agent), ("PHANTOM_INTERACTIVE", "0")];
 
     let mut children = Vec::with_capacity(context_files.len());
 
@@ -374,7 +380,10 @@ fn spawn_parallel_resolve_agents(
 
         let task = format!(
             "Resolve merge conflicts described in {}",
-            context_file.file_name().unwrap_or_default().to_string_lossy()
+            context_file
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
         );
 
         let mut cmd = cli_adapter

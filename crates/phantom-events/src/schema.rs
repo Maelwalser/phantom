@@ -129,11 +129,9 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), EventStoreEr
                 }
             })?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_events_causal_parent ON events(causal_parent)",
-        )
-        .execute(pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_causal_parent ON events(causal_parent)")
+            .execute(pool)
+            .await?;
 
         sqlx::query("UPDATE schema_meta SET value = '4' WHERE key = 'schema_version'")
             .execute(pool)

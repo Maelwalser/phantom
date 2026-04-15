@@ -7,8 +7,7 @@ use chrono::{DateTime, Utc};
 use phantom_core::id::{AgentId, ChangesetId, SymbolId};
 
 /// Result ordering for [`EventQuery`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueryOrder {
     /// Oldest first (chronological).
     Asc,
@@ -16,7 +15,6 @@ pub enum QueryOrder {
     #[default]
     Desc,
 }
-
 
 impl QueryOrder {
     /// SQL keyword for this ordering direction.

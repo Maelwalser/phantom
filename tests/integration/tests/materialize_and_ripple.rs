@@ -40,6 +40,7 @@ async fn test_ripple_notification_after_materialize() {
             &ctx.events,
             &ctx.merger,
             "test commit",
+            None,
         )
         .await
         .expect("materialize failed");

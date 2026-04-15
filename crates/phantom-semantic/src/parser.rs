@@ -17,6 +17,7 @@ use crate::languages::{self, LanguageExtractor};
 /// Holds a cached `tree_sitter::Parser` instance via `RefCell` to avoid
 /// re-allocating the parser on every `parse_file` call. The language is
 /// swapped via `set_language` (a cheap pointer swap) before each parse.
+#[allow(clippy::struct_field_names)]
 pub struct Parser {
     /// Maps file extension to extractor index.
     ext_to_index: HashMap<String, usize>,
@@ -89,16 +90,19 @@ impl Parser {
         path: &Path,
         content: &[u8],
     ) -> Result<Vec<SymbolEntry>, SemanticError> {
-        let idx = self.resolve_index(path).ok_or_else(|| {
-            SemanticError::UnsupportedLanguage {
+        let idx = self
+            .resolve_index(path)
+            .ok_or_else(|| SemanticError::UnsupportedLanguage {
                 path: path.to_path_buf(),
-            }
-        })?;
+            })?;
 
         let extractor = &self.extractors[idx];
         let language = extractor.language();
 
-        let mut ts_parser = self.ts_parser.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ts_parser = self
+            .ts_parser
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         ts_parser
             .set_language(&language)
             .map_err(|e| SemanticError::ParseError {
@@ -134,7 +138,10 @@ impl Parser {
         };
 
         let language = self.extractors[idx].language();
-        let mut ts_parser = self.ts_parser.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ts_parser = self
+            .ts_parser
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if ts_parser.set_language(&language).is_err() {
             return false;
         }

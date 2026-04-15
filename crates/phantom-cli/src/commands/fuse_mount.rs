@@ -57,8 +57,8 @@ pub fn run(args: FuseMountArgs) -> anyhow::Result<()> {
 
         use fuser::{Config, MountOption, SessionACL};
         use phantom_core::AgentId;
-        use phantom_overlay::{FsConfig, PhantomFs};
         use phantom_overlay::layer::OverlayLayer;
+        use phantom_overlay::{FsConfig, PhantomFs};
 
         // Flag set by the SIGTERM handler to request shutdown.
         static TERM_RECEIVED: AtomicBool = AtomicBool::new(false);

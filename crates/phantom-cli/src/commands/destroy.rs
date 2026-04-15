@@ -24,7 +24,8 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
     let events_store = ctx.open_events().await?;
     let mut overlays = ctx.open_overlays_restored()?;
 
-    let agent_id = AgentId(args.agent.clone());
+    let agent_id = AgentId::validate(&args.agent)
+        .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {e}", args.agent))?;
 
     // Find the changeset ID for this agent
     let events = events_store.query_by_agent(&agent_id).await?;
@@ -93,10 +94,11 @@ pub(crate) fn unmount_fuse(phantom_dir: &std::path::Path, agent: &str) {
     } else {
         // Fallback: kill the daemon process (with PID reuse protection).
         if let Some(record) = crate::pid_guard::read_pid_file(&pid_file)
-            && crate::pid_guard::kill_process(&record, libc::SIGTERM) {
-                std::thread::sleep(Duration::from_millis(200));
-                info!(agent, pid = record.pid, "killed FUSE daemon");
-            }
+            && crate::pid_guard::kill_process(&record, libc::SIGTERM)
+        {
+            std::thread::sleep(Duration::from_millis(200));
+            info!(agent, pid = record.pid, "killed FUSE daemon");
+        }
     }
 
     let _ = std::fs::remove_file(&pid_file);

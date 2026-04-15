@@ -90,11 +90,10 @@ async fn rollback_single(
                     );
                 }
                 Err(e) => {
+                    eprintln!("  {} git revert failed: {e}", console::style("⚠").yellow());
                     eprintln!(
-                        "  {} git revert failed: {e}",
-                        console::style("⚠").yellow()
+                        "    The rolled-back changes may have been modified by later commits."
                     );
-                    eprintln!("    The rolled-back changes may have been modified by later commits.");
                     eprintln!("    Manual resolution with `git revert` may be needed.");
                 }
             }
@@ -200,12 +199,7 @@ async fn run_interactive_for_agent(
     let mut eligible: Vec<&Changeset> = projection
         .changesets_for_agent(agent_id)
         .into_iter()
-        .filter(|cs| {
-            matches!(
-                cs.status,
-                ChangesetStatus::Submitted
-            )
-        })
+        .filter(|cs| matches!(cs.status, ChangesetStatus::Submitted))
         .collect();
     // Newest first (changesets_for_agent already sorts this way, but be explicit).
     eligible.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -241,7 +235,8 @@ async fn run_interactive_for_agent(
 
 fn format_menu_item(id: &ChangesetId, cs: &Changeset) -> String {
     let task_display = if cs.task.len() > 50 {
-        format!("{}...", &cs.task[..47])
+        let truncated: String = cs.task.chars().take(47).collect();
+        format!("{truncated}...")
     } else {
         cs.task.clone()
     };

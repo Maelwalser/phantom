@@ -218,9 +218,7 @@ fn nb_write_all(fd: RawFd, shutdown_fd: RawFd, data: &[u8]) -> bool {
 
     let mut offset = 0;
     while offset < data.len() {
-        let n = unsafe {
-            libc::write(fd, data[offset..].as_ptr().cast(), data.len() - offset)
-        };
+        let n = unsafe { libc::write(fd, data[offset..].as_ptr().cast(), data.len() - offset) };
         if n > 0 {
             offset += n as usize;
             continue;
@@ -258,7 +256,7 @@ fn nb_write_all(fd: RawFd, shutdown_fd: RawFd, data: &[u8]) -> bool {
 
 /// Set a file descriptor to non-blocking mode.
 fn set_nonblocking(fd: &OwnedFd) -> anyhow::Result<()> {
-    use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
     let flags = OFlag::from_bits_truncate(fcntl(fd, FcntlArg::F_GETFL)?);
     fcntl(fd, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
     Ok(())
@@ -304,8 +302,7 @@ pub fn spawn_with_pty(
             None
         }
     };
-    let pty =
-        openpty(initial_winsize.as_ref(), None).context("failed to open PTY")?;
+    let pty = openpty(initial_winsize.as_ref(), None).context("failed to open PTY")?;
     let master_fd = pty.master;
     let slave_fd = pty.slave;
 

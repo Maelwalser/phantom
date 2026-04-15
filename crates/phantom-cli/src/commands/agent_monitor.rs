@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::context::PhantomContext;
 use anyhow::Context;
 use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
@@ -17,7 +18,6 @@ use phantom_session::adapter;
 use phantom_session::context_file;
 use phantom_session::post_session::PostSessionOutcome;
 use serde::{Deserialize, Serialize};
-use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
 pub struct AgentMonitorArgs {
@@ -106,11 +106,20 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         .collect();
 
     if !upstream_agents.is_empty() {
-        wait_for_dependencies(&ctx.phantom_dir, &events, &agent_id, &changeset_id, &upstream_agents).await?;
+        wait_for_dependencies(
+            &ctx.phantom_dir,
+            &events,
+            &agent_id,
+            &changeset_id,
+            &upstream_agents,
+        )
+        .await?;
 
         // Refresh base_commit and context file now that upstream work is on trunk.
         let git = ctx.open_git()?;
-        let new_head = git.head_oid().context("failed to read HEAD after deps resolved")?;
+        let new_head = git
+            .head_oid()
+            .context("failed to read HEAD after deps resolved")?;
         phantom_orchestrator::live_rebase::write_current_base(
             &ctx.phantom_dir,
             &agent_id,
@@ -189,8 +198,7 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
                 },
             };
             if events.append(resolution_event).await.is_ok() {
-                result =
-                    run_post_completion(&agent_id, &changeset_id, exit_code).await;
+                result = run_post_completion(&agent_id, &changeset_id, exit_code).await;
             }
         }
     }
@@ -280,9 +288,9 @@ fn spawn_and_wait_agent(
         .stdout(log_handle)
         .stderr(log_stderr);
 
-    let mut child = cmd.spawn().with_context(
-        || format!("failed to spawn background agent -- is '{cli_command}' installed and on PATH?"),
-    )?;
+    let mut child = cmd.spawn().with_context(|| {
+        format!("failed to spawn background agent -- is '{cli_command}' installed and on PATH?")
+    })?;
 
     let claude_pid = child.id();
 
@@ -478,9 +486,7 @@ async fn wait_for_dependencies(
             match check_upstream_status(events, upstream).await? {
                 DepStatus::Materialized(_) => {} // satisfied
                 DepStatus::Failed(reason) => {
-                    anyhow::bail!(
-                        "dependency failed, cannot start agent '{agent_id}': {reason}"
-                    );
+                    anyhow::bail!("dependency failed, cannot start agent '{agent_id}': {reason}");
                 }
                 DepStatus::Pending => {
                     all_satisfied = false;

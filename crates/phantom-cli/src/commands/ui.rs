@@ -83,10 +83,7 @@ pub fn style_cyan(text: &str) -> console::StyledObject<&str> {
 
 /// Print a bold section header with a dim rule line underneath.
 pub fn section_header(title: &str) {
-    let width = console::Term::stdout()
-        .size()
-        .1
-        .min(80) as usize;
+    let width = console::Term::stdout().size().1.min(80) as usize;
     let rule_len = width.saturating_sub(2);
     println!("  {}", style(title).bold());
     println!("  {}", style("─".repeat(rule_len)).dim());
@@ -94,7 +91,10 @@ pub fn section_header(title: &str) {
 
 /// Print a key-value pair with dim key, indented.
 pub fn key_value(key: &str, value: impl std::fmt::Display) {
-    println!("  {}  {value}", Style::new().dim().apply_to(format!("{key:<12}")));
+    println!(
+        "  {}  {value}",
+        Style::new().dim().apply_to(format!("{key:<12}"))
+    );
 }
 
 // ── Changeset status styling ─────────────────────────────────────────

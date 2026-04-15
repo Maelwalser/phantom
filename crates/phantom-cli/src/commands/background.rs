@@ -52,7 +52,7 @@ fn visual_line_count(line: &str, term_width: usize) -> usize {
     if visible_width == 0 {
         1 // empty line still occupies one row
     } else {
-        (visible_width + term_width - 1) / term_width // ceil division
+        visible_width.div_ceil(term_width)
     }
 }
 
@@ -221,13 +221,25 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
     writeln!(out)?;
     write!(out, "  ")?;
     if running > 0 {
-        write!(out, "{}  ", console::style(format!("● {running} running")).yellow())?;
+        write!(
+            out,
+            "{}  ",
+            console::style(format!("● {running} running")).yellow()
+        )?;
     }
     if finished > 0 {
-        write!(out, "{}  ", console::style(format!("✓ {finished} finished")).green())?;
+        write!(
+            out,
+            "{}  ",
+            console::style(format!("✓ {finished} finished")).green()
+        )?;
     }
     if failed > 0 {
-        write!(out, "{}  ", console::style(format!("✗ {failed} failed")).red())?;
+        write!(
+            out,
+            "{}  ",
+            console::style(format!("✗ {failed} failed")).red()
+        )?;
     }
     if idle > 0 {
         write!(out, "{}  ", console::style(format!("○ {idle} idle")).dim())?;

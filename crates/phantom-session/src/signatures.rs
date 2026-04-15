@@ -80,10 +80,7 @@ pub fn extract_cross_domain_signatures(
         };
 
         let lang_tag = crate::context_file::lang_from_path(rel_path);
-        let ext = rel_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = rel_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         // Sort symbols: type definitions first, then functions/methods.
         let mut sorted_symbols = symbols;
@@ -234,10 +231,7 @@ fn strip_python_body(source: &str) -> String {
 /// Check if a file path looks like a test file.
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn is_test_file(path: &Path) -> bool {
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     name.ends_with("_test")
         || name.ends_with("_spec")
         || name.starts_with("test_")
@@ -272,12 +266,16 @@ mod tests {
     fn strip_brace_body_rust_function() {
         let src = "pub fn validate(token: &str) -> Result<Claims, Error> {\n    todo!()\n}";
         let sig = strip_brace_body(src);
-        assert_eq!(sig, "pub fn validate(token: &str) -> Result<Claims, Error> { ... }");
+        assert_eq!(
+            sig,
+            "pub fn validate(token: &str) -> Result<Claims, Error> { ... }"
+        );
     }
 
     #[test]
     fn strip_brace_body_with_generics() {
-        let src = "fn process<T: Into<String>>(items: Vec<T>) -> HashMap<String, T> {\n    todo!()\n}";
+        let src =
+            "fn process<T: Into<String>>(items: Vec<T>) -> HashMap<String, T> {\n    todo!()\n}";
         let sig = strip_brace_body(src);
         assert_eq!(
             sig,

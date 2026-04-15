@@ -49,7 +49,8 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
     let events = ctx.open_events().await?;
     let mut overlays = ctx.open_overlays_restored()?;
 
-    let agent_id = AgentId(args.agent.clone());
+    let agent_id = AgentId::validate(&args.agent)
+        .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {e}", args.agent))?;
     let head = git.head_oid().context("failed to read HEAD")?;
 
     // Try to create a new overlay. If one already exists, switch to resume mode.
@@ -318,7 +319,7 @@ fn spawn_fuse_daemon(
         cmd.arg("--dir-mode").arg(mode.to_string());
     }
 
-    let child = cmd
+    let mut child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log_handle)
@@ -328,12 +329,16 @@ fn spawn_fuse_daemon(
     crate::pid_guard::write_pid_file(&pid_file, child.id() as i32)
         .context("failed to write FUSE PID file")?;
 
-    wait_for_mount(mount_point, Duration::from_secs(5)).with_context(|| {
-        format!(
-            "FUSE mount did not become ready. Check {}",
-            log_file.display()
-        )
-    })?;
+    if let Err(e) = wait_for_mount(mount_point, Duration::from_secs(5)) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e).with_context(|| {
+            format!(
+                "FUSE mount did not become ready. Check {}",
+                log_file.display()
+            )
+        });
+    }
 
     Ok(true)
 }

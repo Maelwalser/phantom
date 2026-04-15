@@ -9,7 +9,7 @@ use anyhow::Context;
 use phantom_core::id::{AgentId, ChangesetId, GitOid};
 use phantom_core::symbol::find_enclosing_symbol;
 
-use super::{lang_from_path, CONTEXT_FILE};
+use super::{CONTEXT_FILE, lang_from_path};
 
 /// Approximate byte budget for whole-file display in conflict context.
 /// ~8192 tokens × 4 bytes/token = 32,768 bytes.
@@ -335,7 +335,13 @@ fn write_compact_conflict(
     }
 
     // Write OURS diff.
-    write_diff_section(out, "OURS", "trunk applied these changes", &base_symbol, ours_symbol.as_deref());
+    write_diff_section(
+        out,
+        "OURS",
+        "trunk applied these changes",
+        &base_symbol,
+        ours_symbol.as_deref(),
+    );
 
     // Write THEIRS diff.
     write_diff_section(
@@ -389,17 +395,35 @@ fn write_compact_raw_text_conflict(
     // diffing the entire file.  This eliminates irrelevant context lines and
     // focuses the LLM on the actual conflict region.
     let file_path = &conflict.detail.file;
-    if let Some(scope_symbols) = collect_scope_symbols(base_content, ours_content, theirs_content, file_path, parser)
-        && !scope_symbols.is_empty()
+    if let Some(scope_symbols) = collect_scope_symbols(
+        base_content,
+        ours_content,
+        theirs_content,
+        file_path,
+        parser,
+    ) && !scope_symbols.is_empty()
     {
         let checkpoint = out.len();
         let mut all_scoped = true;
 
         for sym in &scope_symbols {
-            let base_slice = &base_content[sym.base_range.start..sym.base_range.end.min(base_content.len())];
+            let base_slice =
+                &base_content[sym.base_range.start..sym.base_range.end.min(base_content.len())];
 
-            let ours_range = find_matching_symbol_range(ours_content, &sym.base_range, base_content, file_path, parser);
-            let theirs_range = find_matching_symbol_range(theirs_content, &sym.base_range, base_content, file_path, parser);
+            let ours_range = find_matching_symbol_range(
+                ours_content,
+                &sym.base_range,
+                base_content,
+                file_path,
+                parser,
+            );
+            let theirs_range = find_matching_symbol_range(
+                theirs_content,
+                &sym.base_range,
+                base_content,
+                file_path,
+                parser,
+            );
 
             if ours_range.is_none() || theirs_range.is_none() {
                 all_scoped = false;
@@ -735,23 +759,29 @@ fn write_truncated(out: &mut String, text: &str, center: usize) {
     };
 
     // Snap end backward to the last line boundary.
-    let end = text[..raw_end]
-        .rfind('\n')
-        .map_or(raw_end, |i| i + 1);
+    let end = text[..raw_end].rfind('\n').map_or(raw_end, |i| i + 1);
 
     // Ensure we still have a non-empty window after snapping.
     let end = end.max(start);
 
     if start > 0 {
         let lines_above = text[..start].matches('\n').count();
-        writeln!(out, "// ... [CONTENT TRUNCATED: {lines_above} lines above] ...").unwrap();
+        writeln!(
+            out,
+            "// ... [CONTENT TRUNCATED: {lines_above} lines above] ..."
+        )
+        .unwrap();
     }
 
     out.push_str(&text[start..end]);
 
     if end < text.len() {
         let remaining_tokens = (text.len() - end) / BYTES_PER_TOKEN_ESTIMATE;
-        write!(out, "// ... [CONTENT TRUNCATED: ~{remaining_tokens} more tokens below] ...").unwrap();
+        write!(
+            out,
+            "// ... [CONTENT TRUNCATED: ~{remaining_tokens} more tokens below] ..."
+        )
+        .unwrap();
     }
 }
 
@@ -876,10 +906,21 @@ mod tests {
         assert!(merged.contains("<<<<<<<"), "should contain <<<<<<< marker");
         assert!(merged.contains(">>>>>>>"), "should contain >>>>>>> marker");
         assert!(merged.contains("======="), "should contain ======= marker");
-        assert!(merged.contains("|||||||"), "should contain ||||||| marker (diff3 style)");
+        assert!(
+            merged.contains("|||||||"),
+            "should contain ||||||| marker (diff3 style)"
+        );
         // Shared context should appear only once.
-        assert_eq!(merged.matches("line1").count(), 1, "shared line should appear once");
-        assert_eq!(merged.matches("line3").count(), 1, "shared line should appear once");
+        assert_eq!(
+            merged.matches("line1").count(),
+            1,
+            "shared line should appear once"
+        );
+        assert_eq!(
+            merged.matches("line3").count(),
+            1,
+            "shared line should appear once"
+        );
         // Both changes should be present.
         assert!(merged.contains("ours_change"));
         assert!(merged.contains("theirs_change"));
@@ -901,15 +942,29 @@ mod tests {
 
         let merged = build_conflict_marker_view(Some(base), Some(ours), Some(theirs));
         let merged = merged.unwrap();
-        assert!(!merged.contains("<<<<<<<"), "clean merge should have no conflict markers");
+        assert!(
+            !merged.contains("<<<<<<<"),
+            "clean merge should have no conflict markers"
+        );
         assert!(merged.contains("OURS"), "ours change should be integrated");
-        assert!(merged.contains("THEIRS"), "theirs change should be integrated");
+        assert!(
+            merged.contains("THEIRS"),
+            "theirs change should be integrated"
+        );
     }
 
     #[test]
     fn minimal_fallback_picks_best_content() {
         let mut out = String::new();
-        write_minimal_fallback(&mut out, "txt", None, None, Some("theirs content"), "abc", 0);
+        write_minimal_fallback(
+            &mut out,
+            "txt",
+            None,
+            None,
+            Some("theirs content"),
+            "abc",
+            0,
+        );
         assert!(out.contains("THEIRS"), "should prefer theirs");
         assert!(out.contains("theirs content"));
 
@@ -923,7 +978,10 @@ mod tests {
 
         let mut out = String::new();
         write_minimal_fallback(&mut out, "txt", None, None, None, "abc", 0);
-        assert!(out.contains("no file content available"), "should show message when all missing");
+        assert!(
+            out.contains("no file content available"),
+            "should show message when all missing"
+        );
     }
 
     fn make_both_modified_conflict(
@@ -996,8 +1054,14 @@ mod tests {
         // Hunk headers should be preserved.
         assert!(out.contains("@@"), "hunk headers should be preserved");
         // Scope context header should appear between BASE and the diffs.
-        assert!(out.contains("#### Scope Context"), "scope context header should be present");
-        assert!(out.contains("`fn target() {`"), "scope signature should be the function signature");
+        assert!(
+            out.contains("#### Scope Context"),
+            "scope context header should be present"
+        );
+        assert!(
+            out.contains("`fn target() {`"),
+            "scope signature should be the function signature"
+        );
     }
 
     #[test]
@@ -1122,7 +1186,10 @@ mod tests {
         // Should use compact format: one rust block + diff blocks.
         assert!(content.contains("```diff"), "should contain diff blocks");
         let rust_blocks = content.matches("```rust").count();
-        assert_eq!(rust_blocks, 1, "should have exactly one rust code block (BASE)");
+        assert_eq!(
+            rust_blocks, 1,
+            "should have exactly one rust code block (BASE)"
+        );
     }
 
     #[test]
@@ -1168,10 +1235,17 @@ mod tests {
             content.contains("```diff"),
             "RawTextConflict should use diff format"
         );
-        assert!(!content.contains("#### BASE"), "raw text conflicts should not emit a BASE block");
+        assert!(
+            !content.contains("#### BASE"),
+            "raw text conflicts should not emit a BASE block"
+        );
         assert!(content.contains("#### OURS"));
         assert!(content.contains("#### THEIRS"));
-        assert_eq!(content.matches("```toml").count(), 0, "no toml code blocks — only diffs");
+        assert_eq!(
+            content.matches("```toml").count(),
+            0,
+            "no toml code blocks — only diffs"
+        );
     }
 
     #[test]
@@ -1202,13 +1276,23 @@ mod tests {
 
         let mut out = String::new();
         let parser = phantom_semantic::Parser::new();
-        let ok = write_compact_raw_text_conflict(&mut out, "markdown", &conflict, "abc123", &parser);
+        let ok =
+            write_compact_raw_text_conflict(&mut out, "markdown", &conflict, "abc123", &parser);
 
         assert!(ok, "should succeed for RawTextConflict with all content");
-        assert!(!out.contains("#### BASE"), "raw text conflicts should not emit a BASE block");
-        assert!(!out.contains("```markdown"), "no markdown code block — only diffs");
+        assert!(
+            !out.contains("#### BASE"),
+            "raw text conflicts should not emit a BASE block"
+        );
+        assert!(
+            !out.contains("```markdown"),
+            "no markdown code block — only diffs"
+        );
         // Non-parseable file (README.md) should NOT emit scope context.
-        assert!(!out.contains("#### Scope Context"), "non-parseable file should not have scope context");
+        assert!(
+            !out.contains("#### Scope Context"),
+            "non-parseable file should not have scope context"
+        );
         assert!(out.contains("#### OURS"));
         assert!(out.contains("#### THEIRS"));
         assert!(out.contains("```diff"));
@@ -1341,7 +1425,10 @@ mod tests {
     }
     ";
         // OURS modifies a line deep in handler.
-        let ours = base.replace("let result = a + b + c + d + e + f;", "let result = a + b + c;");
+        let ours = base.replace(
+            "let result = a + b + c + d + e + f;",
+            "let result = a + b + c;",
+        );
         // THEIRS modifies a different line in handler.
         let theirs = base.replace("respond(result)", "respond(result * 2)");
 
@@ -1368,7 +1455,10 @@ mod tests {
 
         assert!(ok, "should succeed");
         // Scope context should be emitted for the parseable Rust file.
-        assert!(out.contains("#### Scope Context"), "scope context header should be present");
+        assert!(
+            out.contains("#### Scope Context"),
+            "scope context header should be present"
+        );
         assert!(
             out.contains("`fn handler(req: Request) -> Response {`"),
             "scope signature should identify the enclosing function, got:\n{out}"
@@ -1451,10 +1541,7 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         // All 9 rules present.
         for i in 1..=9 {
-            assert!(
-                content.contains(&format!("{i}.")),
-                "missing rule {i}"
-            );
+            assert!(content.contains(&format!("{i}.")), "missing rule {i}");
         }
         assert!(content.contains("After Resolution"));
         assert!(content.contains("automatically submitted and materialized"));

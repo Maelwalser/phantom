@@ -1379,6 +1379,7 @@ dependencies = [
  "chrono",
  "diffy",
  "git2",
+ "nix",
  "phantom-core",
  "phantom-events",
  "phantom-git",

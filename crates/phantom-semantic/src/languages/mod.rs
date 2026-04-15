@@ -80,7 +80,10 @@ pub fn all_extractors() -> Vec<Box<dyn LanguageExtractor>> {
 /// Extract text of a child field from a tree-sitter node.
 pub(crate) fn child_field_text(node: Node<'_>, field: &str, source: &[u8]) -> Option<String> {
     let child = node.child_by_field_name(field)?;
-    child.utf8_text(source).ok().map(std::string::ToString::to_string)
+    child
+        .utf8_text(source)
+        .ok()
+        .map(std::string::ToString::to_string)
 }
 
 /// Extract the full text of a tree-sitter node.

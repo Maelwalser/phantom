@@ -358,10 +358,8 @@ impl CliAdapter for OpenCodeAdapter {
 
     fn extract_session_id(&self, output_tail: &str) -> Option<String> {
         // Strategy 1: Look for "opencode --session <id>" or "opencode -s <id>".
-        let resume_re = Regex::new(
-            r"opencode (?:--session|-s) ([0-9a-f-]{36}|ses_[a-zA-Z0-9]+)",
-        )
-        .ok()?;
+        let resume_re =
+            Regex::new(r"opencode (?:--session|-s) ([0-9a-f-]{36}|ses_[a-zA-Z0-9]+)").ok()?;
         if let Some(caps) = resume_re.captures(output_tail) {
             return caps.get(1).map(|m| m.as_str().to_string());
         }

@@ -103,8 +103,14 @@ mod tests {
         let changeset_id = phantom_core::id::ChangesetId("cs-1".to_string());
         let base_commit = phantom_core::id::GitOid([0u8; 20]);
 
-        write_context_file(dir.path(), &agent_id, &changeset_id, &base_commit, Some("do stuff"))
-            .unwrap();
+        write_context_file(
+            dir.path(),
+            &agent_id,
+            &changeset_id,
+            &base_commit,
+            Some("do stuff"),
+        )
+        .unwrap();
 
         let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
         let commands_pos = content.find("## Commands").unwrap();
@@ -112,9 +118,15 @@ mod tests {
         let task_pos = content.find("## Task").unwrap();
         let updates_pos = content.find("## Trunk Updates").unwrap();
         // Order: most-static to most-dynamic for prompt cache efficiency.
-        assert!(commands_pos < info_pos, "Commands should come before Agent Info");
+        assert!(
+            commands_pos < info_pos,
+            "Commands should come before Agent Info"
+        );
         assert!(info_pos < task_pos, "Agent Info should come before Task");
-        assert!(task_pos < updates_pos, "Task should come before Trunk Updates");
+        assert!(
+            task_pos < updates_pos,
+            "Task should come before Trunk Updates"
+        );
     }
 
     #[test]
@@ -124,8 +136,7 @@ mod tests {
         let changeset_id = phantom_core::id::ChangesetId("cs-1".to_string());
         let base_commit = phantom_core::id::GitOid([0u8; 20]);
 
-        write_context_file(dir.path(), &agent_id, &changeset_id, &base_commit, None)
-            .unwrap();
+        write_context_file(dir.path(), &agent_id, &changeset_id, &base_commit, None).unwrap();
 
         let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
         assert!(
@@ -141,13 +152,18 @@ mod tests {
         let changeset_id = phantom_core::id::ChangesetId("cs-1".to_string());
         let base_commit = phantom_core::id::GitOid([0u8; 20]);
 
-        write_context_file(dir.path(), &agent_id, &changeset_id, &base_commit, Some("task"))
-            .unwrap();
+        write_context_file(
+            dir.path(),
+            &agent_id,
+            &changeset_id,
+            &base_commit,
+            Some("task"),
+        )
+        .unwrap();
 
         let before = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
 
-        append_context_update(dir.path(), "Agent `b1` submitted changeset `cs-2`.\n")
-            .unwrap();
+        append_context_update(dir.path(), "Agent `b1` submitted changeset `cs-2`.\n").unwrap();
 
         let after = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
 
@@ -171,8 +187,7 @@ mod tests {
         let changeset_id = phantom_core::id::ChangesetId("cs-0".to_string());
         let base_commit = phantom_core::id::GitOid([0xAB; 20]);
 
-        write_context_file(dir.path(), &agent_id, &changeset_id, &base_commit, None)
-            .unwrap();
+        write_context_file(dir.path(), &agent_id, &changeset_id, &base_commit, None).unwrap();
 
         let original = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
 

@@ -71,11 +71,8 @@ impl ConflictSpan {
     /// up to the range boundaries.
     #[allow(clippy::naive_bytecount)]
     pub fn from_byte_range(src: &[u8], byte_range: Range<usize>) -> Self {
-        let start_line = src[..byte_range.start]
-            .iter()
-            .filter(|&&b| b == b'\n')
-            .count()
-            + 1;
+        let start_byte = byte_range.start.min(src.len());
+        let start_line = src[..start_byte].iter().filter(|&&b| b == b'\n').count() + 1;
         let end_byte = byte_range.end.min(src.len());
         let end_line = src[..end_byte].iter().filter(|&&b| b == b'\n').count() + 1;
         Self {

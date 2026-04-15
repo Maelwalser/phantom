@@ -193,7 +193,11 @@ fn cleanup_stale_fuse_mount(overlay_dir: &Path, agent_name: &str) {
             .stderr(std::process::Stdio::null())
             .status();
         let _ = std::fs::remove_file(&pid_file);
-        debug!(agent = agent_name, pid = record.pid, "cleaned up stale FUSE mount");
+        debug!(
+            agent = agent_name,
+            pid = record.pid,
+            "cleaned up stale FUSE mount"
+        );
     }
 }
 
@@ -225,7 +229,8 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
             }
             warn!(
                 agent = agent_name,
-                pid = record.pid, "detected dead agent process without status"
+                pid = record.pid,
+                "detected dead agent process without status"
             );
         }
         // Clean up PID files.

@@ -33,9 +33,7 @@ pub struct EventStoreConfig {
 
 impl Default for EventStoreConfig {
     fn default() -> Self {
-        Self {
-            max_connections: 2,
-        }
+        Self { max_connections: 2 }
     }
 }
 
@@ -288,10 +286,7 @@ impl SqliteEventStore {
     ///
     /// Walks the causal DAG breadth-first using a recursive CTE on the
     /// `causal_parent` column. Results are ordered by `id ASC`.
-    pub async fn query_descendants(
-        &self,
-        root: EventId,
-    ) -> Result<Vec<Event>, EventStoreError> {
+    pub async fn query_descendants(&self, root: EventId) -> Result<Vec<Event>, EventStoreError> {
         let sql = "
             WITH RECURSIVE descendants(id) AS (
                 SELECT id FROM events WHERE id = $1 AND dropped = 0
@@ -324,10 +319,9 @@ impl SqliteEventStore {
 
     /// Return the count of non-dropped events.
     pub async fn event_count(&self) -> Result<u64, EventStoreError> {
-        let row: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM events WHERE dropped = 0")
-                .fetch_one(&self.pool)
-                .await?;
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events WHERE dropped = 0")
+            .fetch_one(&self.pool)
+            .await?;
         Ok(row.0 as u64)
     }
 

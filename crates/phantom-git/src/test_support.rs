@@ -4,9 +4,9 @@ use std::path::Path;
 
 use phantom_core::id::GitOid;
 
+use crate::GitOps;
 use crate::error::GitError;
 use crate::helpers::collect_files_recursive;
-use crate::GitOps;
 
 // ---------------------------------------------------------------------------
 // GitOps test-only extensions

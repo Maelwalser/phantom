@@ -99,10 +99,26 @@ mod tests {
       }
     }"#;
         let symbols = parse_json(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "name"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "version"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "scripts"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "dependencies"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "name")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "version")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "scripts")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "dependencies")
+        );
     }
 
     #[test]

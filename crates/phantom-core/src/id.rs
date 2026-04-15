@@ -22,6 +22,32 @@ impl fmt::Display for ChangesetId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentId(pub String);
 
+impl AgentId {
+    /// Validate that an agent name is safe for use as a filesystem path component.
+    /// Only allows alphanumeric characters, hyphens, and underscores. Max 64 chars.
+    pub fn validate(name: &str) -> Result<Self, String> {
+        if name.is_empty() {
+            return Err("agent name must not be empty".into());
+        }
+        if name.len() > 64 {
+            return Err("agent name must be at most 64 characters".into());
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(
+                "agent name may only contain alphanumeric characters, hyphens, and underscores"
+                    .into(),
+            );
+        }
+        if name == "." || name == ".." {
+            return Err("agent name must not be '.' or '..'".into());
+        }
+        Ok(Self(name.to_string()))
+    }
+}
+
 impl fmt::Display for AgentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad(&self.0)
@@ -182,6 +208,44 @@ mod tests {
             SymbolId("mod::foo::Function".into()).to_string(),
             "mod::foo::Function"
         );
+    }
+
+    #[test]
+    fn agent_id_validate_accepts_valid_names() {
+        assert!(AgentId::validate("agent-a").is_ok());
+        assert!(AgentId::validate("my_agent").is_ok());
+        assert!(AgentId::validate("Agent123").is_ok());
+        assert!(AgentId::validate("a").is_ok());
+    }
+
+    #[test]
+    fn agent_id_validate_rejects_empty() {
+        assert!(AgentId::validate("").is_err());
+    }
+
+    #[test]
+    fn agent_id_validate_rejects_too_long() {
+        let long = "a".repeat(65);
+        assert!(AgentId::validate(&long).is_err());
+        // Exactly 64 should be fine.
+        let max = "a".repeat(64);
+        assert!(AgentId::validate(&max).is_ok());
+    }
+
+    #[test]
+    fn agent_id_validate_rejects_path_traversal() {
+        assert!(AgentId::validate("../../etc/cron.d").is_err());
+        assert!(AgentId::validate("..").is_err());
+        assert!(AgentId::validate(".").is_err());
+        assert!(AgentId::validate("foo/bar").is_err());
+        assert!(AgentId::validate("foo bar").is_err());
+    }
+
+    #[test]
+    fn agent_id_validate_rejects_special_chars() {
+        assert!(AgentId::validate("agent.name").is_err());
+        assert!(AgentId::validate("agent@name").is_err());
+        assert!(AgentId::validate("agent name").is_err());
     }
 
     #[test]

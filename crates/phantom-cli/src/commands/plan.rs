@@ -177,9 +177,9 @@ fn run_planner(
     cmd.args(["--output-format", "json"]);
     cmd.stdin(std::process::Stdio::null());
 
-    let output = cmd
-        .output()
-        .with_context(|| format!("failed to run planner — is '{cli_command}' installed and on PATH?"))?;
+    let output = cmd.output().with_context(|| {
+        format!("failed to run planner — is '{cli_command}' installed and on PATH?")
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -510,7 +510,8 @@ async fn dispatch_domain(
     plan_dir: &Path,
     upstream_agent_ids: &[String],
 ) -> anyhow::Result<()> {
-    let agent_id = AgentId(domain.agent_id.clone());
+    let agent_id = AgentId::validate(&domain.agent_id)
+        .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {e}", domain.agent_id))?;
     let git = ctx.open_git()?;
     let head = git.head_oid().context("failed to read HEAD")?;
 
@@ -764,7 +765,10 @@ mod tests {
             files_not_to_modify: vec![],
             requirements: vec![],
             verification: vec![],
-            depends_on: depends_on.iter().map(std::string::ToString::to_string).collect(),
+            depends_on: depends_on
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
         }
     }
 
@@ -840,11 +844,7 @@ mod tests {
 
     #[test]
     fn compute_waves_linear_chain() {
-        let domains = vec![
-            domain("a", &[]),
-            domain("b", &["a"]),
-            domain("c", &["b"]),
-        ];
+        let domains = vec![domain("a", &[]), domain("b", &["a"]), domain("c", &["b"])];
         let waves = compute_waves(&domains);
         assert_eq!(waves["a"], 0);
         assert_eq!(waves["b"], 1);
@@ -912,9 +912,13 @@ mod tests {
             domain_with_files("scaffold", &[], &["package.json", "src/index.ts"]),
             domain_with_files("vim-engine", &[], &["package.json", "src/vim.ts"]),
         ];
-        let plan = build_plan(&PlanId("test".into()), "test", RawPlanOutput {
-            domains: vec![], // unused, we override
-        });
+        let plan = build_plan(
+            &PlanId("test".into()),
+            "test",
+            RawPlanOutput {
+                domains: vec![], // unused, we override
+            },
+        );
         let plan = Plan { domains, ..plan };
 
         let overlaps = detect_overlaps(&plan);

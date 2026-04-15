@@ -207,29 +207,29 @@ pub(super) fn reconstruct_merged_file(
         content.extend_from_slice(&ours[ours_sym.byte_range.clone()]);
 
         // Find position hint via neighboring base symbols
-        if let Some(prev_key) =
-            find_preceding_base_sibling(ours_sym, ours_symbols, &base_map)
-            && let Some(&pos) = base_output_end.get(&prev_key) {
-                insertions.push(Insertion {
-                    after_output_pos: pos,
-                    prepend: false,
-                    content,
-                    original_index: insertions.len(),
-                });
-                continue;
-            }
+        if let Some(prev_key) = find_preceding_base_sibling(ours_sym, ours_symbols, &base_map)
+            && let Some(&pos) = base_output_end.get(&prev_key)
+        {
+            insertions.push(Insertion {
+                after_output_pos: pos,
+                prepend: false,
+                content,
+                original_index: insertions.len(),
+            });
+            continue;
+        }
 
-        if let Some(next_key) =
-            find_following_base_sibling(ours_sym, ours_symbols, &base_map)
-            && let Some(&pos) = base_output_start.get(&next_key) {
-                insertions.push(Insertion {
-                    after_output_pos: pos,
-                    prepend: true,
-                    content,
-                    original_index: insertions.len(),
-                });
-                continue;
-            }
+        if let Some(next_key) = find_following_base_sibling(ours_sym, ours_symbols, &base_map)
+            && let Some(&pos) = base_output_start.get(&next_key)
+        {
+            insertions.push(Insertion {
+                after_output_pos: pos,
+                prepend: true,
+                content,
+                original_index: insertions.len(),
+            });
+            continue;
+        }
 
         // Fallback: append to EOF
         insertions.push(Insertion {
@@ -251,29 +251,29 @@ pub(super) fn reconstruct_merged_file(
         ensure_newline(&mut content);
         content.extend_from_slice(&theirs[theirs_sym.byte_range.clone()]);
 
-        if let Some(prev_key) =
-            find_preceding_base_sibling(theirs_sym, theirs_symbols, &base_map)
-            && let Some(&pos) = base_output_end.get(&prev_key) {
-                insertions.push(Insertion {
-                    after_output_pos: pos,
-                    prepend: false,
-                    content,
-                    original_index: insertions.len(),
-                });
-                continue;
-            }
+        if let Some(prev_key) = find_preceding_base_sibling(theirs_sym, theirs_symbols, &base_map)
+            && let Some(&pos) = base_output_end.get(&prev_key)
+        {
+            insertions.push(Insertion {
+                after_output_pos: pos,
+                prepend: false,
+                content,
+                original_index: insertions.len(),
+            });
+            continue;
+        }
 
-        if let Some(next_key) =
-            find_following_base_sibling(theirs_sym, theirs_symbols, &base_map)
-            && let Some(&pos) = base_output_start.get(&next_key) {
-                insertions.push(Insertion {
-                    after_output_pos: pos,
-                    prepend: true,
-                    content,
-                    original_index: insertions.len(),
-                });
-                continue;
-            }
+        if let Some(next_key) = find_following_base_sibling(theirs_sym, theirs_symbols, &base_map)
+            && let Some(&pos) = base_output_start.get(&next_key)
+        {
+            insertions.push(Insertion {
+                after_output_pos: pos,
+                prepend: true,
+                content,
+                original_index: insertions.len(),
+            });
+            continue;
+        }
 
         // Fallback: append to EOF
         insertions.push(Insertion {

@@ -111,10 +111,8 @@ impl<'a> SnapshotManager<'a> {
 
         match row {
             Some((snapshot_at, data)) => {
-                let changesets: HashMap<ChangesetId, Changeset> =
-                    serde_json::from_slice(&data).map_err(|e| {
-                        EventStoreError::SnapshotCorrupted(e.to_string())
-                    })?;
+                let changesets: HashMap<ChangesetId, Changeset> = serde_json::from_slice(&data)
+                    .map_err(|e| EventStoreError::SnapshotCorrupted(e.to_string()))?;
                 Ok(Some(ProjectionSnapshot {
                     snapshot_at: EventId(snapshot_at as u64),
                     changesets,
@@ -130,9 +128,8 @@ impl<'a> SnapshotManager<'a> {
         snapshot_at: EventId,
         changesets: &HashMap<ChangesetId, Changeset>,
     ) -> Result<(), EventStoreError> {
-        let data = serde_json::to_vec(changesets).map_err(|e| {
-            EventStoreError::SnapshotCorrupted(e.to_string())
-        })?;
+        let data = serde_json::to_vec(changesets)
+            .map_err(|e| EventStoreError::SnapshotCorrupted(e.to_string()))?;
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO projection_snapshots (snapshot_at, data, created_at)
@@ -148,11 +145,10 @@ impl<'a> SnapshotManager<'a> {
 
     /// Find the highest event ID in the store.
     async fn latest_event_id(&self) -> Result<EventId, EventStoreError> {
-        let row: (i64,) =
-            sqlx::query_as("SELECT MAX(id) FROM events WHERE dropped = 0")
-                .fetch_one(&self.store.pool)
-                .await?;
-        Ok(EventId(row.0 as u64))
+        let row: (Option<i64>,) = sqlx::query_as("SELECT MAX(id) FROM events WHERE dropped = 0")
+            .fetch_one(&self.store.pool)
+            .await?;
+        Ok(EventId(row.0.unwrap_or(0) as u64))
     }
 }
 
@@ -196,7 +192,11 @@ mod tests {
 
         // Take a snapshot at event 30, then replay tail.
         let snapshot_at = EventId(30);
-        let events_up_to_30: Vec<_> = all_events.iter().filter(|e| e.id.0 <= 30).cloned().collect();
+        let events_up_to_30: Vec<_> = all_events
+            .iter()
+            .filter(|e| e.id.0 <= 30)
+            .cloned()
+            .collect();
         let base_proj = Projection::from_events(&events_up_to_30);
         let base_changesets = base_proj.into_changesets();
 
@@ -242,7 +242,10 @@ mod tests {
         let _proj = mgr.build_projection().await.unwrap();
 
         let snap = mgr.load_latest().await.unwrap();
-        assert!(snap.is_none(), "snapshot should not be saved below interval");
+        assert!(
+            snap.is_none(),
+            "snapshot should not be saved below interval"
+        );
     }
 
     #[tokio::test]
@@ -294,7 +297,10 @@ mod tests {
         assert!(mgr.load_latest().await.unwrap().is_some());
 
         // Rollback a changeset.
-        store.mark_dropped(&ChangesetId("cs-5".into())).await.unwrap();
+        store
+            .mark_dropped(&ChangesetId("cs-5".into()))
+            .await
+            .unwrap();
 
         // Snapshot should be gone.
         assert!(mgr.load_latest().await.unwrap().is_none());

@@ -332,7 +332,10 @@ mod inner {
 
             // Directory and child are rekeyed.
             assert_eq!(table.get_path(dir_ino), Some(PathBuf::from("newdir")));
-            assert_eq!(table.get_path(child_ino), Some(PathBuf::from("newdir/child.rs")));
+            assert_eq!(
+                table.get_path(child_ino),
+                Some(PathBuf::from("newdir/child.rs"))
+            );
 
             // Dotted sibling must be completely untouched.
             assert_eq!(

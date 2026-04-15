@@ -73,6 +73,13 @@ pub async fn submit_and_materialize(
         .modified_files()
         .map_err(|e| OrchestratorError::Overlay(e.to_string()))?;
 
+    // Collect deleted files (tracked via whiteout markers in the overlay).
+    let all_deleted = layer.deleted_files();
+    let deleted: Vec<PathBuf> = all_deleted
+        .into_iter()
+        .filter(|path| !git.is_ignored(path).unwrap_or(false))
+        .collect();
+
     // Filter out gitignored files (node_modules, target/, __pycache__, etc.).
     // Uses the repo's .gitignore rules via git2 — works for all project types.
     let total_count = all_modified.len();
@@ -89,7 +96,7 @@ pub async fn submit_and_materialize(
         );
     }
 
-    if modified.is_empty() {
+    if modified.is_empty() && deleted.is_empty() {
         return Ok(None);
     }
 
@@ -127,9 +134,9 @@ pub async fn submit_and_materialize(
                     new_base: Some(base),
                     ..
                 } = &e.kind
-                {
-                    return Some(*base);
-                }
+            {
+                return Some(*base);
+            }
             None
         })
         .unwrap_or(base_commit);
@@ -157,18 +164,24 @@ pub async fn submit_and_materialize(
         let base_content = git.read_file_at_commit(&base_commit, file);
 
         let ops = if let Ok(base) = base_content {
-            let base_symbols = if let Ok(syms) = analyzer.extract_symbols(file, &base) { syms } else {
+            let base_symbols = if let Ok(syms) = analyzer.extract_symbols(file, &base) {
+                syms
+            } else {
                 tracing::debug!(?file, "no semantic analysis available for base");
                 Vec::new()
             };
-            let current_symbols = if let Ok(syms) = analyzer.extract_symbols(file, &agent_content) { syms } else {
+            let current_symbols = if let Ok(syms) = analyzer.extract_symbols(file, &agent_content) {
+                syms
+            } else {
                 tracing::debug!(?file, "no semantic analysis available for current");
                 Vec::new()
             };
             analyzer.diff_symbols(&base_symbols, &current_symbols)
         } else {
             // New file -- all symbols are additions.
-            let symbols = if let Ok(syms) = analyzer.extract_symbols(file, &agent_content) { syms } else {
+            let symbols = if let Ok(syms) = analyzer.extract_symbols(file, &agent_content) {
+                syms
+            } else {
                 tracing::debug!(?file, "no semantic analysis available for new file");
                 Vec::new()
             };
@@ -198,6 +211,12 @@ pub async fn submit_and_materialize(
         all_ops.extend(ops);
     }
 
+    // Add DeleteFile operations for files deleted via whiteouts.
+    for file in &deleted {
+        all_ops.push(SemanticOperation::DeleteFile { path: file.clone() });
+        deletions += 1;
+    }
+
     // If semantic analysis yielded no structured ops, record raw diffs.
     if all_ops.is_empty() && !modified.is_empty() {
         for file in &modified {
@@ -209,26 +228,6 @@ pub async fn submit_and_materialize(
         }
     }
 
-    // Record the submission event (audit trail of what the agent produced).
-    let causal_parent = events
-        .latest_event_for_changeset(&changeset_id)
-        .await
-        .unwrap_or(None);
-    let event = Event {
-        id: EventId(0),
-        timestamp: Utc::now(),
-        changeset_id: changeset_id.clone(),
-        agent_id: agent_id.clone(),
-        causal_parent,
-        kind: EventKind::ChangesetSubmitted {
-            operations: all_ops.clone(),
-        },
-    };
-    events
-        .append(event)
-        .await
-        .map_err(|e| OrchestratorError::EventStore(e.to_string()))?;
-
     // Remove stale trunk notification and markdown update.
     ripple::remove_trunk_notification(phantom_dir, agent_id);
     crate::trunk_update::remove_trunk_update_md(upper_dir);
@@ -236,13 +235,16 @@ pub async fn submit_and_materialize(
     // Build commit message: use explicit message if provided, otherwise
     // generate a descriptive one from the semantic operations.
     let generated;
-    let commit_message = match message {
-        Some(m) => m,
-        None => {
-            generated = generate_commit_message(agent_id, &all_ops, &modified);
-            &generated
-        }
+    let commit_message = if let Some(m) = message {
+        m
+    } else {
+        generated = generate_commit_message(agent_id, &all_ops, &modified);
+        &generated
     };
+
+    // Build files_touched including both modified and deleted files.
+    let mut files_touched = modified.clone();
+    files_touched.extend(deleted.iter().cloned());
 
     let submit_output = SubmitOutput {
         changeset_id: changeset_id.clone(),
@@ -254,12 +256,12 @@ pub async fn submit_and_materialize(
 
     // Build a Changeset struct for the materializer.
     let changeset = Changeset {
-        id: changeset_id,
+        id: changeset_id.clone(),
         agent_id: agent_id.clone(),
         task,
         base_commit,
-        files_touched: modified,
-        operations: all_ops,
+        files_touched,
+        operations: all_ops.clone(),
         test_result: None,
         created_at: Utc::now(),
         status: ChangesetStatus::Submitted,
@@ -281,6 +283,27 @@ pub async fn submit_and_materialize(
         commit_message,
     )
     .await?;
+
+    // H-ORC2: Record the submission event AFTER successful materialization
+    // to avoid orphaned ChangesetSubmitted events when materialization fails.
+    let causal_parent = events
+        .latest_event_for_changeset(&changeset_id)
+        .await
+        .unwrap_or(None);
+    let event = Event {
+        id: EventId(0),
+        timestamp: Utc::now(),
+        changeset_id,
+        agent_id: agent_id.clone(),
+        causal_parent,
+        kind: EventKind::ChangesetSubmitted {
+            operations: all_ops,
+        },
+    };
+    events
+        .append(event)
+        .await
+        .map_err(|e| OrchestratorError::EventStore(e.to_string()))?;
 
     Ok(Some(SubmitAndMaterializeOutput {
         submit: submit_output,
@@ -352,7 +375,10 @@ fn generate_commit_message(
     }
 
     let subject = if parts.is_empty() {
-        format!("phantom({agent_id}): update {} file(s)", modified_files.len())
+        format!(
+            "phantom({agent_id}): update {} file(s)",
+            modified_files.len()
+        )
     } else {
         let joined = parts.join(", ");
         // Truncate subject line to keep it readable.
@@ -377,7 +403,9 @@ fn generate_commit_message(
                     .or_default()
                     .push(format!("  + {} ({})", symbol.name, symbol.kind));
             }
-            SemanticOperation::ModifySymbol { file, new_entry, .. } => {
+            SemanticOperation::ModifySymbol {
+                file, new_entry, ..
+            } => {
                 file_ops
                     .entry(file)
                     .or_default()
@@ -412,7 +440,7 @@ fn generate_commit_message(
     }
 
     if !file_ops.is_empty() {
-        let _ = write!(body, "\n");
+        let _ = writeln!(body);
         for (file, ops_list) in &file_ops {
             let _ = writeln!(body, "{}:", file.display());
             for line in ops_list {

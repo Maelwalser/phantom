@@ -10,7 +10,7 @@ pub mod materialization_service;
 pub mod materializer;
 pub(crate) mod ops;
 pub mod ripple;
+pub mod submit_service;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub mod submit_service;
 pub mod trunk_update;

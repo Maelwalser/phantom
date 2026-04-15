@@ -71,7 +71,15 @@ pub async fn post_session_flow(ctx: PostSessionContext<'_>) -> anyhow::Result<Po
 
     // Auto-submit (which now includes materialization).
     println!("Auto-submitting changeset...");
-    match submit_and_materialize_overlay(ctx.phantom_dir, ctx.repo_root, ctx.events, ctx.overlays, agent_id).await? {
+    match submit_and_materialize_overlay(
+        ctx.phantom_dir,
+        ctx.repo_root,
+        ctx.events,
+        ctx.overlays,
+        agent_id,
+    )
+    .await?
+    {
         SubmitOutcome::Submitted { changeset_id } => {
             println!("Changeset {changeset_id} submitted.");
             Ok(PostSessionOutcome::Submitted { changeset_id })
@@ -174,7 +182,9 @@ async fn submit_and_materialize_overlay(
                             text_fallback_files.len()
                         );
                     }
-                    Ok(SubmitOutcome::Submitted { changeset_id: out.submit.changeset_id })
+                    Ok(SubmitOutcome::Submitted {
+                        changeset_id: out.submit.changeset_id,
+                    })
                 }
                 MaterializeResult::Conflict { details } => {
                     eprintln!("Submission failed with {} conflict(s):", details.len());
@@ -187,15 +197,15 @@ async fn submit_and_materialize_overlay(
                         );
                     }
                     eprintln!();
-                    eprintln!(
-                        "The changeset has been submitted but could not be merged."
-                    );
+                    eprintln!("The changeset has been submitted but could not be merged.");
                     eprintln!(
                         "Run `ph resolve {agent_id}` to attempt resolution, or \
                          `ph rollback --changeset {}` to drop it.",
                         out.submit.changeset_id
                     );
-                    Ok(SubmitOutcome::Conflict { changeset_id: out.submit.changeset_id })
+                    Ok(SubmitOutcome::Conflict {
+                        changeset_id: out.submit.changeset_id,
+                    })
                 }
             }
         }
@@ -231,7 +241,10 @@ async fn build_active_overlays(
                         _ => None,
                     });
             let cs_data = agent_cs.and_then(|cs_id| projection.changeset(&cs_id).cloned());
-            let agent_upper = overlays.upper_dir(&a).ok().map(std::path::Path::to_path_buf);
+            let agent_upper = overlays
+                .upper_dir(&a)
+                .ok()
+                .map(std::path::Path::to_path_buf);
             match (cs_data, agent_upper) {
                 (Some(cs), Some(upper)) => Some(ActiveOverlay {
                     agent_id: a.clone(),

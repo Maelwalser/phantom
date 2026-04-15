@@ -1,7 +1,7 @@
 //! `phantom changes` — show recent submits and materializations.
 
-use phantom_core::id::AgentId;
 use phantom_core::EventKind;
+use phantom_core::id::AgentId;
 use phantom_events::EventQuery;
 use phantom_git::{GitOps, git_oid_to_oid};
 
@@ -97,7 +97,9 @@ fn format_change(
                 commit.summary().map(String::from)
             });
 
-            let detail = if let Some(msg) = message { msg } else {
+            let detail = if let Some(msg) = message {
+                msg
+            } else {
                 let hex = new_commit.to_hex();
                 let short = &hex[..12.min(hex.len())];
                 format!("commit {short}")

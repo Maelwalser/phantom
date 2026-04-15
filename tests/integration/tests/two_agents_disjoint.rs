@@ -57,6 +57,7 @@ async fn test_two_agents_disjoint_files_auto_merges() {
             &ctx.events,
             &ctx.merger,
             "test commit",
+            None,
         )
         .await
         .expect("materialize agent-a failed");
@@ -74,6 +75,7 @@ async fn test_two_agents_disjoint_files_auto_merges() {
             &ctx.events,
             &ctx.merger,
             "test commit",
+            None,
         )
         .await
         .expect("materialize agent-b failed");

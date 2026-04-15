@@ -20,8 +20,11 @@ pub mod tree;
 pub mod test_support;
 
 // Re-export public API from submodules.
-pub use tree::{build_tree_from_oids, build_tree_with_blobs, create_blobs_from_content};
 pub use tree::create_blobs_from_overlay;
+pub use tree::{
+    build_tree_from_oids, build_tree_from_oids_with_deletions, build_tree_with_blobs,
+    create_blobs_from_content,
+};
 
 use error::GitError;
 

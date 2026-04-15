@@ -353,12 +353,16 @@ mod inner {
             let truncate = raw & libc::O_TRUNC != 0;
 
             let real_path = if writable {
-                if let Ok(p) = self.layer.ensure_upper_copy(&path) { p } else {
+                if let Ok(p) = self.layer.ensure_upper_copy(&path) {
+                    p
+                } else {
                     reply.error(Errno::ENOENT);
                     return;
                 }
             } else {
-                if let Ok(p) = self.layer.resolve_path(&path) { p } else {
+                if let Ok(p) = self.layer.resolve_path(&path) {
+                    p
+                } else {
                     reply.error(Errno::ENOENT);
                     return;
                 }

@@ -33,10 +33,15 @@ async fn test_rollback_middle_changeset_replays_downstream() {
             &ctx.events,
             &ctx.merger,
             "test commit",
+            None,
         )
         .await
         .unwrap();
-    let MaterializeResult::Success { new_commit: commit_after_001, .. } = r1 else {
+    let MaterializeResult::Success {
+        new_commit: commit_after_001,
+        ..
+    } = r1
+    else {
         panic!("cs-001 should succeed");
     };
 
@@ -60,10 +65,15 @@ async fn test_rollback_middle_changeset_replays_downstream() {
             &ctx.events,
             &ctx.merger,
             "test commit",
+            None,
         )
         .await
         .unwrap();
-    let MaterializeResult::Success { new_commit: commit_after_002, .. } = r2 else {
+    let MaterializeResult::Success {
+        new_commit: commit_after_002,
+        ..
+    } = r2
+    else {
         panic!("cs-002 should succeed");
     };
 
@@ -90,6 +100,7 @@ async fn test_rollback_middle_changeset_replays_downstream() {
             &ctx.events,
             &ctx.merger,
             "test commit",
+            None,
         )
         .await
         .unwrap();
@@ -161,6 +172,7 @@ async fn test_rollback_middle_changeset_replays_downstream() {
             &ctx.events,
             &ctx.merger,
             "test commit",
+            None,
         )
         .await
         .unwrap();

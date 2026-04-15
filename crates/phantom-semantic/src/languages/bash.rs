@@ -147,8 +147,16 @@ mod tests {
     }
     "#;
         let symbols = parse_bash(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function && s.name == "build"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function && s.name == "test_all"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Function && s.name == "build")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Function && s.name == "test_all")
+        );
     }
 
     #[test]
@@ -158,8 +166,16 @@ mod tests {
     BUILD_DIR=/tmp/build
     "#;
         let symbols = parse_bash(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Variable && s.name == "VERSION"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Variable && s.name == "BUILD_DIR"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Variable && s.name == "VERSION")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Variable && s.name == "BUILD_DIR")
+        );
     }
 
     #[test]

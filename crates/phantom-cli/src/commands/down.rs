@@ -51,15 +51,16 @@ pub fn run(args: &DownArgs) -> anyhow::Result<()> {
                 let suffix = if markers.is_empty() {
                     String::new()
                 } else {
-                    format!(" {}", console::style(format!("({})", markers.join(", "))).dim())
+                    format!(
+                        " {}",
+                        console::style(format!("({})", markers.join(", "))).dim()
+                    )
                 };
                 println!("    {} {agent}{suffix}", console::style("·").dim());
             }
             println!();
         }
-        println!(
-            "  This will unmount all FUSE overlays, kill all agent processes,"
-        );
+        println!("  This will unmount all FUSE overlays, kill all agent processes,");
         println!("  and remove the .phantom/ directory. Continue? [y/N]");
 
         let mut input = String::new();
@@ -182,9 +183,10 @@ fn kill_agent_processes(overlays_dir: &Path, agent: &str) {
     for pid_name in &["agent.pid", "monitor.pid"] {
         let pid_file = overlay_dir.join(pid_name);
         if let Some(record) = crate::pid_guard::read_pid_file(&pid_file)
-            && crate::pid_guard::kill_process(&record, libc::SIGTERM) {
-                info!(agent, pid = record.pid, file = *pid_name, "sent SIGTERM");
-            }
+            && crate::pid_guard::kill_process(&record, libc::SIGTERM)
+        {
+            info!(agent, pid = record.pid, file = *pid_name, "sent SIGTERM");
+        }
         let _ = std::fs::remove_file(&pid_file);
     }
 }

@@ -20,6 +20,7 @@ diffy = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+nix = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

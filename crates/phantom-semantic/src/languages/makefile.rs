@@ -114,11 +114,7 @@ fn extract_rule_target(rule_node: Node<'_>, source: &[u8]) -> String {
     }
     // Fallback: text before the first ':'.
     let text = node_text(rule_node, source);
-    text.split(':')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    text.split(':').next().unwrap_or("").trim().to_string()
 }
 
 /// Extract variable name from a variable_assignment node.
@@ -154,10 +150,26 @@ mod tests {
     fn extracts_targets_and_variables() {
         let src = "CC = gcc\nCFLAGS = -Wall\n\nall: main.o\n\techo done\n\nclean:\n\trm -f *.o\n";
         let symbols = parse_makefile(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Variable && s.name == "CC"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Variable && s.name == "CFLAGS"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function && s.name.contains("all")));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Function && s.name.contains("clean")));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Variable && s.name == "CC")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Variable && s.name == "CFLAGS")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Function && s.name.contains("all"))
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Function && s.name.contains("clean"))
+        );
     }
 
     #[test]

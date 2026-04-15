@@ -17,7 +17,7 @@ mod resolve;
 mod task;
 
 pub use plan::write_plan_domain_instructions;
-pub use resolve::{write_resolve_context_file, write_resolve_rules_file, ResolveConflictContext};
+pub use resolve::{ResolveConflictContext, write_resolve_context_file, write_resolve_rules_file};
 pub use task::{append_context_update, write_context_file};
 
 /// Name of the generated context file placed in the overlay.

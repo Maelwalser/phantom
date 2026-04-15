@@ -37,15 +37,12 @@ pub(crate) fn three_way_merge(
 
     // All three buffers were validated above, but use proper error propagation
     // rather than unwrap to stay robust against future changes in the guard.
-    let base_s = std::str::from_utf8(base).map_err(|e| {
-        GitError::MaterializationFailed(format!("base is not valid UTF-8: {e}"))
-    })?;
-    let ours_s = std::str::from_utf8(ours).map_err(|e| {
-        GitError::MaterializationFailed(format!("ours is not valid UTF-8: {e}"))
-    })?;
-    let theirs_s = std::str::from_utf8(theirs).map_err(|e| {
-        GitError::MaterializationFailed(format!("theirs is not valid UTF-8: {e}"))
-    })?;
+    let base_s = std::str::from_utf8(base)
+        .map_err(|e| GitError::MaterializationFailed(format!("base is not valid UTF-8: {e}")))?;
+    let ours_s = std::str::from_utf8(ours)
+        .map_err(|e| GitError::MaterializationFailed(format!("ours is not valid UTF-8: {e}")))?;
+    let theirs_s = std::str::from_utf8(theirs)
+        .map_err(|e| GitError::MaterializationFailed(format!("theirs is not valid UTF-8: {e}")))?;
 
     let result = diffy::merge(base_s, ours_s, theirs_s);
     match result {

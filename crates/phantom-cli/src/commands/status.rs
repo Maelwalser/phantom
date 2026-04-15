@@ -117,7 +117,11 @@ async fn run_summary(
     }
 
     if overlay_agents.is_empty() {
-        println!("  {} {}", ui::style_bold("Overlays:"), ui::style_dim("(none)"));
+        println!(
+            "  {} {}",
+            ui::style_bold("Overlays:"),
+            ui::style_dim("(none)")
+        );
     } else {
         ui::section_header("Overlays");
 
@@ -148,9 +152,7 @@ async fn run_summary(
                     .0
                     .strip_prefix(&format!("{plan_prefix}-"))
                     .unwrap_or(&agent.0);
-                println!(
-                    "    {indicator} {domain_name:<20} {state_text:<12} {status}"
-                );
+                println!("    {indicator} {domain_name:<20} {state_text:<12} {status}");
             }
             println!();
         }
@@ -179,7 +181,7 @@ async fn run_summary(
             if let Some(task) = task {
                 // Prefix: "  " + indicator(2) + " " + agent(14) + " " + state(12) + " elapsed" + " " + status + "  "
                 let elapsed_visible = elapsed_raw.as_ref().map_or(0, |e| e.len() + 1);
-                let status_visible = console::measure_text_width(&format!("{status}"));
+                let status_visible = console::measure_text_width(&status);
                 let prefix_len = 2 + 2 + 1 + 14 + 1 + 12 + elapsed_visible + 1 + status_visible + 2;
                 let truncated = ui::truncate_line(task, width.saturating_sub(prefix_len));
                 println!(
@@ -224,9 +226,7 @@ async fn run_summary(
             ui::style_dim(&format!("{:<14} {:>5}", "AGENT", "FILES"))
         );
         for (agent_id, file_count) in &pending_overlays {
-            println!(
-                "  {agent_id:<14} {file_count:>5}",
-            );
+            println!("  {agent_id:<14} {file_count:>5}",);
         }
     }
     println!();
@@ -255,10 +255,7 @@ async fn run_summary(
     }
 
     let event_count = events.event_count().await?;
-    println!(
-        "{}",
-        ui::style_dim(&format!("Total events: {event_count}"))
-    );
+    println!("{}", ui::style_dim(&format!("Total events: {event_count}")));
 
     Ok(())
 }
@@ -301,7 +298,9 @@ async fn run_detailed(
         let status_styled = ui::status_label(cs.status);
         println!(
             "  {}  {status_styled}",
-            console::Style::new().dim().apply_to(format!("{:<12}", "Status"))
+            console::Style::new()
+                .dim()
+                .apply_to(format!("{:<12}", "Status"))
         );
         let base_hex = cs.base_commit.to_hex();
         ui::key_value("Base", ui::style_cyan(&base_hex[..12.min(base_hex.len())]));
@@ -313,7 +312,9 @@ async fn run_detailed(
     let indicator = ui::run_state_indicator(&run_state);
     println!(
         "  {}  {indicator} {}",
-        console::Style::new().dim().apply_to(format!("{:<12}", "Run state")),
+        console::Style::new()
+            .dim()
+            .apply_to(format!("{:<12}", "Run state")),
         format_run_state_long(&run_state)
     );
     println!();
@@ -341,7 +342,11 @@ async fn run_detailed(
                 println!();
             }
             Err(e) => {
-                println!("  {} {}", ui::style_bold("Modified files:"), ui::style_error(&format!("(error: {e})")));
+                println!(
+                    "  {} {}",
+                    ui::style_bold("Modified files:"),
+                    ui::style_error(&format!("(error: {e})"))
+                );
                 println!();
             }
         },
@@ -437,7 +442,8 @@ fn format_run_state_long(state: &AgentRunState) -> String {
         AgentRunState::Failed { status } => {
             if let Some(s) = status {
                 let code = s
-                    .exit_code.map_or_else(|| "killed by signal".into(), |c| format!("exit code {c}"));
+                    .exit_code
+                    .map_or_else(|| "killed by signal".into(), |c| format!("exit code {c}"));
                 let err = s
                     .error
                     .as_deref()

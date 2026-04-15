@@ -11,12 +11,7 @@ use phantom_core::traits::MergeResult;
 ///
 /// Correctly handles insertions, deletions, and modifications at arbitrary
 /// positions. Falls back to conflict when both sides change the same region.
-pub(super) fn text_merge(
-    base: &[u8],
-    ours: &[u8],
-    theirs: &[u8],
-    path: &Path,
-) -> MergeResult {
+pub(super) fn text_merge(base: &[u8], ours: &[u8], theirs: &[u8], path: &Path) -> MergeResult {
     // Reject binary or non-UTF-8 content to prevent silent data corruption.
     if is_binary_or_non_utf8(base) || is_binary_or_non_utf8(ours) || is_binary_or_non_utf8(theirs) {
         return MergeResult::Conflict(vec![ConflictDetail {
@@ -32,10 +27,25 @@ pub(super) fn text_merge(
         }]);
     }
 
-    // Safe: all three buffers validated as UTF-8 above.
-    let base_str = std::str::from_utf8(base).unwrap();
-    let ours_str = std::str::from_utf8(ours).unwrap();
-    let theirs_str = std::str::from_utf8(theirs).unwrap();
+    // All three buffers were validated above, but use fallible conversion
+    // to avoid panics if a non-UTF-8 byte slips through the guard.
+    let (Ok(base_str), Ok(ours_str), Ok(theirs_str)) = (
+        std::str::from_utf8(base),
+        std::str::from_utf8(ours),
+        std::str::from_utf8(theirs),
+    ) else {
+        return MergeResult::Conflict(vec![ConflictDetail {
+            kind: ConflictKind::BinaryFile,
+            file: path.to_path_buf(),
+            symbol_id: None,
+            ours_changeset: ChangesetId("unknown".into()),
+            theirs_changeset: ChangesetId("unknown".into()),
+            description: "file contains non-UTF-8 bytes".into(),
+            ours_span: None,
+            theirs_span: None,
+            base_span: None,
+        }]);
+    };
 
     match diffy::merge(base_str, ours_str, theirs_str) {
         Ok(merged) => MergeResult::Clean(merged.into_bytes()),

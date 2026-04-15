@@ -26,6 +26,29 @@ use phantom_core::traits::{EventStore, MergeResult, SemanticAnalyzer};
 use crate::error::OrchestratorError;
 use crate::git::{self, GitError, GitOps};
 
+/// RAII guard for a file-based lock used to serialize materialization.
+struct MaterializeLock {
+    _file: std::fs::File,
+}
+
+impl MaterializeLock {
+    /// Acquire an exclusive lock on `.phantom/submit.lock`, blocking until
+    /// any concurrent materialization finishes.
+    #[allow(deprecated)] // nix 0.30 deprecates flock() in favor of Flock type
+    fn acquire(phantom_dir: &Path) -> Result<Self, OrchestratorError> {
+        use std::os::unix::io::AsRawFd;
+        let lock_path = phantom_dir.join("submit.lock");
+        let file = std::fs::File::create(&lock_path)?;
+        // Block until we get an exclusive lock.
+        nix::fcntl::flock(file.as_raw_fd(), nix::fcntl::FlockArg::LockExclusive).map_err(|e| {
+            OrchestratorError::MaterializationFailed(format!("failed to acquire submit lock: {e}"))
+        })?;
+        Ok(Self { _file: file })
+    }
+}
+
+// Lock is released when the File is dropped (flock is advisory + fd-based).
+
 /// Result of a materialization attempt.
 #[derive(Debug)]
 pub enum MaterializeResult {
@@ -67,6 +90,10 @@ impl<'a> Materializer<'a> {
     /// files. The materializer reads agent changes from there, runs semantic
     /// merge checks if trunk has advanced, and either commits the result or
     /// reports conflicts.
+    ///
+    /// `phantom_dir` is used to acquire a file-based exclusive lock so that
+    /// concurrent submits are serialized. Pass `None` in tests that don't
+    /// need locking.
     pub async fn materialize(
         &self,
         changeset: &Changeset,
@@ -74,7 +101,12 @@ impl<'a> Materializer<'a> {
         event_store: &dyn EventStore,
         analyzer: &dyn SemanticAnalyzer,
         message: &str,
+        phantom_dir: Option<&Path>,
     ) -> Result<MaterializeResult, OrchestratorError> {
+        // Acquire exclusive lock to prevent concurrent materializations from
+        // orphaning commits (C5).
+        let _lock = phantom_dir.map(MaterializeLock::acquire).transpose()?;
+
         let head = self.git.head_oid()?;
         let trunk_path = self
             .git
@@ -119,8 +151,7 @@ impl<'a> Materializer<'a> {
         debug!(changeset = %changeset.id, "direct apply — trunk has not advanced");
 
         let file_oids = git::create_blobs_from_overlay(self.git.repo(), upper_dir)?;
-        let new_commit =
-            self.commit_from_oids(&file_oids, head, message, &changeset.agent_id.0)?;
+        let new_commit = self.commit_from_oids(&file_oids, head, message, &changeset.agent_id.0)?;
 
         // Update working tree to match the new commit (best-effort).
         if let Err(e) = self
@@ -131,8 +162,22 @@ impl<'a> Materializer<'a> {
             debug!(error = %e, "checkout_head after direct apply failed (non-fatal)");
         }
 
-        self.append_materialized_event(changeset, &new_commit, event_store)
-            .await?;
+        // C6: If the event store write fails after the git commit succeeded,
+        // roll back HEAD to avoid an orphaned commit with no audit trail.
+        if let Err(e) = self
+            .append_materialized_event(changeset, &new_commit, event_store)
+            .await
+        {
+            tracing::error!(error = %e, "event store write failed after git commit, rolling back HEAD");
+            if let Err(rollback_err) = self.git.reset_to_commit(head) {
+                tracing::error!(error = %rollback_err, "CRITICAL: failed to roll back HEAD after event store failure");
+                return Err(OrchestratorError::MaterializationRecoveryFailed {
+                    cause: e.to_string(),
+                    recovery_errors: rollback_err.to_string(),
+                });
+            }
+            return Err(OrchestratorError::EventStore(e.to_string()));
+        }
 
         Ok(MaterializeResult::Success {
             new_commit,
@@ -155,6 +200,7 @@ impl<'a> Materializer<'a> {
 
         let mut all_conflicts = Vec::new();
         let mut merged_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+        let mut deleted_files: Vec<PathBuf> = Vec::new();
         let mut text_fallback_files: Vec<PathBuf> = Vec::new();
 
         let agent_ops_by_file = group_ops_by_file(&changeset.operations);
@@ -176,6 +222,9 @@ impl<'a> Materializer<'a> {
                 MergeFileOutcome::Conflicted(conflicts) => {
                     all_conflicts.extend(conflicts);
                 }
+                MergeFileOutcome::Deleted => {
+                    deleted_files.push(file.clone());
+                }
                 MergeFileOutcome::Skipped => {}
             }
         }
@@ -189,8 +238,13 @@ impl<'a> Materializer<'a> {
         }
 
         let merged_oids = git::create_blobs_from_content(self.git.repo(), &merged_files)?;
-        let new_commit =
-            self.commit_from_oids(&merged_oids, ctx.head, ctx.message, &changeset.agent_id.0)?;
+        let new_commit = self.commit_from_oids_with_deletions(
+            &merged_oids,
+            &deleted_files,
+            ctx.head,
+            ctx.message,
+            &changeset.agent_id.0,
+        )?;
 
         if let Err(e) = self
             .git
@@ -209,8 +263,22 @@ impl<'a> Materializer<'a> {
             );
         }
 
-        self.append_materialized_event(changeset, &new_commit, ctx.event_store)
-            .await?;
+        // C6: If the event store write fails after the git commit succeeded,
+        // roll back HEAD to avoid an orphaned commit with no audit trail.
+        if let Err(e) = self
+            .append_materialized_event(changeset, &new_commit, ctx.event_store)
+            .await
+        {
+            tracing::error!(error = %e, "event store write failed after git commit, rolling back HEAD");
+            if let Err(rollback_err) = self.git.reset_to_commit(ctx.head) {
+                tracing::error!(error = %rollback_err, "CRITICAL: failed to roll back HEAD after event store failure");
+                return Err(OrchestratorError::MaterializationRecoveryFailed {
+                    cause: e.to_string(),
+                    recovery_errors: rollback_err.to_string(),
+                });
+            }
+            return Err(OrchestratorError::EventStore(e.to_string()));
+        }
 
         Ok(MaterializeResult::Success {
             new_commit,
@@ -231,11 +299,24 @@ impl<'a> Materializer<'a> {
     ) -> Result<MergeFileOutcome, OrchestratorError> {
         let theirs_path = ctx.upper_dir.join(file);
 
-        // Read agent's version from overlay.
+        // Read agent's version from overlay. If the file doesn't exist in the
+        // upper dir, it was deleted by the agent (tracked via whiteouts in the
+        // overlay layer, surfaced as files_touched by submit_service).
         let theirs = if theirs_path.exists() {
-            std::fs::read(&theirs_path)?
+            Some(std::fs::read(&theirs_path)?)
         } else {
-            return Ok(MergeFileOutcome::Skipped);
+            None
+        };
+
+        // If the file was deleted by the agent, handle it as a deletion.
+        let Some(theirs) = theirs else {
+            // Check if the file existed at base. If not, it was never tracked
+            // — skip silently.
+            match self.git.read_file_at_commit(&changeset.base_commit, file) {
+                Ok(_) => return Ok(MergeFileOutcome::Deleted),
+                Err(GitError::NotFound(_)) => return Ok(MergeFileOutcome::Skipped),
+                Err(e) => return Err(e.into()),
+            }
         };
 
         // Read base version.
@@ -247,9 +328,14 @@ impl<'a> Materializer<'a> {
 
         match base {
             None => self.merge_new_file(file, ctx, &theirs),
-            Some(base_content) => {
-                self.merge_existing_file(file, changeset, ctx, &base_content, &theirs, agent_file_ops)
-            }
+            Some(base_content) => self.merge_existing_file(
+                file,
+                changeset,
+                ctx,
+                &base_content,
+                &theirs,
+                agent_file_ops,
+            ),
         }
     }
 
@@ -345,9 +431,7 @@ impl<'a> Materializer<'a> {
 
         if symbols_disjoint {
             debug!(file = %file.display(), "symbol-disjoint — using text merge");
-            if let MergeResult::Clean(content) =
-                self.git.text_merge(base_content, &ours, theirs)?
-            {
+            if let MergeResult::Clean(content) = self.git.text_merge(base_content, &ours, theirs)? {
                 return Ok(MergeFileOutcome::Merged {
                     content,
                     text_fallback: !ctx.analyzer.supports_language(file),
@@ -412,12 +496,26 @@ impl<'a> Materializer<'a> {
         message: &str,
         author: &str,
     ) -> Result<GitOid, OrchestratorError> {
+        self.commit_from_oids_with_deletions(file_oids, &[], parent_oid, message, author)
+    }
+
+    /// Build a commit from pre-created blob OIDs and a list of deleted paths,
+    /// without touching the working tree.
+    fn commit_from_oids_with_deletions(
+        &self,
+        file_oids: &[(PathBuf, git2::Oid)],
+        deletions: &[PathBuf],
+        parent_oid: &GitOid,
+        message: &str,
+        author: &str,
+    ) -> Result<GitOid, OrchestratorError> {
         let repo = self.git.repo();
         let git2_parent_oid = git::git_oid_to_oid(parent_oid)?;
         let parent = repo.find_commit(git2_parent_oid)?;
         let base_tree = parent.tree()?;
 
-        let new_tree_oid = git::build_tree_from_oids(repo, &base_tree, file_oids)?;
+        let new_tree_oid =
+            git::build_tree_from_oids_with_deletions(repo, &base_tree, file_oids, deletions)?;
         let new_tree = repo.find_tree(new_tree_oid)?;
 
         let sig = git2::Signature::now(author, &format!("{author}@phantom"))?;
@@ -491,10 +589,15 @@ use crate::ops::group_ops_by_file;
 /// Outcome of merging a single file during the merge-apply path.
 enum MergeFileOutcome {
     /// File merged cleanly with this content.
-    Merged { content: Vec<u8>, text_fallback: bool },
+    Merged {
+        content: Vec<u8>,
+        text_fallback: bool,
+    },
     /// File produced conflicts.
     Conflicted(Vec<ConflictDetail>),
-    /// File was skipped (deleted or whiteout).
+    /// File was deleted by the agent.
+    Deleted,
+    /// File was skipped (not present in overlay and not a deletion).
     Skipped,
 }
 
@@ -536,7 +639,9 @@ mod tests {
     use phantom_core::symbol::SymbolEntry;
     use phantom_core::traits::MergeResult;
 
-    use crate::test_support::{advance_trunk, init_repo, make_changeset, make_upper, MockEventStore};
+    use crate::test_support::{
+        MockEventStore, advance_trunk, init_repo, make_changeset, make_upper,
+    };
 
     // ---------------------------------------------------------------------------
     // Mock SemanticAnalyzer (materializer-specific: configurable merge results)
@@ -611,6 +716,7 @@ mod tests {
                 &event_store,
                 &analyzer,
                 "test commit",
+                None,
             )
             .await
             .unwrap();
@@ -653,6 +759,7 @@ mod tests {
                 &event_store,
                 &analyzer,
                 "test commit",
+                None,
             )
             .await
             .unwrap();
@@ -707,6 +814,7 @@ mod tests {
                 &event_store,
                 &analyzer,
                 "test commit",
+                None,
             )
             .await
             .unwrap();
@@ -750,6 +858,7 @@ mod tests {
                 &event_store,
                 &analyzer,
                 "test commit",
+                None,
             )
             .await
             .unwrap();
@@ -833,6 +942,7 @@ mod tests {
                 &event_store,
                 &analyzer,
                 "test commit",
+                None,
             )
             .await
             .unwrap();
@@ -872,6 +982,7 @@ mod tests {
                 &event_store,
                 &analyzer,
                 "test commit",
+                None,
             )
             .await
             .unwrap();
@@ -909,6 +1020,7 @@ mod tests {
                 &event_store,
                 &analyzer,
                 "test commit",
+                None,
             )
             .await;
 
@@ -938,6 +1050,7 @@ mod tests {
                 &event_store,
                 &analyzer,
                 "test commit",
+                None,
             )
             .await;
 

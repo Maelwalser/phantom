@@ -145,8 +145,7 @@ impl Projection {
             .changesets
             .values()
             .filter(|cs| {
-                cs.status == ChangesetStatus::Conflicted
-                    || cs.status == ChangesetStatus::Resolving
+                cs.status == ChangesetStatus::Conflicted || cs.status == ChangesetStatus::Resolving
             })
             .collect();
         result.sort_by(|a, b| a.id.0.cmp(&b.id.0));

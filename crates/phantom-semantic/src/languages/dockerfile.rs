@@ -50,11 +50,7 @@ impl LanguageExtractor for DockerfileExtractor {
 }
 
 /// Parse Dockerfile text and extract symbols from instruction lines.
-fn extract_dockerfile_symbols(
-    text: &str,
-    source: &[u8],
-    file_path: &Path,
-) -> Vec<SymbolEntry> {
+fn extract_dockerfile_symbols(text: &str, source: &[u8], file_path: &Path) -> Vec<SymbolEntry> {
     let mut symbols = Vec::new();
     let mut current_stage = "global".to_string();
     let mut directive_idx: usize = 0;
@@ -115,9 +111,24 @@ fn collect_instructions(text: &str) -> Vec<Instruction> {
     let mut current: Option<(String, String, usize)> = None; // (keyword, full_text, start_byte)
 
     let dockerfile_keywords = [
-        "FROM", "RUN", "CMD", "LABEL", "MAINTAINER", "EXPOSE", "ENV", "ADD",
-        "COPY", "ENTRYPOINT", "VOLUME", "USER", "WORKDIR", "ARG", "ONBUILD",
-        "STOPSIGNAL", "HEALTHCHECK", "SHELL",
+        "FROM",
+        "RUN",
+        "CMD",
+        "LABEL",
+        "MAINTAINER",
+        "EXPOSE",
+        "ENV",
+        "ADD",
+        "COPY",
+        "ENTRYPOINT",
+        "VOLUME",
+        "USER",
+        "WORKDIR",
+        "ARG",
+        "ONBUILD",
+        "STOPSIGNAL",
+        "HEALTHCHECK",
+        "SHELL",
     ];
 
     for (line_start, line) in line_byte_offsets(text) {
@@ -144,11 +155,7 @@ fn collect_instructions(text: &str) -> Vec<Instruction> {
                     end_byte: line_start,
                 });
             }
-            current = Some((
-                first_word.to_uppercase(),
-                line.to_string(),
-                line_start,
-            ));
+            current = Some((first_word.to_uppercase(), line.to_string(), line_start));
         } else if let Some((_, ref mut full, _)) = current {
             // Continuation line (after `\` or multi-line RUN).
             full.push('\n');
@@ -242,9 +249,21 @@ mod tests {
     fn extracts_single_stage() {
         let src = "FROM rust:1.85\nRUN cargo build\nCOPY . /app\n";
         let symbols = parse_dockerfile(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "rust:1.85"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Directive && s.name.starts_with("RUN")));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Directive && s.name.starts_with("COPY")));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "rust:1.85")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Directive && s.name.starts_with("RUN"))
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Directive && s.name.starts_with("COPY"))
+        );
     }
 
     #[test]
@@ -257,10 +276,19 @@ mod tests {
     CMD ["/usr/local/bin/app"]
     "#;
         let symbols = parse_dockerfile(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "builder"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "runtime"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "builder")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "runtime")
+        );
         // Each stage should have its own directives.
-        let builder_directives: Vec<_> = symbols.iter()
+        let builder_directives: Vec<_> = symbols
+            .iter()
             .filter(|s| s.scope == "builder" && s.kind == SymbolKind::Directive)
             .collect();
         assert!(!builder_directives.is_empty());

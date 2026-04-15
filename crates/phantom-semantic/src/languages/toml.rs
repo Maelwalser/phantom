@@ -130,9 +130,21 @@ mod tests {
     tempfile = "3"
     "#;
         let symbols = parse_toml(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name.contains("package")));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name.contains("dependencies")));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name.contains("dev-dependencies")));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name.contains("package"))
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name.contains("dependencies"))
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name.contains("dev-dependencies"))
+        );
     }
 
     #[test]

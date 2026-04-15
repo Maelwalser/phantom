@@ -17,14 +17,16 @@ use tracing::{debug, trace, warn};
 use crate::error::OverlayError;
 use crate::trunk_view::{read_dir_entries, walk_files};
 use crate::types::{DirEntry, FileType, is_hidden, is_passthrough, reparent_children};
-use crate::whiteout::{INTERNAL_FILES, WHITEOUT_FILE, WhiteoutSet, load_whiteouts};
+use crate::whiteout::{
+    INTERNAL_FILES, WHITEOUT_FILE, WhiteoutSet, is_safe_relative_path, load_whiteouts,
+};
 
 /// Atomically write `data` to `target` via a temporary sibling file.
 ///
 /// On Unix, `rename` within the same filesystem is atomic, so readers never
 /// see a partially-written file.
 fn atomic_write(target: &Path, data: &[u8]) -> Result<(), OverlayError> {
-    let tmp = target.with_extension("tmp");
+    let tmp = target.with_extension(format!("tmp.{}", std::process::id()));
     fs::write(&tmp, data)?;
     fs::rename(&tmp, target)?;
     Ok(())
@@ -156,6 +158,12 @@ impl OverlayLayer {
     /// Creates parent directories as needed. Automatically removes the path
     /// from the whiteout set if it was previously deleted.
     pub fn write_file(&self, rel_path: &Path, data: &[u8]) -> Result<(), OverlayError> {
+        if is_hidden(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+        if !is_safe_relative_path(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
         if is_passthrough(rel_path) {
             let lower_path = self.lower_path().join(rel_path);
             if let Some(parent) = lower_path.parent() {
@@ -188,6 +196,12 @@ impl OverlayLayer {
     /// upper layer (only up to `new_size` bytes for truncation, avoiding a full
     /// read of large files).
     pub fn truncate_file(&self, rel_path: &Path, new_size: u64) -> Result<(), OverlayError> {
+        if is_hidden(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+        if !is_safe_relative_path(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
         if is_passthrough(rel_path) {
             let lower_path = self.lower_path().join(rel_path);
             let file = OpenOptions::new().write(true).open(&lower_path)?;
@@ -342,6 +356,12 @@ impl OverlayLayer {
     /// For normal paths, if the file exists in the upper layer it is removed, and
     /// the path is added to the whiteout set so the lower layer's version is hidden.
     pub fn delete_file(&self, rel_path: &Path) -> Result<(), OverlayError> {
+        if is_hidden(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+        if !is_safe_relative_path(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
         if is_passthrough(rel_path) {
             let lower_path = self.lower_path().join(rel_path);
             if lower_path.exists() {
@@ -352,12 +372,24 @@ impl OverlayLayer {
         }
 
         let upper_path = self.upper.join(rel_path);
+        let lower = self.lower_path();
+        let lower_path = lower.join(rel_path);
+        let upper_exists = fs::symlink_metadata(&upper_path).is_ok();
+        let lower_exists = fs::symlink_metadata(&lower_path).is_ok();
+
+        if !upper_exists && !lower_exists && !self.whiteouts.read().unwrap().contains(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+
         // I/O happens before acquiring the whiteout lock.
-        if upper_path.exists() {
+        if upper_exists {
             fs::remove_file(&upper_path)?;
         }
 
-        self.whiteouts.write().unwrap().insert(rel_path.to_path_buf());
+        self.whiteouts
+            .write()
+            .unwrap()
+            .insert(rel_path.to_path_buf());
         self.persist_whiteouts()?;
 
         debug!(path = %rel_path.display(), "file deleted (whiteout created)");
@@ -878,7 +910,8 @@ mod tests {
         let (lower, upper) = setup();
         fs::write(lower.path().join("trunk.txt"), b"from trunk").unwrap();
 
-        let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         let data = layer.read_file(Path::new("trunk.txt")).unwrap();
         assert_eq!(data, b"from trunk");
     }
@@ -1016,7 +1049,8 @@ mod tests {
         }
 
         // New instance from the same upper dir should restore whiteouts.
-        let layer2 = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let layer2 =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
         assert!(!layer2.exists(Path::new("persist.txt")));
         assert!(layer2.read_file(Path::new("persist.txt")).is_err());
     }
@@ -1062,7 +1096,8 @@ mod tests {
         fs::create_dir_all(lower.path().join(".phantom/overlays/agent/mount")).unwrap();
         fs::write(lower.path().join("visible.txt"), b"hello").unwrap();
 
-        let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         // Hidden paths must be invisible.
         assert!(!layer.exists(Path::new(".phantom")));
@@ -1163,7 +1198,8 @@ mod tests {
         fs::create_dir_all(upper.path().join(".git")).unwrap();
         fs::write(upper.path().join(".git/config"), b"DECOY").unwrap();
 
-        let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+        let layer =
+            OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         // Reads must come from lower, not upper.
         let config = layer.read_file(Path::new(".git/config")).unwrap();
@@ -1374,7 +1410,9 @@ mod tests {
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         // Set executable permission.
-        layer.set_permissions(Path::new("script.sh"), 0o755).unwrap();
+        layer
+            .set_permissions(Path::new("script.sh"), 0o755)
+            .unwrap();
 
         // getattr should reflect the new mode.
         let meta = layer.getattr(Path::new("script.sh")).unwrap();
@@ -1418,7 +1456,14 @@ mod tests {
         assert_eq!(target, Path::new("target.txt"));
 
         // Symlink lives in upper layer.
-        assert!(upper.path().join("link.txt").symlink_metadata().unwrap().is_symlink());
+        assert!(
+            upper
+                .path()
+                .join("link.txt")
+                .symlink_metadata()
+                .unwrap()
+                .is_symlink()
+        );
     }
 
     #[test]
@@ -1459,7 +1504,10 @@ mod tests {
             OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
         layer
-            .create_symlink(Path::new("node_modules/.bin/esbuild"), Path::new("../esbuild/bin/esbuild"))
+            .create_symlink(
+                Path::new("node_modules/.bin/esbuild"),
+                Path::new("../esbuild/bin/esbuild"),
+            )
             .unwrap();
 
         let modified = layer.modified_files().unwrap();

@@ -78,8 +78,7 @@ fn extract_css_top_level(
                     file_path,
                 );
             }
-            "media_statement" | "supports_statement" | "keyframes_statement"
-            | "at_rule" => {
+            "media_statement" | "supports_statement" | "keyframes_statement" | "at_rule" => {
                 let name = extract_at_rule_name(child, source);
                 push_symbol(
                     symbols,
@@ -110,22 +109,14 @@ fn extract_selector(rule_node: Node<'_>, source: &[u8]) -> String {
     }
     // Fallback: take text before the first '{'.
     let text = node_text(rule_node, source);
-    text.split('{')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    text.split('{').next().unwrap_or("").trim().to_string()
 }
 
 /// Extract a name for an @-rule (e.g., `@media (min-width: 768px)`).
 fn extract_at_rule_name(node: Node<'_>, source: &[u8]) -> String {
     let text = node_text(node, source);
     // Take everything before the opening '{' as the identifier.
-    text.split('{')
-        .next()
-        .unwrap_or(&text)
-        .trim()
-        .to_string()
+    text.split('{').next().unwrap_or(&text).trim().to_string()
 }
 
 #[cfg(test)]
@@ -157,9 +148,21 @@ mod tests {
     }
     "#;
         let symbols = parse_css(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "body"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == ".container"));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "#header"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "body")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == ".container")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "#header")
+        );
     }
 
     #[test]
@@ -170,7 +173,11 @@ mod tests {
     }
     "#;
         let symbols = parse_css(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name.contains("@media")));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name.contains("@media"))
+        );
     }
 
     #[test]
@@ -181,6 +188,10 @@ mod tests {
     "#;
         let symbols = parse_css(src);
         assert!(symbols.iter().any(|s| s.kind == SymbolKind::Directive));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name == "body"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name == "body")
+        );
     }
 }

@@ -26,7 +26,8 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
     let overlays = ctx.open_overlays_restored()?;
-    let agent_id = AgentId(args.agent.clone());
+    let agent_id = AgentId::validate(&args.agent)
+        .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {e}", args.agent))?;
     let message = args.message;
 
     match submit_agent(&ctx, &events, &overlays, &agent_id, message.as_deref()).await? {
@@ -142,10 +143,7 @@ pub async fn submit_agent(
                             text_fallback_files.len()
                         );
                         for f in &text_fallback_files {
-                            eprintln!(
-                                "    {}",
-                                console::style(format!("- {}", f.display())).dim()
-                            );
+                            eprintln!("    {}", console::style(format!("- {}", f.display())).dim());
                         }
                         eprintln!(
                             "  {}\n",
@@ -231,16 +229,19 @@ pub(crate) async fn build_active_overlays(
         .into_iter()
         .filter(|a| a != exclude_agent)
         .filter_map(|a| {
-            let agent_cs =
-                all_events
-                    .iter()
-                    .filter(|e| e.agent_id == a)
-                    .find_map(|e| match &e.kind {
-                        EventKind::TaskCreated { .. } => Some(e.changeset_id.clone()),
-                        _ => None,
-                    });
+            let agent_cs = all_events
+                .iter()
+                .rev()
+                .filter(|e| e.agent_id == a)
+                .find_map(|e| match &e.kind {
+                    EventKind::TaskCreated { .. } => Some(e.changeset_id.clone()),
+                    _ => None,
+                });
             let cs_data = agent_cs.and_then(|cs_id| projection.changeset(&cs_id).cloned());
-            let agent_upper = overlays.upper_dir(&a).ok().map(std::path::Path::to_path_buf);
+            let agent_upper = overlays
+                .upper_dir(&a)
+                .ok()
+                .map(std::path::Path::to_path_buf);
             match (cs_data, agent_upper) {
                 (Some(cs), Some(upper)) => Some(ActiveOverlay {
                     agent_id: a.clone(),

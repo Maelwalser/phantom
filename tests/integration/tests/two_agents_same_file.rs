@@ -55,6 +55,7 @@ async fn test_two_agents_same_file_different_symbols_auto_merges() {
             &ctx.events,
             &ctx.merger,
             "test commit",
+            None,
         )
         .await
         .expect("materialize agent-a failed");
@@ -72,6 +73,7 @@ async fn test_two_agents_same_file_different_symbols_auto_merges() {
             &ctx.events,
             &ctx.merger,
             "test commit",
+            None,
         )
         .await
         .expect("materialize agent-b failed");

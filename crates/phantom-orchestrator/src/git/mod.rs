@@ -5,9 +5,9 @@
 //! downstream crates can continue to use `phantom_orchestrator::git::*` paths.
 
 pub use phantom_git::error::GitError;
-pub use phantom_git::tree::{
-    build_tree_from_oids, build_tree_with_blobs, create_blobs_from_content,
-    create_blobs_from_overlay,
-};
-pub use phantom_git::{git_oid_to_oid, oid_to_git_oid, GitOps};
 pub use phantom_git::test_support;
+pub use phantom_git::tree::{
+    build_tree_from_oids, build_tree_from_oids_with_deletions, build_tree_with_blobs,
+    create_blobs_from_content, create_blobs_from_overlay,
+};
+pub use phantom_git::{GitOps, git_oid_to_oid, oid_to_git_oid};

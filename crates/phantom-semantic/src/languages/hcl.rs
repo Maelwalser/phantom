@@ -132,8 +132,16 @@ mod tests {
     }
     "#;
         let symbols = parse_hcl(src);
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name.contains("aws_instance")));
-        assert!(symbols.iter().any(|s| s.kind == SymbolKind::Section && s.name.contains("aws_s3_bucket")));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name.contains("aws_instance"))
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Section && s.name.contains("aws_s3_bucket"))
+        );
     }
 
     #[test]
@@ -148,8 +156,16 @@ mod tests {
     }
     "#;
         let symbols = parse_hcl(src);
-        assert!(symbols.iter().any(|s| s.name.contains("variable") && s.name.contains("region")));
-        assert!(symbols.iter().any(|s| s.name.contains("output") && s.name.contains("instance_ip")));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name.contains("variable") && s.name.contains("region"))
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name.contains("output") && s.name.contains("instance_ip"))
+        );
     }
 
     #[test]
@@ -160,6 +176,10 @@ mod tests {
     }
     "#;
         let symbols = parse_hcl(src);
-        assert!(symbols.iter().any(|s| s.name.contains("provider") && s.name.contains("aws")));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name.contains("provider") && s.name.contains("aws"))
+        );
     }
 }
