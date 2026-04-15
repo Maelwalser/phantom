@@ -16,6 +16,14 @@ use phantom_session::context_file::{self, ResolveConflictContext};
 
 use crate::context::PhantomContext;
 
+/// Maximum estimated token cost for a single resolve agent.
+/// Beyond this, split into parallel agents (one per file).
+/// ~30k tokens of conflict context leaves headroom for system prompt + reasoning.
+const SINGLE_AGENT_TOKEN_BUDGET: usize = 30_000;
+
+/// Bytes-per-token estimate (matches `phantom-session`'s `BYTES_PER_TOKEN_ESTIMATE`).
+const BYTES_PER_TOKEN: usize = 4;
+
 #[derive(clap::Args)]
 pub struct ResolveArgs {
     /// Agent name whose conflicts to resolve
@@ -179,9 +187,14 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
             |s| s.cli_name,
         );
 
-    if groups.len() <= 1 {
-        // Single file group — existing single-agent background path.
-        let conflicts = groups.into_iter().next().unwrap_or_default();
+    // Estimate total conflict size to decide single vs. parallel agents.
+    // Only split when the combined context is too large for one agent.
+    let total_tokens = estimate_conflict_tokens(&groups);
+    let use_single_agent = groups.len() <= 1 || total_tokens <= SINGLE_AGENT_TOKEN_BUDGET;
+
+    if use_single_agent {
+        // Conflicts fit in a single agent — flatten all groups.
+        let conflicts: Vec<_> = groups.into_iter().flatten().collect();
         context_file::write_resolve_context_file(
             &work_dir,
             &agent_id,
@@ -220,11 +233,12 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
         super::ui::key_value("Log", log_file.display());
         super::ui::key_value("Overlay", work_dir.display());
     } else {
-        // Multiple independent file groups — spawn parallel resolve agents.
+        // Conflict context too large for one agent — spawn parallel resolve agents.
         println!(
-            "\n  {} Splitting into {} parallel resolve agents (one per file)...\n",
+            "\n  {} Splitting into {} parallel resolve agents (~{}k tokens total)...\n",
             console::style("||").cyan(),
-            groups.len()
+            groups.len(),
+            total_tokens / 1000,
         );
 
         let mut context_files = Vec::with_capacity(groups.len());
@@ -329,6 +343,24 @@ fn is_fuse_mounted(mount_point: &std::path::Path) -> bool {
         (Ok(m), Ok(p)) => m.dev() != p.dev(),
         _ => false,
     }
+}
+
+/// Estimate total token cost across all conflict groups.
+///
+/// Sums byte lengths of all three versions (base, ours, theirs) across every
+/// conflict context and divides by bytes-per-token. This gives a rough upper
+/// bound on the context window cost for resolving all conflicts in one agent.
+fn estimate_conflict_tokens(groups: &[Vec<ResolveConflictContext>]) -> usize {
+    let total_bytes: usize = groups
+        .iter()
+        .flatten()
+        .map(|ctx| {
+            ctx.base_content.as_ref().map_or(0, String::len)
+                + ctx.ours_content.as_ref().map_or(0, String::len)
+                + ctx.theirs_content.as_ref().map_or(0, String::len)
+        })
+        .sum();
+    total_bytes / BYTES_PER_TOKEN
 }
 
 /// Group conflicts by file path so independent files can be resolved in parallel.
