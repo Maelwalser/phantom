@@ -172,6 +172,7 @@ mod tests {
             timestamp: Utc::now(),
             changeset_id: ChangesetId(cs_id.into()),
             agent_id: AgentId(agent_id.into()),
+            causal_parent: None,
             kind: EventKind::TaskCreated {
                 base_commit: GitOid::zero(),
                 task: format!("task for {cs_id}"),

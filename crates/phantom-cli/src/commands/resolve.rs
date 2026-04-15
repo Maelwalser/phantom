@@ -154,11 +154,16 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
     let groups = group_conflicts_by_file(resolve_contexts);
 
     // Emit ConflictResolutionStarted event.
+    let causal_parent = events
+        .latest_event_for_changeset(&changeset.id)
+        .await
+        .unwrap_or(None);
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
         changeset_id: changeset.id.clone(),
         agent_id: agent_id.clone(),
+        causal_parent,
         kind: EventKind::ConflictResolutionStarted {
             conflicts: conflict_details.clone(),
             new_base: Some(head),

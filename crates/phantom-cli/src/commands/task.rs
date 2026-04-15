@@ -67,6 +67,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
                 timestamp: Utc::now(),
                 changeset_id: cs_id.clone(),
                 agent_id: agent_id.clone(),
+                causal_parent: None,
                 kind: EventKind::TaskCreated {
                     base_commit: head,
                     task: args.task.clone().unwrap_or_default(),
@@ -104,6 +105,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
                         timestamp: Utc::now(),
                         changeset_id: new_cs_id.clone(),
                         agent_id: agent_id.clone(),
+                        causal_parent: None,
                         kind: EventKind::TaskCreated {
                             base_commit: head,
                             task: args.task.clone().unwrap_or_default(),

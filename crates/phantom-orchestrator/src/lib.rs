@@ -14,3 +14,4 @@ pub mod ripple;
 pub(crate) mod test_support;
 pub mod scheduler;
 pub mod submit_service;
+pub mod trunk_update;

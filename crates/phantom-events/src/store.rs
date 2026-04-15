@@ -69,11 +69,14 @@ pub(crate) fn row_to_event(row: &SqliteRow) -> Result<Event, EventStoreError> {
         }
     };
 
+    let causal_parent: Option<i64> = row.try_get("causal_parent").unwrap_or(None);
+
     Ok(Event {
         id: EventId(id as u64),
         timestamp,
         changeset_id: ChangesetId(changeset_id),
         agent_id: AgentId(agent_id),
+        causal_parent: causal_parent.map(|v| EventId(v as u64)),
         kind,
     })
 }
@@ -119,7 +122,7 @@ impl QueryBuilder {
         let where_clause = self.where_clause();
         let limit_clause = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
         let sql = format!(
-            "SELECT id, timestamp, changeset_id, agent_id, kind
+            "SELECT id, timestamp, changeset_id, agent_id, kind, causal_parent
              FROM events
              WHERE {where_clause}
              ORDER BY id {order}{limit_clause}"
@@ -200,14 +203,15 @@ impl SqliteEventStore {
         let timestamp_str = event.timestamp.to_rfc3339();
 
         let result = sqlx::query(
-            "INSERT INTO events (timestamp, changeset_id, agent_id, kind, kind_version)
-             VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO events (timestamp, changeset_id, agent_id, kind, kind_version, causal_parent)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&timestamp_str)
         .bind(&event.changeset_id.0)
         .bind(&event.agent_id.0)
         .bind(&kind_json)
         .bind(1i32)
+        .bind(event.causal_parent.map(|id| id.0 as i64))
         .execute(&self.pool)
         .await?;
 
@@ -255,6 +259,34 @@ impl SqliteEventStore {
         }
 
         qb.fetch(&self.pool, q.order.as_sql(), q.limit).await
+    }
+
+    /// Return all causal descendants of the given event (including itself).
+    ///
+    /// Walks the causal DAG breadth-first using a recursive CTE on the
+    /// `causal_parent` column. Results are ordered by `id ASC`.
+    pub async fn query_descendants(
+        &self,
+        root: EventId,
+    ) -> Result<Vec<Event>, EventStoreError> {
+        let sql = "
+            WITH RECURSIVE descendants(id) AS (
+                SELECT id FROM events WHERE id = $1 AND dropped = 0
+                UNION ALL
+                SELECT e.id FROM events e
+                INNER JOIN descendants d ON e.causal_parent = d.id
+                WHERE e.dropped = 0
+            )
+            SELECT e.id, e.timestamp, e.changeset_id, e.agent_id, e.kind, e.causal_parent
+            FROM events e
+            INNER JOIN descendants d ON e.id = d.id
+            ORDER BY e.id ASC
+        ";
+        let rows = sqlx::query(sql)
+            .bind(root.0 as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_event).collect()
     }
 
     /// Return all non-dropped events in insertion order.
@@ -350,5 +382,20 @@ impl EventStore for SqliteEventStore {
         self.query_events("timestamp >= $1 AND dropped = 0", &[ts])
             .await
             .map_err(Into::into)
+    }
+
+    async fn latest_event_for_changeset(
+        &self,
+        id: &ChangesetId,
+    ) -> Result<Option<EventId>, CoreError> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT id FROM events WHERE changeset_id = $1 AND dropped = 0
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(EventStoreError::from)?;
+        Ok(row.map(|(id,)| EventId(id as u64)))
     }
 }

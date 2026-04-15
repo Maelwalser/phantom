@@ -6,6 +6,7 @@ fn sample_event() -> Event {
         timestamp: Utc::now(),
         changeset_id: ChangesetId("cs-0001".into()),
         agent_id: AgentId("agent-a".into()),
+        causal_parent: None,
         kind: EventKind::TaskCreated {
             base_commit: GitOid::zero(),
             task: String::new(),

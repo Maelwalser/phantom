@@ -101,11 +101,16 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     )?;
 
     // Emit AgentLaunched event now that we have the real PID.
+    let causal_parent = events
+        .latest_event_for_changeset(&changeset_id)
+        .await
+        .unwrap_or(None);
     let launch_event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
         changeset_id: changeset_id.clone(),
         agent_id: agent_id.clone(),
+        causal_parent,
         kind: EventKind::AgentLaunched {
             pid: claude_pid,
             task: args.task.clone(),
@@ -228,11 +233,16 @@ async fn run_post_completion(
     let success = exit_code == Some(0);
 
     // Record completion event.
+    let causal_parent = events
+        .latest_event_for_changeset(&changeset_id)
+        .await
+        .unwrap_or(None);
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
         changeset_id: changeset_id.clone(),
         agent_id: agent_id.clone(),
+        causal_parent,
         kind: EventKind::AgentCompleted {
             exit_code,
             materialized: false,

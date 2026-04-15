@@ -17,10 +17,13 @@ use phantom_core::id::{AgentId, EventId, GitOid};
 use phantom_core::notification::TrunkFileStatus;
 use phantom_core::traits::{EventStore, SemanticAnalyzer};
 
+use phantom_core::changeset::SemanticOperation;
+
 use crate::error::OrchestratorError;
 use crate::live_rebase;
 use crate::materializer::{MaterializeResult, Materializer};
 use crate::ripple::{self, RippleChecker};
+use crate::trunk_update;
 
 /// Summary of how a ripple affected one agent.
 #[derive(Debug)]
@@ -89,6 +92,13 @@ pub async fn materialize_and_ripple(
         });
     };
 
+    // Look up the ChangesetMaterialized event ID so LiveRebased events
+    // can reference it as their causal_parent (cross-changeset DAG edge).
+    let trigger_event_id = events
+        .latest_event_for_changeset(&changeset.id)
+        .await
+        .unwrap_or(None);
+
     let head = materializer.git().head_oid()?;
     let changed_files = materializer
         .git()
@@ -113,11 +123,14 @@ pub async fn materialize_and_ripple(
             events,
             phantom_dir,
             &changeset.id,
+            &changeset.agent_id,
             &changeset.base_commit,
             &head,
             agent_id,
             files,
             &overlay.upper_dir,
+            &changeset.operations,
+            trigger_event_id,
         )
         .await;
 
@@ -139,11 +152,14 @@ async fn handle_agent_ripple(
     events: &dyn EventStore,
     phantom_dir: &Path,
     changeset_id: &phantom_core::id::ChangesetId,
+    submitting_agent: &AgentId,
     changeset_base: &GitOid,
     head: &GitOid,
     agent_id: &AgentId,
     files: &[PathBuf],
     upper_path: &Path,
+    operations: &[SemanticOperation],
+    trigger_event_id: Option<EventId>,
 ) -> RippleEffect {
     let classified = ripple::classify_trunk_changes(files, upper_path);
     let shadowed_files: Vec<PathBuf> = classified
@@ -153,7 +169,18 @@ async fn handle_agent_ripple(
         .collect();
 
     if shadowed_files.is_empty() {
-        write_notification_and_base(phantom_dir, agent_id, *head, classified);
+        write_notification_and_base(phantom_dir, agent_id, *head, classified.clone());
+        write_trunk_update(
+            submitting_agent,
+            changeset_id,
+            head,
+            operations,
+            &classified,
+            files,
+            materializer,
+            upper_path,
+            agent_id,
+        );
         return RippleEffect {
             agent_id: agent_id.clone(),
             files: files.to_vec(),
@@ -197,10 +224,23 @@ async fn handle_agent_ripple(
                 })
                 .collect();
 
-            let notif = ripple::build_notification(*head, enriched);
+            let notif = ripple::build_notification(*head, enriched.clone());
             if let Err(e) = ripple::write_trunk_notification(phantom_dir, agent_id, &notif) {
                 warn!(%agent_id, error = %e, "failed to write notification");
             }
+
+            // Write semantic markdown notification.
+            write_trunk_update(
+                submitting_agent,
+                changeset_id,
+                head,
+                operations,
+                &enriched,
+                files,
+                materializer,
+                upper_path,
+                agent_id,
+            );
 
             // Emit audit event.
             let event = Event {
@@ -208,6 +248,7 @@ async fn handle_agent_ripple(
                 timestamp: Utc::now(),
                 changeset_id: changeset_id.clone(),
                 agent_id: agent_id.clone(),
+                causal_parent: trigger_event_id,
                 kind: EventKind::LiveRebased {
                     old_base,
                     new_base: *head,
@@ -232,7 +273,18 @@ async fn handle_agent_ripple(
         }
         Err(e) => {
             warn!(%agent_id, error = %e, "live rebase failed");
-            write_notification_and_base(phantom_dir, agent_id, *head, classified);
+            write_notification_and_base(phantom_dir, agent_id, *head, classified.clone());
+            write_trunk_update(
+                submitting_agent,
+                changeset_id,
+                head,
+                operations,
+                &classified,
+                files,
+                materializer,
+                upper_path,
+                agent_id,
+            );
             RippleEffect {
                 agent_id: agent_id.clone(),
                 files: files.to_vec(),
@@ -256,5 +308,38 @@ fn write_notification_and_base(
     }
     if let Err(e) = live_rebase::write_current_base(phantom_dir, agent_id, &head) {
         warn!(%agent_id, error = %e, "failed to update current_base");
+    }
+}
+
+/// Filter operations to overlapping files and write the semantic markdown
+/// notification into the affected agent's upper directory.
+#[allow(clippy::too_many_arguments)]
+fn write_trunk_update(
+    submitting_agent: &AgentId,
+    changeset_id: &phantom_core::id::ChangesetId,
+    head: &GitOid,
+    operations: &[SemanticOperation],
+    classified: &[(PathBuf, TrunkFileStatus)],
+    overlapping_files: &[PathBuf],
+    materializer: &Materializer,
+    upper_path: &Path,
+    agent_id: &AgentId,
+) {
+    let relevant_ops: Vec<SemanticOperation> = operations
+        .iter()
+        .filter(|op| overlapping_files.iter().any(|f| op.file_path() == f.as_path()))
+        .cloned()
+        .collect();
+
+    let md = trunk_update::generate_trunk_update_md(
+        submitting_agent,
+        changeset_id,
+        head,
+        &relevant_ops,
+        classified,
+        materializer.git(),
+    );
+    if let Err(e) = trunk_update::write_trunk_update_md(upper_path, &md) {
+        warn!(%agent_id, error = %e, "failed to write trunk update markdown");
     }
 }

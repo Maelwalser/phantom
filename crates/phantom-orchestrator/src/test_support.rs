@@ -60,6 +60,18 @@ impl EventStore for MockEventStore {
     async fn query_since(&self, _since: DateTime<Utc>) -> Result<Vec<Event>, CoreError> {
         Ok(vec![])
     }
+
+    async fn latest_event_for_changeset(
+        &self,
+        id: &ChangesetId,
+    ) -> Result<Option<EventId>, CoreError> {
+        let events = self.events.read().unwrap();
+        Ok(events
+            .iter()
+            .rev()
+            .find(|e| e.changeset_id == *id)
+            .map(|e| e.id))
+    }
 }
 
 // ---------------------------------------------------------------------------

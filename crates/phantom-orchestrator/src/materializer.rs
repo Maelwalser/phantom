@@ -427,26 +427,34 @@ impl Materializer {
     }
 
     /// Append a `ChangesetMaterialized` event to the store.
+    ///
+    /// Returns the assigned `EventId` so callers can use it as the
+    /// `causal_parent` for downstream events (e.g., `LiveRebased`).
     async fn append_materialized_event(
         &self,
         changeset: &Changeset,
         new_commit: &GitOid,
         event_store: &dyn EventStore,
-    ) -> Result<(), OrchestratorError> {
+    ) -> Result<EventId, OrchestratorError> {
+        let causal_parent = event_store
+            .latest_event_for_changeset(&changeset.id)
+            .await
+            .unwrap_or(None);
         let event = Event {
             id: EventId(0), // assigned by store
             timestamp: Utc::now(),
             changeset_id: changeset.id.clone(),
             agent_id: changeset.agent_id.clone(),
+            causal_parent,
             kind: EventKind::ChangesetMaterialized {
                 new_commit: *new_commit,
             },
         };
-        event_store
+        let id = event_store
             .append(event)
             .await
             .map_err(|e| OrchestratorError::EventStore(e.to_string()))?;
-        Ok(())
+        Ok(id)
     }
 
     /// Append a `ChangesetConflicted` event to the store.
@@ -456,11 +464,16 @@ impl Materializer {
         conflicts: &[ConflictDetail],
         event_store: &dyn EventStore,
     ) -> Result<(), OrchestratorError> {
+        let causal_parent = event_store
+            .latest_event_for_changeset(&changeset.id)
+            .await
+            .unwrap_or(None);
         let event = Event {
             id: EventId(0), // assigned by store
             timestamp: Utc::now(),
             changeset_id: changeset.id.clone(),
             agent_id: changeset.agent_id.clone(),
+            causal_parent,
             kind: EventKind::ChangesetConflicted {
                 conflicts: conflicts.to_vec(),
             },

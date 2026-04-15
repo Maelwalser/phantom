@@ -30,7 +30,7 @@ async fn schema_meta_table_created_with_version() {
             .fetch_one(&store.pool)
             .await
             .unwrap();
-    assert_eq!(row.0, "3", "schema should be at version 3 after migrations");
+    assert_eq!(row.0, "4", "schema should be at version 4 after migrations");
 }
 
 #[tokio::test]
@@ -44,6 +44,7 @@ async fn kind_version_column_written() {
             timestamp: now,
             changeset_id: ChangesetId("cs-1".into()),
             agent_id: AgentId("agent-a".into()),
+            causal_parent: None,
             kind: EventKind::TaskCreated {
                 base_commit: GitOid::zero(),
                 task: String::new(),

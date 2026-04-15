@@ -56,6 +56,7 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
         timestamp: Utc::now(),
         changeset_id,
         agent_id,
+        causal_parent: None,
         kind: EventKind::TaskDestroyed,
     };
     events_store.append(event).await?;

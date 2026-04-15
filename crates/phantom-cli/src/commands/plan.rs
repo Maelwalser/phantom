@@ -122,6 +122,7 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
         timestamp: Utc::now(),
         changeset_id: ChangesetId(format!("plan-{}", plan_id)),
         agent_id: AgentId("phantom-planner".into()),
+        causal_parent: None,
         kind: EventKind::PlanCreated {
             plan_id: plan_id.clone(),
             request: description.clone(),
@@ -327,6 +328,7 @@ async fn dispatch_domain(
         timestamp: Utc::now(),
         changeset_id: cs_id.clone(),
         agent_id: agent_id.clone(),
+        causal_parent: None,
         kind: EventKind::TaskCreated {
             base_commit: head,
             task: domain.description.clone(),

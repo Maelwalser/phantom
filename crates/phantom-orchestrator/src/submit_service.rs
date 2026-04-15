@@ -207,11 +207,16 @@ pub async fn submit_and_materialize(
     }
 
     // Record the submission event (audit trail of what the agent produced).
+    let causal_parent = events
+        .latest_event_for_changeset(&changeset_id)
+        .await
+        .unwrap_or(None);
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
         changeset_id: changeset_id.clone(),
         agent_id: agent_id.clone(),
+        causal_parent,
         kind: EventKind::ChangesetSubmitted {
             operations: all_ops.clone(),
         },
@@ -221,8 +226,9 @@ pub async fn submit_and_materialize(
         .await
         .map_err(|e| OrchestratorError::EventStore(e.to_string()))?;
 
-    // Remove stale trunk notification.
+    // Remove stale trunk notification and markdown update.
     ripple::remove_trunk_notification(phantom_dir, agent_id);
+    crate::trunk_update::remove_trunk_update_md(upper_dir);
 
     let submit_output = SubmitOutput {
         changeset_id: changeset_id.clone(),

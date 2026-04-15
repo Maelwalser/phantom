@@ -10,7 +10,7 @@ use crate::error::EventStoreError;
 /// Current schema version for the event store database.
 ///
 /// Increment this when adding migrations in [`run_migrations`].
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 /// Create the events table, schema_meta table, and indexes if they do not exist.
 pub(crate) async fn ensure_schema(pool: &SqlitePool) -> Result<(), EventStoreError> {
@@ -111,6 +111,31 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), EventStoreEr
         .await?;
 
         sqlx::query("UPDATE schema_meta SET value = '3' WHERE key = 'schema_version'")
+            .execute(pool)
+            .await?;
+    }
+
+    if version < 4 {
+        // Migration 3 -> 4: add causal_parent column for causal DAG ordering.
+        // Nullable INTEGER references the id of the event that caused this one.
+        sqlx::query("ALTER TABLE events ADD COLUMN causal_parent INTEGER DEFAULT NULL")
+            .execute(pool)
+            .await
+            .or_else(|e| {
+                if e.to_string().contains("duplicate column") {
+                    Ok(Default::default())
+                } else {
+                    Err(e)
+                }
+            })?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_causal_parent ON events(causal_parent)",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("UPDATE schema_meta SET value = '4' WHERE key = 'schema_version'")
             .execute(pool)
             .await?;
     }

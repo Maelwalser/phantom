@@ -16,7 +16,11 @@ pub(crate) const WHITEOUT_FILE: &str = ".whiteouts.json";
 
 /// Internal files placed in the upper layer by Phantom that should never appear
 /// as agent modifications or be committed to git.
-pub(crate) const INTERNAL_FILES: &[&str] = &[".whiteouts.json", ".phantom-task.md"];
+pub(crate) const INTERNAL_FILES: &[&str] = &[
+    ".whiteouts.json",
+    ".phantom-task.md",
+    ".phantom-trunk-update.md",
+];
 
 /// Serializable whiteout set for persistence.
 #[derive(Debug, Default, Serialize, Deserialize)]

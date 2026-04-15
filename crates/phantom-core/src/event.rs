@@ -165,6 +165,15 @@ pub struct Event {
     pub changeset_id: ChangesetId,
     /// The agent that caused this event.
     pub agent_id: AgentId,
+    /// The event that directly caused this one, if any.
+    ///
+    /// Root events (`TaskCreated`, `PlanCreated`) have no parent.
+    /// For lifecycle events within a changeset, this points to the
+    /// preceding event. For cross-changeset effects like `LiveRebased`,
+    /// this points to the `ChangesetMaterialized` event that triggered
+    /// the ripple — turning the flat event log into a causal DAG.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub causal_parent: Option<EventId>,
     /// What happened.
     pub kind: EventKind,
 }

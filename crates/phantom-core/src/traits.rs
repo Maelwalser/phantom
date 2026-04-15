@@ -36,6 +36,15 @@ pub trait EventStore: Send + Sync {
 
     /// Return events whose timestamp is at or after `since`.
     async fn query_since(&self, since: DateTime<Utc>) -> Result<Vec<Event>, CoreError>;
+
+    /// Return the ID of the most recent non-dropped event for a changeset.
+    ///
+    /// Used to determine the `causal_parent` when emitting lifecycle events
+    /// within a changeset (e.g., `ChangesetSubmitted` → parent is `TaskCreated`).
+    async fn latest_event_for_changeset(
+        &self,
+        id: &ChangesetId,
+    ) -> Result<Option<EventId>, CoreError>;
 }
 
 /// Live symbol index over the current trunk state.

@@ -24,11 +24,62 @@ pub struct LogArgs {
     /// Show full event details (agent, event kind, payload)
     #[arg(short, long)]
     pub verbose: bool,
+    /// Trace causal chain: show all events caused by the given event ID
+    #[arg(long)]
+    pub trace: Option<u64>,
 }
 
 pub async fn run(args: LogArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events_store = ctx.open_events().await?;
+
+    // Trace mode: walk the causal DAG from a specific event.
+    if let Some(root_id) = args.trace {
+        let events = events_store
+            .query_descendants(phantom_core::id::EventId(root_id))
+            .await?;
+
+        if events.is_empty() {
+            println!("No events found for trace root #{root_id}.");
+            return Ok(());
+        }
+
+        let mut palette = AgentPalette::new();
+
+        // Build depth map from causal_parent links for indentation.
+        let mut depths: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        depths.insert(root_id, 0);
+
+        for event in &events {
+            let depth = event
+                .causal_parent
+                .and_then(|p| depths.get(&p.0).copied())
+                .map(|d| d + 1)
+                .unwrap_or(0);
+            depths.insert(event.id.0, depth);
+
+            let indent = "  ".repeat(depth);
+            let ts = ui::dim_timestamp(event.timestamp);
+            let agent_style = palette.style_for(&event.agent_id.0).clone();
+            let agent = agent_style.apply_to(&event.agent_id.0);
+            let id_str = format!("#{}", event.id.0);
+            let id = ui::style_dim(&id_str);
+
+            if args.verbose {
+                let kind_summary = format_event_kind(&event.kind);
+                println!("{indent}  {id} {ts:>12}  {agent}  {kind_summary}");
+            } else {
+                let label = styled_event_kind_label(&event.kind);
+                println!("{indent}  {id} {ts:>12}  {agent}  {label}");
+            }
+        }
+
+        println!(
+            "\n{}",
+            ui::style_dim(&format!("{} event(s) in causal chain", events.len()))
+        );
+        return Ok(());
+    }
 
     let since = args.since.as_deref().map(parse_duration_ago).transpose()?;
 
@@ -64,7 +115,11 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
         let agent = agent_style.apply_to(&event.agent_id.0);
         if args.verbose {
             let kind_summary = format_event_kind(&event.kind);
-            println!("  {ts:>12}  {agent}  {kind_summary}");
+            let parent = event
+                .causal_parent
+                .map(|p| format!(" <- #{}", p.0))
+                .unwrap_or_default();
+            println!("  {ts:>12}  {agent}  {kind_summary}{parent}");
         } else {
             let label = styled_event_kind_label(&event.kind);
             println!("  {ts:>12}  {agent}  {label}");

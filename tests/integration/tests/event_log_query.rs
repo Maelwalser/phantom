@@ -21,6 +21,7 @@ fn make_event(
         timestamp,
         changeset_id: ChangesetId(changeset.into()),
         agent_id: AgentId(agent.into()),
+        causal_parent: None,
         kind,
     }
 }
