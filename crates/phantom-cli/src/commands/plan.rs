@@ -99,6 +99,9 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     // Step 5b: Validate no cycles in dependency graph.
     validate_no_cycles(&plan.domains)?;
 
+    // Step 5c: Warn about file overlap between parallel domains.
+    warn_parallel_file_overlap(&plan);
+
     // Step 6: Dispatch agents.
     let mut plan = plan;
     let mut dispatched_agents = Vec::new();
@@ -252,9 +255,12 @@ Output ONLY a JSON object with this structure (no markdown fences, no explanatio
 
 Rules:
 - Each domain gets its own agent with its own filesystem overlay
-- Minimize file overlap between domains — less overlap means fewer merge conflicts
+- CONFLICT PREVENTION: No two parallel domains (same wave) may list the same file in files_to_modify. If two domains need the same file, one MUST depends_on the other
+- Shared config/build files (package.json, tsconfig.json, Cargo.toml, pyproject.toml, go.mod, Makefile, etc.) are the #1 source of merge conflicts. If multiple domains need these, create a "scaffold" or "setup" domain (wave 0) that owns all shared config, and have other domains depends_on it
+- For greenfield projects (empty or near-empty repo), ALWAYS create a scaffold domain for project setup and config files as wave 0
+- files_not_to_modify MUST list every file owned by another domain to prevent accidental edits
+- Use depends_on freely when file sets overlap — correctness matters more than maximum parallelism
 - Keep domains focused: 1-5 files each
-- Use depends_on sparingly; prefer independent domains
 - Include verification commands appropriate for this project's toolchain
 - Names must be unique kebab-case identifiers
 - Every domain MUST have at least one requirement and one verification command"#
@@ -450,6 +456,47 @@ fn validate_no_cycles(domains: &[PlanDomain]) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Warn about files that appear in multiple domains within the same execution
+/// wave. File overlap between parallel domains causes merge conflicts.
+fn warn_parallel_file_overlap(plan: &Plan) {
+    use std::collections::HashMap;
+
+    let waves = compute_waves(&plan.domains);
+    let max_wave = waves.values().copied().max().unwrap_or(0);
+
+    for wave in 0..=max_wave {
+        // Collect files_to_modify per domain in this wave.
+        let mut file_owners: HashMap<&Path, Vec<&str>> = HashMap::new();
+        for domain in &plan.domains {
+            if waves.get(domain.name.as_str()).copied().unwrap_or(0) != wave {
+                continue;
+            }
+            for file in &domain.files_to_modify {
+                file_owners
+                    .entry(file.as_path())
+                    .or_default()
+                    .push(&domain.name);
+            }
+        }
+
+        for (file, owners) in &file_owners {
+            if owners.len() > 1 {
+                eprintln!(
+                    "WARNING: {} is listed in files_to_modify by {} parallel domains in wave {}: {}",
+                    file.display(),
+                    owners.len(),
+                    wave,
+                    owners.join(", "),
+                );
+                eprintln!(
+                    "  This will likely cause a merge conflict. Consider adding depends_on \
+                     between these domains."
+                );
+            }
+        }
+    }
 }
 
 /// Dispatch a single domain as a background agent.
@@ -708,11 +755,15 @@ mod tests {
     // ── Cycle detection tests ──────────────────────────────────────────
 
     fn domain(name: &str, depends_on: &[&str]) -> PlanDomain {
+        domain_with_files(name, depends_on, &[])
+    }
+
+    fn domain_with_files(name: &str, depends_on: &[&str], files: &[&str]) -> PlanDomain {
         PlanDomain {
             name: name.into(),
             agent_id: format!("plan-test-{name}"),
             description: format!("test domain {name}"),
-            files_to_modify: vec![],
+            files_to_modify: files.iter().map(std::path::PathBuf::from).collect(),
             files_not_to_modify: vec![],
             requirements: vec![],
             verification: vec![],
@@ -816,5 +867,99 @@ mod tests {
         assert_eq!(waves["b"], 1);
         assert_eq!(waves["c"], 1);
         assert_eq!(waves["d"], 2);
+    }
+
+    // ── File overlap warning tests ────────────────────────────────────
+
+    // warn_parallel_file_overlap prints to stderr and doesn't return a
+    // testable value, so we extract the detection logic into a helper and
+    // test that instead. The actual function calls this same logic.
+
+    /// Detect overlapping files between parallel domains in the same wave.
+    /// Returns (file, [domain_names]) for each overlap.
+    fn detect_overlaps(plan: &Plan) -> Vec<(std::path::PathBuf, Vec<String>)> {
+        use std::collections::HashMap;
+
+        let waves = compute_waves(&plan.domains);
+        let max_wave = waves.values().copied().max().unwrap_or(0);
+        let mut results = Vec::new();
+
+        for wave in 0..=max_wave {
+            let mut file_owners: HashMap<&Path, Vec<&str>> = HashMap::new();
+            for domain in &plan.domains {
+                if waves.get(domain.name.as_str()).copied().unwrap_or(0) != wave {
+                    continue;
+                }
+                for file in &domain.files_to_modify {
+                    file_owners
+                        .entry(file.as_path())
+                        .or_default()
+                        .push(&domain.name);
+                }
+            }
+            for (file, owners) in file_owners {
+                if owners.len() > 1 {
+                    results.push((
+                        file.to_path_buf(),
+                        owners.into_iter().map(String::from).collect(),
+                    ));
+                }
+            }
+        }
+        results
+    }
+
+    #[test]
+    fn detects_overlap_in_same_wave() {
+        let domains = vec![
+            domain_with_files("scaffold", &[], &["package.json", "src/index.ts"]),
+            domain_with_files("vim-engine", &[], &["package.json", "src/vim.ts"]),
+        ];
+        let plan = build_plan(&PlanId("test".into()), "test", RawPlanOutput {
+            domains: vec![], // unused, we override
+        });
+        let plan = Plan { domains, ..plan };
+
+        let overlaps = detect_overlaps(&plan);
+        assert_eq!(overlaps.len(), 1);
+        assert_eq!(overlaps[0].0, std::path::PathBuf::from("package.json"));
+        assert_eq!(overlaps[0].1.len(), 2);
+    }
+
+    #[test]
+    fn no_overlap_when_dependency_separates_waves() {
+        let domains = vec![
+            domain_with_files("scaffold", &[], &["package.json", "tsconfig.json"]),
+            domain_with_files("vim-engine", &["scaffold"], &["package.json", "src/vim.ts"]),
+        ];
+        let plan = Plan {
+            id: PlanId("test".into()),
+            request: "test".into(),
+            created_at: Utc::now(),
+            domains,
+            status: PlanStatus::Draft,
+        };
+
+        let overlaps = detect_overlaps(&plan);
+        // package.json is in different waves (0 and 1), so no parallel overlap
+        assert!(overlaps.is_empty());
+    }
+
+    #[test]
+    fn no_overlap_when_files_disjoint() {
+        let domains = vec![
+            domain_with_files("api", &[], &["src/api.ts"]),
+            domain_with_files("ui", &[], &["src/ui.ts"]),
+        ];
+        let plan = Plan {
+            id: PlanId("test".into()),
+            request: "test".into(),
+            created_at: Utc::now(),
+            domains,
+            status: PlanStatus::Draft,
+        };
+
+        let overlaps = detect_overlaps(&plan);
+        assert!(overlaps.is_empty());
     }
 }

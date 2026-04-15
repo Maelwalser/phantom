@@ -69,9 +69,25 @@ pub async fn submit_and_materialize(
     active_overlays: &[ActiveOverlay],
     message: &str,
 ) -> Result<Option<SubmitAndMaterializeOutput>, OrchestratorError> {
-    let modified = layer
+    let all_modified = layer
         .modified_files()
         .map_err(|e| OrchestratorError::Overlay(e.to_string()))?;
+
+    // Filter out gitignored files (node_modules, target/, __pycache__, etc.).
+    // Uses the repo's .gitignore rules via git2 — works for all project types.
+    let total_count = all_modified.len();
+    let modified: Vec<PathBuf> = all_modified
+        .into_iter()
+        .filter(|path| !git.is_ignored(path).unwrap_or(false))
+        .collect();
+
+    let ignored_count = total_count - modified.len();
+    if ignored_count > 0 {
+        tracing::info!(
+            ignored_count,
+            "filtered {ignored_count} gitignored file(s) from changeset"
+        );
+    }
 
     if modified.is_empty() {
         return Ok(None);

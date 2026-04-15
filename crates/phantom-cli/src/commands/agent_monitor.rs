@@ -161,7 +161,41 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     events.append(launch_event).await?;
 
     // Run post-completion flow: always auto-submit on success.
-    let result = run_post_completion(&agent_id, &changeset_id, exit_code).await;
+    let mut result = run_post_completion(&agent_id, &changeset_id, exit_code).await;
+
+    // Auto-retry once on conflict: rebase against current trunk and re-submit.
+    // This handles the common case where a parallel agent materialized first and
+    // the merge would succeed against the updated trunk.
+    if matches!(&result, Ok(PostSessionOutcome::Conflict { .. })) {
+        tracing::info!(agent = %agent_id, "conflict detected, retrying with updated trunk base");
+
+        if let Ok(retry_ctx) = PhantomContext::locate()
+            && let Ok(git) = retry_ctx.open_git()
+            && let Ok(current_head) = git.head_oid()
+        {
+            // Emit ConflictResolutionStarted with the new base so the
+            // submit service uses current trunk HEAD as the merge base.
+            let causal = events
+                .latest_event_for_changeset(&changeset_id)
+                .await
+                .unwrap_or(None);
+            let resolution_event = Event {
+                id: EventId(0),
+                timestamp: Utc::now(),
+                changeset_id: changeset_id.clone(),
+                agent_id: agent_id.clone(),
+                causal_parent: causal,
+                kind: EventKind::ConflictResolutionStarted {
+                    conflicts: vec![],
+                    new_base: Some(current_head),
+                },
+            };
+            if events.append(resolution_event).await.is_ok() {
+                result =
+                    run_post_completion(&agent_id, &changeset_id, exit_code).await;
+            }
+        }
+    }
 
     // Build status from the outcome.
     let (status, should_destroy) = match &result {

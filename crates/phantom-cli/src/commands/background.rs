@@ -43,13 +43,29 @@ pub async fn run(args: BackgroundArgs) -> anyhow::Result<()> {
     result
 }
 
+/// Count the number of visual (screen) rows a line occupies, accounting for
+/// terminal wrapping. ANSI escape sequences are stripped before measuring.
+fn visual_line_count(line: &str, term_width: usize) -> usize {
+    if term_width == 0 {
+        return 1;
+    }
+    let visible_width = console::measure_text_width(line);
+    if visible_width == 0 {
+        1 // empty line still occupies one row
+    } else {
+        (visible_width + term_width - 1) / term_width // ceil division
+    }
+}
+
 async fn run_loop(stdout: &mut io::Stdout, interval: Duration) -> anyhow::Result<()> {
-    let mut prev_lines = 0usize;
+    let mut prev_visual_lines = 0usize;
 
     loop {
+        let term_width = console::Term::stdout().size().1 as usize;
+
         // Move cursor up to overwrite the previous frame.
-        if prev_lines > 0 {
-            write!(stdout, "\x1b[{prev_lines}A\r")?;
+        if prev_visual_lines > 0 {
+            write!(stdout, "\x1b[{prev_visual_lines}A\r")?;
         }
 
         let mut buf = Vec::new();
@@ -58,24 +74,29 @@ async fn run_loop(stdout: &mut io::Stdout, interval: Duration) -> anyhow::Result
         }
 
         let output = String::from_utf8_lossy(&buf);
-        let line_count = output.lines().count();
+
+        // Count visual rows accounting for line wrapping.
+        let visual_lines: usize = output
+            .lines()
+            .map(|line| visual_line_count(line, term_width))
+            .sum();
 
         // Clear each line as we write to handle shrinking output.
         for line in output.lines() {
             writeln!(stdout, "\x1b[2K{line}")?;
         }
 
-        // If previous frame had more lines, clear the leftover lines.
-        if prev_lines > line_count {
-            for _ in 0..(prev_lines - line_count) {
+        // If previous frame had more visual lines, clear the leftover rows.
+        if prev_visual_lines > visual_lines {
+            for _ in 0..(prev_visual_lines - visual_lines) {
                 writeln!(stdout, "\x1b[2K")?;
             }
             // Move cursor back up to end of current frame.
-            let extra = prev_lines - line_count;
+            let extra = prev_visual_lines - visual_lines;
             write!(stdout, "\x1b[{extra}A")?;
         }
 
-        prev_lines = line_count;
+        prev_visual_lines = visual_lines;
         stdout.flush()?;
 
         tokio::select! {

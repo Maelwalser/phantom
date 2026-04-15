@@ -146,6 +146,14 @@ impl GitOps {
         Ok(paths)
     }
 
+    /// Check if a path would be ignored by `.gitignore` rules.
+    ///
+    /// Uses `git2`'s full ignore chain: `.gitignore`, `.git/info/exclude`,
+    /// and the user's global gitignore. Works for all languages/project types.
+    pub fn is_ignored(&self, path: &Path) -> Result<bool, GitError> {
+        Ok(self.repo.status_should_ignore(path)?)
+    }
+
     /// Perform a line-based three-way merge.
     ///
     /// Returns [`MergeResult::Clean`] with the merged bytes on success, or
@@ -409,5 +417,41 @@ mod tests {
         let err = GitError::MaterializationFailed("copy failed: disk full".into());
         let msg = err.to_string();
         assert!(msg.contains("disk full"), "error was: {msg}");
+    }
+
+    #[test]
+    fn test_is_ignored_respects_gitignore() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        // Write a .gitignore that ignores node_modules/ and target/
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            "node_modules/\ntarget/\n*.pyc\n",
+        )
+        .unwrap();
+
+        // Stage and commit the .gitignore so it takes effect.
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new(".gitignore")).unwrap();
+            index.write().unwrap();
+            let tree_oid = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_oid).unwrap();
+            let sig = git2::Signature::now("test", "test@phantom").unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+        }
+
+        let ops = GitOps::open(dir.path()).unwrap();
+
+        // Gitignored paths
+        assert!(ops.is_ignored(Path::new("node_modules/foo/index.js")).unwrap());
+        assert!(ops.is_ignored(Path::new("target/debug/build")).unwrap());
+        assert!(ops.is_ignored(Path::new("lib/cache.pyc")).unwrap());
+
+        // Non-ignored paths
+        assert!(!ops.is_ignored(Path::new("src/main.rs")).unwrap());
+        assert!(!ops.is_ignored(Path::new("package.json")).unwrap());
     }
 }
