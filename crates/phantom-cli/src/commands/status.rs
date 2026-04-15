@@ -479,7 +479,7 @@ pub fn format_duration(d: &Duration) -> String {
 ///
 /// Plan agent IDs follow: `plan-YYYYMMDD-HHMMSS-domain-name`.
 /// Returns `Some("plan-YYYYMMDD-HHMMSS")` if matched.
-fn extract_plan_prefix(agent_id: &str) -> Option<String> {
+pub(super) fn extract_plan_prefix(agent_id: &str) -> Option<String> {
     if !agent_id.starts_with("plan-") {
         return None;
     }

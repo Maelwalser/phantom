@@ -14,5 +14,6 @@ pub mod rollback;
 pub mod status;
 pub mod submit;
 pub mod task;
+pub mod tasks;
 pub mod textbox;
 pub mod ui;

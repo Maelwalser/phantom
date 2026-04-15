@@ -47,6 +47,7 @@ Commands:
   init            Initialize Phantom in an existing git repository
   submit/sub      Submit an agent's work: merge to trunk and ripple to other agents
   status/st       Show status of overlays and changesets
+  tasks/t         List all agent task overlays
   plan            Decompose a feature into parallel agent tasks
   resolve/res     Auto-resolve merge conflicts by launching an AI agent
   rollback/rb     Roll back a changeset and replay downstream
@@ -76,6 +77,9 @@ enum Commands {
     /// Show status of overlays and changesets
     #[command(alias = "st", display_name = "status/st")]
     Status(commands::status::StatusArgs),
+    /// List all agent task overlays
+    #[command(alias = "t", display_name = "tasks/t")]
+    Tasks(commands::tasks::TasksArgs),
     /// Decompose a feature into parallel agent tasks
     Plan(commands::plan::PlanArgs),
     /// Auto-resolve merge conflicts by launching an AI agent
@@ -127,6 +131,7 @@ async fn main() {
             Ok(())
         }
         Some(Commands::Init) => commands::init::run().await,
+        Some(Commands::Tasks(args)) => commands::tasks::run(args).await,
         Some(Commands::Plan(args)) => commands::plan::run(args).await,
         Some(Commands::Submit(args)) => commands::submit::run(args).await,
         Some(Commands::Status(args)) => commands::status::run(args).await,
