@@ -17,6 +17,7 @@ use phantom_events::{Projection, SnapshotManager, SqliteEventStore};
 use phantom_git::GitOps;
 use phantom_overlay::OverlayManager;
 
+
 use super::agent_monitor;
 use super::ui;
 use crate::context::PhantomContext;
@@ -47,23 +48,24 @@ pub enum AgentRunState {
 pub async fn run(args: StatusArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
-    let overlays = ctx.open_overlays_readonly()?;
+    let agent_ids = OverlayManager::scan_agent_ids(&ctx.phantom_dir)?;
 
     if let Some(agent_name) = &args.agent {
-        run_detailed(&ctx.phantom_dir, &events, &overlays, agent_name).await
+        run_detailed(&ctx, &events, &agent_ids, agent_name).await
     } else {
         let git = ctx.open_git()?;
-        run_summary(&ctx.phantom_dir, &git, &events, &overlays).await
+        run_summary(&ctx, &git, &events, &agent_ids).await
     }
 }
 
 /// Summary view: show all overlays, pending changesets, and conflicts.
 async fn run_summary(
-    phantom_dir: &Path,
+    ctx: &PhantomContext,
     git: &GitOps,
     events: &SqliteEventStore,
-    overlays: &OverlayManager,
+    agent_ids: &[AgentId],
 ) -> anyhow::Result<()> {
+    let phantom_dir = &ctx.phantom_dir;
     let head = git.head_oid()?;
 
     let projection = SnapshotManager::new(events).build_projection().await?;
@@ -79,8 +81,7 @@ async fn run_summary(
     println!();
 
     // All overlays that exist on disk.
-    let all_handles = overlays.list_overlays();
-    let mut overlay_agents: Vec<&AgentId> = all_handles.iter().map(|h| &h.agent_id).collect();
+    let mut overlay_agents: Vec<&AgentId> = agent_ids.iter().collect();
     overlay_agents.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Detect plans: find PlanCreated events to map plan IDs to their request text.
@@ -196,21 +197,31 @@ async fn run_summary(
     println!();
 
     // Pending: overlays with modified files that haven't been submitted yet.
+    // Only create OverlayLayer for agents with InProgress changesets.
+    let pending_agent_ids: Vec<&AgentId> = overlay_agents
+        .iter()
+        .copied()
+        .filter(|agent| {
+            projection
+                .changesets_for_agent(agent)
+                .first()
+                .is_some_and(|cs| cs.status == ChangesetStatus::InProgress)
+        })
+        .collect();
+
     let mut pending_overlays: Vec<(&AgentId, usize)> = Vec::new();
-    for handle in &all_handles {
-        // Only show overlays whose latest changeset is still InProgress.
-        let changesets = projection.changesets_for_agent(&handle.agent_id);
-        let is_pending = changesets
-            .first()
-            .is_some_and(|cs| cs.status == ChangesetStatus::InProgress);
-        if !is_pending {
-            continue;
+    if !pending_agent_ids.is_empty() {
+        let mut mgr = ctx.open_overlays();
+        for agent_id in &pending_agent_ids {
+            let _ = mgr.create_overlay((*agent_id).clone(), &ctx.repo_root);
         }
-        if let Ok(layer) = overlays.get_layer(&handle.agent_id)
-            && let Ok(files) = layer.modified_files()
-            && !files.is_empty()
-        {
-            pending_overlays.push((&handle.agent_id, files.len()));
+        for agent_id in &pending_agent_ids {
+            if let Ok(layer) = mgr.get_layer(agent_id)
+                && let Ok(files) = layer.modified_files()
+                && !files.is_empty()
+            {
+                pending_overlays.push((agent_id, files.len()));
+            }
         }
     }
     if pending_overlays.is_empty() {
@@ -262,11 +273,12 @@ async fn run_summary(
 
 /// Detailed view for a specific agent.
 async fn run_detailed(
-    phantom_dir: &Path,
+    ctx: &PhantomContext,
     events: &SqliteEventStore,
-    overlays: &OverlayManager,
+    _agent_ids: &[AgentId],
     agent_name: &str,
 ) -> anyhow::Result<()> {
+    let phantom_dir = &ctx.phantom_dir;
     let agent_id = AgentId(agent_name.to_string());
 
     let projection = SnapshotManager::new(events).build_projection().await?;
@@ -319,8 +331,10 @@ async fn run_detailed(
     );
     println!();
 
-    // Files modified in overlay
-    match overlays.get_layer(&agent_id) {
+    // Files modified in overlay — lazily create a single overlay for this agent.
+    let mut mgr = ctx.open_overlays();
+    let _ = mgr.create_overlay(agent_id.clone(), &ctx.repo_root);
+    match mgr.get_layer(&agent_id) {
         Ok(layer) => match layer.modified_files() {
             Ok(files) if !files.is_empty() => {
                 println!(

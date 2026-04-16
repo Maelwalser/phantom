@@ -11,31 +11,32 @@ use super::status::{self, extract_plan_prefix};
 use super::ui;
 use crate::context::PhantomContext;
 
+
+
 #[derive(clap::Args)]
 pub struct TasksArgs {}
 
 pub async fn run(_args: TasksArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
-    let overlays = ctx.open_overlays_readonly()?;
+    let agent_ids = OverlayManager::scan_agent_ids(&ctx.phantom_dir)?;
 
-    print_tasks(&ctx.phantom_dir, &events, &overlays).await
+    print_tasks(&ctx.phantom_dir, &events, &agent_ids).await
 }
 
 async fn print_tasks(
     phantom_dir: &Path,
     events: &SqliteEventStore,
-    overlays: &OverlayManager,
+    agent_ids: &[AgentId],
 ) -> anyhow::Result<()> {
-    let all_handles = overlays.list_overlays();
-    if all_handles.is_empty() {
+    if agent_ids.is_empty() {
         println!("No active tasks.");
         return Ok(());
     }
 
     let projection = SnapshotManager::new(events).build_projection().await?;
 
-    let mut overlay_agents: Vec<&AgentId> = all_handles.iter().map(|h| &h.agent_id).collect();
+    let mut overlay_agents: Vec<&AgentId> = agent_ids.iter().collect();
     overlay_agents.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Collect plan metadata for grouping.

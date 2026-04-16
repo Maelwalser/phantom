@@ -17,19 +17,17 @@ pub struct ResumeArgs {}
 pub async fn run(_args: ResumeArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
-    let overlays = ctx.open_overlays_readonly()?;
+    let agent_ids = phantom_overlay::OverlayManager::scan_agent_ids(&ctx.phantom_dir)?;
 
-    let all_handles = overlays.list_overlays();
-    if all_handles.is_empty() {
+    if agent_ids.is_empty() {
         println!("No active tasks. Use `phantom <agent-name>` to create one.");
         return Ok(());
     }
 
     // Filter to non-background agents (Idle run state = no agent.pid / agent.status).
-    let mut interactive_agents: Vec<&AgentId> = all_handles
+    let mut interactive_agents: Vec<&AgentId> = agent_ids
         .iter()
-        .filter(|h| matches!(status::read_agent_run_state(&ctx.phantom_dir, &h.agent_id.0), AgentRunState::Idle))
-        .map(|h| &h.agent_id)
+        .filter(|a| matches!(status::read_agent_run_state(&ctx.phantom_dir, &a.0), AgentRunState::Idle))
         .collect();
     interactive_agents.sort_by(|a, b| a.0.cmp(&b.0));
 

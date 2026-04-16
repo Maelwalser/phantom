@@ -58,17 +58,6 @@ impl PhantomContext {
         OverlayManager::new(self.phantom_dir.clone())
     }
 
-    /// Create an overlay manager and register existing overlays without cleanup.
-    ///
-    /// Scans `.phantom/overlays/` and registers agent directories but skips
-    /// stale FUSE mount cleanup and dead agent process checks. Use this for
-    /// read-only commands (e.g. `status`) that only need to list overlays.
-    pub fn open_overlays_readonly(&self) -> anyhow::Result<OverlayManager> {
-        let mut mgr = self.open_overlays();
-        register_overlays(&mut mgr, &self.phantom_dir, &self.repo_root)?;
-        Ok(mgr)
-    }
-
     /// Create an overlay manager and restore existing overlays from disk.
     ///
     /// This scans `.phantom/overlays/` for agent directories and re-registers
@@ -85,45 +74,6 @@ impl PhantomContext {
     pub fn semantic(&self) -> SemanticMerger {
         SemanticMerger::new()
     }
-}
-
-/// Scan `.phantom/overlays/` and register agent directories without cleanup.
-///
-/// Lightweight version of [`restore_overlays`] that skips stale FUSE mount
-/// cleanup and dead agent process checks. Use for read-only listing.
-fn register_overlays(
-    overlays: &mut OverlayManager,
-    phantom_dir: &Path,
-    repo_root: &Path,
-) -> anyhow::Result<()> {
-    let overlays_dir = phantom_dir.join("overlays");
-    if !overlays_dir.is_dir() {
-        return Ok(());
-    }
-
-    let entries = std::fs::read_dir(&overlays_dir).context("failed to read overlays directory")?;
-    for entry in entries {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let agent_name = entry.file_name();
-        let agent_name = agent_name
-            .to_str()
-            .context("invalid overlay directory name")?;
-
-        let upper_dir = entry.path().join("upper");
-        if upper_dir.is_dir() {
-            let agent_id = phantom_core::AgentId(agent_name.to_string());
-            if overlays.upper_dir(&agent_id).is_err()
-                && let Err(e) = overlays.create_overlay(agent_id.clone(), repo_root)
-            {
-                warn!(%agent_id, error = %e, "failed to register overlay");
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Scan `.phantom/overlays/` for existing agent directories and re-register them

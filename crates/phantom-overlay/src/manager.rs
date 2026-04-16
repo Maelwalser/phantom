@@ -97,6 +97,31 @@ impl OverlayManager {
         self.active_overlays.values().collect()
     }
 
+    /// Scan `.phantom/overlays/` and return agent IDs without creating layers.
+    ///
+    /// This is a lightweight directory scan with no whiteout loading, no
+    /// directory creation, and no [`OverlayLayer`] initialization. Use for
+    /// read-only listing commands that only need agent names.
+    pub fn scan_agent_ids(phantom_dir: &Path) -> Result<Vec<AgentId>, OverlayError> {
+        let overlays_dir = phantom_dir.join("overlays");
+        if !overlays_dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut agents = Vec::new();
+        for entry in fs::read_dir(&overlays_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if let Some(name) = entry.file_name().to_str() {
+                if entry.path().join("upper").is_dir() {
+                    agents.push(AgentId(name.to_string()));
+                }
+            }
+        }
+        Ok(agents)
+    }
+
     /// Return the upper directory path for an agent's overlay.
     pub fn upper_dir(&self, agent_id: &AgentId) -> Result<&Path, OverlayError> {
         self.active_overlays
