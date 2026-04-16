@@ -29,7 +29,7 @@ pub struct TaskArgs {
     #[arg(long, requires = "background")]
     pub task: Option<String>,
     /// Create the overlay without launching a CLI session (for scripted agents)
-    #[arg(long, short = 'b', requires = "task")]
+    #[arg(long, short = 'b')]
     pub background: bool,
     /// Automatically submit and merge to trunk when the session exits.
     /// Always enabled for background agents.
@@ -161,14 +161,26 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
     let base_short = base_commit.to_hex().chars().take(12).collect::<String>();
 
     if args.background {
-        let task = args.task.as_deref().unwrap_or("");
+        let task = match args.task {
+            Some(t) => t,
+            None => match super::textbox::multiline_input(
+                "Describe the task for this agent:",
+                "Enter task description...",
+            )? {
+                Some(d) if !d.trim().is_empty() => d,
+                _ => {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            },
+        };
 
         super::interactive::write_context_file(
             &work_dir,
             &agent_id,
             &changeset_id,
             &base_commit,
-            Some(task),
+            Some(&task),
         )?;
 
         // Spawn the monitor process, which in turn spawns the agent CLI as its
@@ -185,7 +197,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             &ctx.repo_root,
             &args.agent,
             &changeset_id,
-            task,
+            &task,
             &work_dir,
             cli_command,
             None,
