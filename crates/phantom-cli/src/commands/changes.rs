@@ -45,9 +45,15 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
 
     if events.is_empty() {
         if let Some(ref agent) = args.agent {
-            println!("No submits for agent '{agent}' yet.");
+            ui::empty_state(
+                &format!("No submits for agent '{agent}' yet."),
+                Some("Use `phantom submit` after work completes."),
+            );
         } else {
-            println!("No submits yet.");
+            ui::empty_state(
+                "No submits yet.",
+                Some("Use `phantom submit <agent>` after an agent completes work."),
+            );
         }
         return Ok(());
     }

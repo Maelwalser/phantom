@@ -168,7 +168,8 @@ async fn render_frame(out: &mut impl Write) -> anyhow::Result<()> {
         ))
         .dim()
     )?;
-    writeln!(out, "  {}", console::style("─".repeat(70)).dim())?;
+    let rule_len = term_width.min(80).saturating_sub(2);
+    writeln!(out, "  {}", console::style("─".repeat(rule_len)).dim())?;
 
     let mut running = 0usize;
     let mut finished = 0usize;

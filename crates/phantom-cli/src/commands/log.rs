@@ -40,7 +40,7 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
             .await?;
 
         if events.is_empty() {
-            println!("No events found for trace root #{root_id}.");
+            ui::empty_state(&format!("No events found for trace root #{root_id}."), None);
             return Ok(());
         }
 
@@ -102,7 +102,10 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
     let events = events_store.query(&query).await?;
 
     if events.is_empty() {
-        println!("No events found.");
+        ui::empty_state(
+            "No events found.",
+            Some("Use --since or --limit to broaden the search."),
+        );
         return Ok(());
     }
 

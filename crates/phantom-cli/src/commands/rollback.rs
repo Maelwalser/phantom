@@ -128,7 +128,7 @@ async fn run_interactive(ctx: &PhantomContext, events: &SqliteEventStore) -> any
     let materialized = replay.materialized_changesets().await?;
 
     if materialized.is_empty() {
-        println!("No materialized changesets to roll back.");
+        ui::empty_state("No materialized changesets to roll back.", None);
         return Ok(());
     }
 
@@ -153,12 +153,15 @@ async fn run_interactive(ctx: &PhantomContext, events: &SqliteEventStore) -> any
         .interact_opt()?;
 
     let Some(idx) = selection else {
-        println!("Cancelled.");
+        println!("  {}", console::style("Cancelled.").dim());
         return Ok(());
     };
 
     if idx == 0 {
-        println!("This is already the latest state. Nothing to roll back.");
+        println!(
+            "  {}",
+            console::style("This is already the latest state. Nothing to roll back.").dim()
+        );
         return Ok(());
     }
 
@@ -175,7 +178,11 @@ async fn run_interactive(ctx: &PhantomContext, events: &SqliteEventStore) -> any
         println!();
     }
 
-    println!("Rolled back to checkpoint: {}", materialized_rev[idx]);
+    println!(
+        "  {} Rolled back to checkpoint: {}",
+        console::style("✓").green(),
+        console::style(&materialized_rev[idx].to_string()).cyan()
+    );
 
     Ok(())
 }
@@ -205,7 +212,10 @@ async fn run_interactive_for_agent(
     eligible.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     if eligible.is_empty() {
-        println!("No rollback-eligible changesets for agent '{agent_id}'.");
+        ui::empty_state(
+            &format!("No rollback-eligible changesets for agent '{agent_id}'."),
+            None,
+        );
         return Ok(());
     }
 
@@ -223,7 +233,7 @@ async fn run_interactive_for_agent(
         .interact_opt()?;
 
     let Some(idx) = selection else {
-        println!("Cancelled.");
+        println!("  {}", console::style("Cancelled.").dim());
         return Ok(());
     };
 
@@ -242,7 +252,10 @@ fn format_menu_item(id: &ChangesetId, cs: &Changeset) -> String {
     };
     let age = ui::relative_time(cs.created_at);
     format!(
-        "{:<10}  {:<14}  {:50}  ({})",
-        id.0, cs.agent_id.0, task_display, age
+        "{}  {:<14}  {:50}  {}",
+        console::style(format!("{:<10}", id.0)).bold(),
+        cs.agent_id.0,
+        task_display,
+        console::style(format!("({age})")).dim()
     )
 }

@@ -431,10 +431,10 @@ fn spawn_parallel_resolve_agents(
         })?;
 
         println!(
-            "    {} Agent {} spawned (PID {})",
-            console::style("->").dim(),
-            i,
-            child.id()
+            "    {} Agent {} spawned {}",
+            console::style("→").dim(),
+            console::style(i).bold(),
+            console::style(format!("(PID {})", child.id())).dim()
         );
 
         children.push(child);
@@ -442,8 +442,8 @@ fn spawn_parallel_resolve_agents(
 
     println!(
         "\n  {} Waiting for {} agents to complete...\n",
-        console::style("...").dim(),
-        children.len()
+        console::style("◌").cyan(),
+        console::style(children.len()).bold()
     );
 
     let mut exit_codes = Vec::with_capacity(children.len());
@@ -452,17 +452,21 @@ fn spawn_parallel_resolve_agents(
             .wait()
             .with_context(|| format!("failed to wait for resolve agent {i}"))?;
         let code = status.code();
-        let label = if code == Some(0) {
-            console::style("ok").green().to_string()
+        if code == Some(0) {
+            println!(
+                "    {} Agent {}",
+                console::style("✓").green(),
+                console::style(i).bold()
+            );
         } else {
-            console::style(format!(
-                "exit {}",
-                code.map_or_else(|| "signal".into(), |c| c.to_string())
-            ))
-            .red()
-            .to_string()
-        };
-        println!("    Agent {i}: {label}");
+            let code_str = code.map_or_else(|| "signal".into(), |c: i32| format!("exit {c}"));
+            println!(
+                "    {} Agent {} {}",
+                console::style("✗").red(),
+                console::style(i).bold(),
+                console::style(format!("({code_str})")).dim()
+            );
+        }
         exit_codes.push(code);
     }
 

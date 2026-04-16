@@ -134,6 +134,52 @@ pub fn run_state_text(state: &AgentRunState) -> console::StyledObject<&'static s
     }
 }
 
+// ── Composite message helpers ───────────────────────────────────────
+
+/// Print a styled empty-state message with an optional hint.
+///
+/// ```text
+///   · No events found.
+///     Use --since to broaden the search.
+/// ```
+pub fn empty_state(message: &str, hint: Option<&str>) {
+    println!("  {} {}", style("·").dim(), style(message).dim());
+    if let Some(hint) = hint {
+        println!("    {}", style(hint).dim());
+    }
+}
+
+/// Print a success message with a green checkmark.
+///
+/// ```text
+///   ✓ Phantom initialized in /home/user/project
+/// ```
+#[allow(dead_code)]
+pub fn success_message(message: impl std::fmt::Display) {
+    println!("  {} {message}", style("✓").green());
+}
+
+/// Print a warning message to stderr with a yellow warning symbol.
+///
+/// ```text
+///   ⚠ File overlap detected between parallel domains
+/// ```
+pub fn warning_message(message: impl std::fmt::Display) {
+    eprintln!("  {} {message}", style("⚠").yellow());
+}
+
+/// Print a dim action hint pointing the user to a follow-up command.
+///
+/// ```text
+///   Run `ph status agent-a` to check progress.
+/// ```
+pub fn action_hint(command: &str, description: &str) {
+    println!(
+        "  Run {} {description}",
+        style(command).bold()
+    );
+}
+
 // ── Line truncation ─────────────────────────────────────────────────
 
 /// Return the current terminal width (columns), defaulting to 80.

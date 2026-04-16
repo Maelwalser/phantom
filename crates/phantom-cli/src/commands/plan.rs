@@ -51,7 +51,11 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     let events = ctx.open_events().await?;
 
     // Step 1: Generate plan via AI planner.
-    println!("Planning... analyzing codebase for: {description:?}");
+    println!(
+        "\n  {} Analyzing codebase for: {}",
+        console::style("⟳").cyan(),
+        console::style(&description).bold()
+    );
     println!();
 
     let raw_output = run_planner(&ctx.repo_root, &ctx.phantom_dir, &description)?;
@@ -61,7 +65,7 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     let plan = build_plan(&plan_id, &description, raw_output);
 
     if plan.domains.is_empty() {
-        println!("Planner returned no domains. Nothing to dispatch.");
+        super::ui::empty_state("Planner returned no domains. Nothing to dispatch.", None);
         return Ok(());
     }
 
@@ -69,13 +73,16 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     display_plan(&plan);
 
     if args.dry_run {
-        println!("(dry run — not dispatching)");
+        println!("  {}", console::style("(dry run — not dispatching)").dim());
         return Ok(());
     }
 
     // Step 4: Confirm.
     if !args.yes {
-        print!("Dispatch {} agent(s)? [Y/n] ", plan.domains.len());
+        print!(
+            "  Dispatch {} agent(s)? [Y/n] ",
+            console::style(plan.domains.len()).bold()
+        );
         use std::io::Write;
         std::io::stdout().flush()?;
 
@@ -155,8 +162,8 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     std::fs::write(plan_dir.join("plan.json"), &plan_json).context("failed to update plan.json")?;
 
     println!();
-    println!("Run `phantom background` to watch progress.");
-    println!("Run `phantom status` to see all agents.");
+    super::ui::action_hint("phantom background", "to watch progress.");
+    super::ui::action_hint("phantom status", "to see all agents.");
 
     Ok(())
 }
@@ -304,9 +311,11 @@ fn build_plan(plan_id: &PlanId, request: &str, raw: RawPlanOutput) -> Plan {
 
 /// Display the plan to the user, grouped by execution wave.
 fn display_plan(plan: &Plan) {
-    println!("Plan: {}", plan.id);
-    println!("  {} domain(s) identified:", plan.domains.len());
-    println!();
+    super::ui::section_header(&format!("Plan: {}", plan.id));
+    println!(
+        "  {} domain(s) identified\n",
+        console::style(plan.domains.len()).bold()
+    );
 
     // Compute wave depth for each domain.
     let waves = compute_waves(&plan.domains);
@@ -325,7 +334,11 @@ fn display_plan(plan: &Plan) {
 
         if max_wave > 0 {
             if wave == 0 {
-                println!("  Wave {wave} (immediate):");
+                println!(
+                    "  {} {}",
+                    console::style(format!("Wave {wave}")).bold(),
+                    console::style("(immediate)").dim()
+                );
             } else {
                 let after: Vec<&str> = domains_in_wave
                     .iter()
@@ -333,23 +346,48 @@ fn display_plan(plan: &Plan) {
                     .collect::<std::collections::HashSet<_>>()
                     .into_iter()
                     .collect();
-                println!("  Wave {} (after: {}):", wave, after.join(", "));
+                let after_styled: Vec<String> = after
+                    .iter()
+                    .map(|a| console::style(a).bold().to_string())
+                    .collect();
+                println!(
+                    "  {} {}",
+                    console::style(format!("Wave {wave}")).bold(),
+                    console::style(format!("(after: {})", after_styled.join(", "))).dim()
+                );
             }
         }
 
         for domain in &domains_in_wave {
-            println!("    - {}", domain.name);
-            println!("      {}", domain.description);
+            println!(
+                "    {} {}",
+                console::style("▸").cyan(),
+                console::style(&domain.name).bold()
+            );
+            println!("      {}", console::style(&domain.description).dim());
             if !domain.files_to_modify.is_empty() {
                 let files: Vec<_> = domain
                     .files_to_modify
                     .iter()
                     .map(|f| f.display().to_string())
                     .collect();
-                println!("      Files: {}", files.join(", "));
+                println!(
+                    "      {}  {}",
+                    console::style("Files").dim(),
+                    console::style(files.join(", ")).dim()
+                );
             }
             if !domain.depends_on.is_empty() {
-                println!("      Depends on: {}", domain.depends_on.join(", "));
+                let deps: Vec<String> = domain
+                    .depends_on
+                    .iter()
+                    .map(|d| console::style(d).bold().to_string())
+                    .collect();
+                println!(
+                    "      {}  {}",
+                    console::style("Depends on").dim(),
+                    deps.join(", ")
+                );
             }
             println!();
         }
@@ -483,16 +521,20 @@ fn warn_parallel_file_overlap(plan: &Plan) {
 
         for (file, owners) in &file_owners {
             if owners.len() > 1 {
-                eprintln!(
-                    "WARNING: {} is listed in files_to_modify by {} parallel domains in wave {}: {}",
-                    file.display(),
+                super::ui::warning_message(format!(
+                    "{} is listed in files_to_modify by {} parallel domains in wave {}: {}",
+                    console::style(file.display()).bold(),
                     owners.len(),
                     wave,
                     owners.join(", "),
-                );
+                ));
                 eprintln!(
-                    "  This will likely cause a merge conflict. Consider adding depends_on \
-                     between these domains."
+                    "    {}",
+                    console::style(
+                        "This will likely cause a merge conflict. Consider adding depends_on \
+                         between these domains."
+                    )
+                    .dim()
                 );
             }
         }
@@ -610,16 +652,25 @@ async fn dispatch_domain(
         .join(&domain.agent_id)
         .join("agent.log");
 
-    println!("Agent '{}' tasked (background).", domain.agent_id);
-    println!("  Changeset: {cs_id}");
-    println!("  Task:      {}", domain.description);
-    println!("  Log:       {}", log_file.display());
-    println!("  Overlay:   {}", work_dir.display());
+    println!(
+        "  {} Agent '{}' tasked {}",
+        console::style("✓").green(),
+        console::style(&domain.agent_id).bold(),
+        console::style("(background)").dim()
+    );
+    super::ui::key_value("Changeset", console::style(&cs_id.to_string()).cyan());
+    super::ui::key_value("Task", &domain.description);
+    super::ui::key_value("Log", console::style(log_file.display()).dim());
+    super::ui::key_value("Overlay", console::style(work_dir.display()).dim());
     if fuse_mounted {
-        println!("  FUSE:      mounted");
+        super::ui::key_value("FUSE", console::style("mounted").green());
     }
     if !upstream_agent_ids.is_empty() {
-        println!("  Waiting:   {}", upstream_agent_ids.join(", "));
+        let deps: Vec<String> = upstream_agent_ids
+            .iter()
+            .map(|a| console::style(a).bold().to_string())
+            .collect();
+        super::ui::key_value("Waiting", deps.join(", "));
     }
     println!();
 

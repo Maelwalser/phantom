@@ -4,8 +4,7 @@
 //! changesets. With an agent name, shows detailed info for that agent
 //! including log output and file changes.
 
-use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -376,13 +375,15 @@ async fn run_detailed(
         }
     }
 
-    // Log tail
+    // Full log output
     let log_file = agent_monitor::log_path(phantom_dir, agent_name);
-    if log_file.exists()
-        && let Some(tail) = read_log_tail(&log_file, 20)
-    {
-        println!("Log (last 20 lines):");
-        println!("{tail}");
+    if log_file.exists() {
+        if let Ok(content) = std::fs::read_to_string(&log_file) {
+            if !content.is_empty() {
+                println!("{}:", console::style("Log").bold());
+                print!("{content}");
+            }
+        }
     }
 
     Ok(())
@@ -514,26 +515,5 @@ fn latest_changeset_status(projection: &Projection, agent_id: &AgentId) -> Strin
     match changesets.first() {
         Some(cs) => format!("{}", ui::status_label(cs.status)),
         None => format!("{}", ui::style_dim("no changeset")),
-    }
-}
-
-/// Read the last N lines of a log file.
-fn read_log_tail(path: &PathBuf, n: usize) -> Option<String> {
-    use std::collections::VecDeque;
-
-    let file = std::fs::File::open(path).ok()?;
-    let reader = std::io::BufReader::new(file);
-    let mut ring = VecDeque::with_capacity(n);
-    for line in reader.lines().map_while(Result::ok) {
-        if ring.len() == n {
-            ring.pop_front();
-        }
-        ring.push_back(line);
-    }
-    if ring.is_empty() {
-        None
-    } else {
-        let tail: Vec<&str> = ring.iter().map(String::as_str).collect();
-        Some(tail.join("\n"))
     }
 }

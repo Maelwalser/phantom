@@ -30,7 +30,10 @@ async fn print_tasks(
     agent_ids: &[AgentId],
 ) -> anyhow::Result<()> {
     if agent_ids.is_empty() {
-        println!("No active tasks.");
+        ui::empty_state(
+            "No active tasks.",
+            Some("Use `phantom <agent>` to create a task."),
+        );
         return Ok(());
     }
 

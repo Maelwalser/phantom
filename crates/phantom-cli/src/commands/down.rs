@@ -60,13 +60,22 @@ pub fn run(args: &DownArgs) -> anyhow::Result<()> {
             }
             println!();
         }
-        println!("  This will unmount all FUSE overlays, kill all agent processes,");
-        println!("  and remove the .phantom/ directory. Continue? [y/N]");
+        println!(
+            "  {}",
+            console::style(
+                "This will unmount all FUSE overlays, kill all agent processes,"
+            )
+            .dim()
+        );
+        println!(
+            "  {}",
+            console::style("and remove the .phantom/ directory. Continue? [y/N]").dim()
+        );
 
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Aborted.");
+            println!("  {}", console::style("Aborted.").dim());
             return Ok(());
         }
     }

@@ -20,7 +20,10 @@ pub async fn run(_args: ResumeArgs) -> anyhow::Result<()> {
     let agent_ids = phantom_overlay::OverlayManager::scan_agent_ids(&ctx.phantom_dir)?;
 
     if agent_ids.is_empty() {
-        println!("No active tasks. Use `phantom <agent-name>` to create one.");
+        ui::empty_state(
+            "No active tasks.",
+            Some("Use `phantom <agent>` to create one."),
+        );
         return Ok(());
     }
 
@@ -32,7 +35,10 @@ pub async fn run(_args: ResumeArgs) -> anyhow::Result<()> {
     interactive_agents.sort_by(|a, b| a.0.cmp(&b.0));
 
     if interactive_agents.is_empty() {
-        println!("No interactive agents to resume. All agents are running in the background.");
+        ui::empty_state(
+            "No interactive agents to resume.",
+            Some("All agents are running in the background."),
+        );
         return Ok(());
     }
 
@@ -74,7 +80,7 @@ pub async fn run(_args: ResumeArgs) -> anyhow::Result<()> {
         .interact_opt()?;
 
     let Some(idx) = selection else {
-        println!("Cancelled.");
+        println!("  {}", console::style("Cancelled.").dim());
         return Ok(());
     };
 
