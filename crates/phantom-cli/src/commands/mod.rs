@@ -4,6 +4,7 @@ pub mod background;
 pub mod changes;
 pub mod destroy;
 pub mod down;
+pub mod exec;
 pub mod fuse_mount;
 pub mod init;
 pub mod interactive;

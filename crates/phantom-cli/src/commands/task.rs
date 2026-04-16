@@ -291,7 +291,7 @@ pub(crate) struct FsOverrides {
 /// Spawn a FUSE daemon process that mounts `PhantomFs` at the overlay's mount point.
 ///
 /// Returns `true` if the mount was successful, `false` if FUSE is unavailable.
-fn spawn_fuse_daemon(
+pub(crate) fn spawn_fuse_daemon(
     phantom_dir: &Path,
     repo_root: &Path,
     agent: &str,
@@ -539,7 +539,7 @@ fn has_background_agent(phantom_dir: &Path, agent: &str) -> bool {
 
 /// Check if a FUSE filesystem is already mounted at `mount_point` by comparing
 /// its device ID to its parent directory.
-fn is_fuse_mounted(mount_point: &Path) -> bool {
+pub(crate) fn is_fuse_mounted(mount_point: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
 
     let Some(parent) = mount_point.parent() else {

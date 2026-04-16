@@ -56,6 +56,7 @@ Commands:
   destroy/rm      Destroy an agent's overlay
   resume/re       Select and resume an interactive agent session
   background/b    Watch background agents in real-time
+  exec/x          Run a command inside an agent's overlay
   down            Tear down Phantom: unmount all FUSE overlays and remove .phantom/
   help            Print this message or the help of the given subcommand(s)
 
@@ -107,6 +108,10 @@ enum Commands {
     /// Tear down Phantom: unmount all FUSE overlays and remove .phantom/
     Down(commands::down::DownArgs),
 
+    /// Run a command inside an agent's overlay
+    #[command(alias = "x", display_name = "exec/x")]
+    Exec(commands::exec::ExecArgs),
+
     /// Internal: run FUSE mount daemon (not for direct use)
     #[command(name = "_fuse-mount", hide = true)]
     FuseMount(commands::fuse_mount::FuseMountArgs),
@@ -147,6 +152,7 @@ async fn main() {
         Some(Commands::Background(args)) => commands::background::run(args).await,
         Some(Commands::Resume(args)) => commands::resume::run(args).await,
         Some(Commands::Down(args)) => commands::down::run(&args),
+        Some(Commands::Exec(args)) => commands::exec::run(args),
         Some(Commands::FuseMount(args)) => commands::fuse_mount::run(args),
         Some(Commands::AgentMonitor(args)) => commands::agent_monitor::run(args).await,
         Some(Commands::ExternalTask(ext_args)) => {
