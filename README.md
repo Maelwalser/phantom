@@ -46,8 +46,8 @@ Phantom replaces branches with **changesets** — reorderable, atomic units of w
 - **Event sourcing** — Every agent action is an immutable event in an append-only log. Full auditability, surgical rollback, and "what-if" replay.
 - **Live rebase** — When one agent's work is materialized, Phantom automatically rebases other agents' overlapping files at the symbol level and notifies them of trunk changes.
 - **Auto-submit** — Use `--auto-submit` (or its alias `--auto-materialize`) to automatically submit and merge an agent's work when the session exits.
-- **AI-driven planning** — `ph plan` decomposes a feature request into parallel agent tasks using an AI planner, then dispatches background agents.
-- **AI-driven conflict resolution** — `ph resolve` launches a background AI agent with three-way conflict context to automatically resolve merge conflicts.
+- **AI-driven planning** *(experimental)* — `ph plan` decomposes a feature request into parallel agent tasks using an AI planner, then dispatches background agents.
+- **AI-driven conflict resolution** *(experimental)* — `ph resolve` launches a background AI agent with three-way conflict context to automatically resolve merge conflicts.
 - **Multi-language support** — Symbol extraction for Rust, TypeScript, JavaScript, Python, Go (including JSX/TSX), plus config formats (YAML, TOML, JSON, Bash, CSS, HCL/Terraform, Dockerfile, Makefile) via tree-sitter grammars.
 - **Zero-config conflict resolution** — Disjoint symbol changes auto-merge. True conflicts (same function modified by two agents) are detected and reported clearly.
 
@@ -77,10 +77,10 @@ ph sub agent-b
 # Or auto-submit when the session exits
 ph agent-c --auto-submit
 
-# Decompose a feature into parallel agents
+# Decompose a feature into parallel agents (experimental)
 ph plan "add caching layer"
 
-# Resolve conflicts automatically
+# Resolve conflicts automatically (experimental)
 ph resolve agent-a
 ```
 
@@ -138,8 +138,10 @@ ph --help
 | `ph init` | Initialize Phantom in the current git repository |
 | `ph <agent>` | Create an overlay, bind a coding session, and assign a task |
 | `ph submit/sub` | Submit an agent's work: semantic merge and commit to trunk |
-| `ph plan` | Decompose a feature into parallel agent tasks via AI planner |
-| `ph resolve/res` | Auto-resolve merge conflicts by launching a background AI agent |
+| `ph tasks/t` | List all agent task overlays |
+| `ph resume/re` | Select and resume an interactive agent session |
+| `ph plan` | Decompose a feature into parallel agent tasks via AI planner **(experimental)** |
+| `ph resolve/res` | Auto-resolve merge conflicts by launching a background AI agent **(experimental)** |
 | `ph status/st` | Show active overlays, pending changesets, and trunk state |
 | `ph log/l` | Query the event log with filters |
 | `ph changes/c` | Show recent submits and materializations |
@@ -210,9 +212,27 @@ ph sub agent-a -m "feat: add user authentication"
 - **Success** — Changes committed to trunk. Other agents' overlays are live-rebased if they touch the same files, and notified of trunk changes.
 - **Conflict** — Two agents modified the same symbol. The changeset is marked conflicted; use `ph resolve` or re-task the agent.
 
-### `ph plan`
+### `ph tasks` / `t`
+
+List all active agent task overlays with their status, changeset, and task description.
+
+```bash
+ph t
+```
+
+### `ph resume` / `re`
+
+Select and resume an interactive agent session. Presents a menu of idle (non-background) agents and relaunches the coding session with the saved session ID.
+
+```bash
+ph re
+```
+
+### `ph plan` *(experimental)*
 
 Decompose a feature request into parallel agent tasks. An AI planner analyzes the codebase, breaks the work into independent domains, creates overlays for each, and dispatches background agents.
+
+> **Note:** This command is experimental and under active development. Behavior and flags may change between releases.
 
 ```bash
 # Interactive — opens an editor for the description
@@ -231,9 +251,11 @@ ph plan "add caching" -y
 ph plan "add caching" --no-submit
 ```
 
-### `ph resolve` / `res`
+### `ph resolve` / `res` *(experimental)*
 
 Auto-resolve merge conflicts by launching a background AI agent with three-way conflict context (base/ours/theirs). The agent receives a specialized `.phantom-task.md` with conflict resolution instructions.
+
+> **Note:** This command is experimental and under active development. Behavior and flags may change between releases.
 
 ```bash
 ph resolve agent-a
@@ -580,8 +602,8 @@ cargo test --test event_log_query           # Event log querying
 - [x] Auto-submit and auto-materialize flags
 - [x] Live rebase on materialization
 - [x] PTY-based session capture (Claude Code)
-- [x] `ph plan` — AI-driven multi-agent task decomposition
-- [x] `ph resolve` — AI-driven conflict resolution
+- [x] `ph plan` — AI-driven multi-agent task decomposition *(experimental)*
+- [x] `ph resolve` — AI-driven conflict resolution *(experimental)*
 - [ ] Agent re-task automation
 - [ ] Incremental parsing for large codebases
 - [ ] Additional CLI adapters (Aider, Cursor, Codex)
