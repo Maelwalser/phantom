@@ -16,6 +16,7 @@ pub mod id;
 pub mod notification;
 pub mod plan;
 pub mod symbol;
+pub mod task_category;
 pub mod traits;
 pub mod util;
 
@@ -28,5 +29,6 @@ pub use id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, PlanId, SymbolI
 pub use notification::{TrunkFileStatus, TrunkNotification};
 pub use plan::{Plan, PlanDomain, PlanStatus, RawPlanDomain, RawPlanOutput};
 pub use symbol::{SymbolEntry, SymbolKind, find_enclosing_symbol};
+pub use task_category::{ParseTaskCategoryError, TaskCategory};
 pub use traits::{EventStore, SemanticAnalyzer, SymbolIndex};
 pub use util::is_binary_or_non_utf8;

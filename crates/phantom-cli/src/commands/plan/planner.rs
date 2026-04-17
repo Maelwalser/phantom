@@ -93,7 +93,8 @@ Output ONLY a JSON object with this structure (no markdown fences, no explanatio
       "files_not_to_modify": ["paths/owned/by/other/domains"],
       "requirements": ["Requirement 1", "Requirement 2"],
       "verification": ["cargo test", "cargo clippy"],
-      "depends_on": []
+      "depends_on": [],
+      "category": "adaptive"
     }}
   ]
 }}
@@ -108,7 +109,8 @@ Rules:
 - Keep domains focused: 1-5 files each
 - Include verification commands appropriate for this project's toolchain
 - Names must be unique kebab-case identifiers
-- Every domain MUST have at least one requirement and one verification command"#
+- Every domain MUST have at least one requirement and one verification command
+- CATEGORY: Every domain MUST be tagged with exactly one of: "corrective" (bug fix), "perfective" (refactor / performance / cleanup), "preventive" (test hardening with no source changes), "adaptive" (new feature or extension). Pick the dominant purpose. A scaffold / setup domain is "adaptive". When in doubt between perfective and adaptive, pick "adaptive" if any new behaviour is being added, "perfective" if behaviour is meant to be preserved"#
     )
 }
 

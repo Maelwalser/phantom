@@ -97,6 +97,7 @@ pub async fn run(_args: ResumeArgs) -> anyhow::Result<()> {
         auto_submit: false,
         command: None,
         no_fuse: false,
+        category: None,
     })
     .await
 }

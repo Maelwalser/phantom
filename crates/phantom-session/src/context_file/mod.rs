@@ -12,10 +12,14 @@ use std::path::Path;
 
 use tracing::warn;
 
+mod category_rules;
 mod plan;
 mod resolve;
 mod task;
 
+pub use category_rules::{
+    RULES_DIR, ensure_category_rules_dir, rules_body, rules_path, write_category_rules_file,
+};
 pub use plan::write_plan_domain_instructions;
 pub use resolve::{ResolveConflictContext, write_resolve_context_file, write_resolve_rules_file};
 pub use task::{append_context_update, write_context_file};

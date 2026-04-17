@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::id::PlanId;
+use crate::task_category::TaskCategory;
 
 /// A decomposed implementation plan ready for dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +45,10 @@ pub struct PlanDomain {
     pub verification: Vec<String>,
     /// Names of other domains this one depends on.
     pub depends_on: Vec<String>,
+    /// Optional maintenance-category tag. When set, the dispatcher injects the
+    /// matching static rule file into the agent's system prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<TaskCategory>,
 }
 
 /// Lifecycle status of a plan.
@@ -78,6 +83,8 @@ pub struct RawPlanDomain {
     pub verification: Vec<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub category: Option<TaskCategory>,
 }
 
 /// Raw planner output before conversion to a full [`Plan`].
@@ -123,6 +130,7 @@ mod tests {
                 requirements: vec!["LRU cache".into()],
                 verification: vec!["cargo test".into()],
                 depends_on: vec![],
+                category: Some(TaskCategory::Adaptive),
             }],
             status: PlanStatus::Draft,
         };
@@ -130,5 +138,58 @@ mod tests {
         let back: Plan = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id, plan.id);
         assert_eq!(back.domains.len(), 1);
+        assert_eq!(back.domains[0].category, Some(TaskCategory::Adaptive));
+    }
+
+    #[test]
+    fn raw_plan_output_deserializes_with_category() {
+        let json = r#"{
+            "domains": [
+                {
+                    "name": "fix-pager",
+                    "description": "Fix off-by-one in pager",
+                    "files_to_modify": ["src/pager.rs"],
+                    "requirements": ["repro test"],
+                    "verification": ["cargo test"],
+                    "category": "corrective"
+                }
+            ]
+        }"#;
+        let output: RawPlanOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(output.domains[0].category, Some(TaskCategory::Corrective));
+    }
+
+    #[test]
+    fn raw_plan_output_without_category_defaults_to_none() {
+        let json = r#"{
+            "domains": [
+                {
+                    "name": "x",
+                    "description": "d",
+                    "requirements": [],
+                    "verification": []
+                }
+            ]
+        }"#;
+        let output: RawPlanOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(output.domains[0].category, None);
+    }
+
+    #[test]
+    fn plan_domain_without_category_roundtrips() {
+        // Simulate deserialising a PlanDomain from an older on-disk plan.json
+        // that predates the `category` field.
+        let json = r#"{
+            "name": "legacy",
+            "agent_id": "legacy-agent",
+            "description": "",
+            "files_to_modify": [],
+            "files_not_to_modify": [],
+            "requirements": [],
+            "verification": [],
+            "depends_on": []
+        }"#;
+        let dom: PlanDomain = serde_json::from_str(json).unwrap();
+        assert_eq!(dom.category, None);
     }
 }

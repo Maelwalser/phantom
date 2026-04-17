@@ -191,6 +191,7 @@ fn build_plan(plan_id: &PlanId, request: &str, raw: RawPlanOutput) -> Plan {
                 requirements: d.requirements,
                 verification: d.verification,
                 depends_on: d.depends_on,
+                category: d.category,
             }
         })
         .collect();
@@ -219,6 +220,7 @@ mod tests {
                 requirements: vec!["impl token bucket".into()],
                 verification: vec!["cargo test".into()],
                 depends_on: vec![],
+                category: None,
             }],
         };
         let plan_id = PlanId("plan-20260413-143022".into());

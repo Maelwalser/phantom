@@ -15,10 +15,12 @@ use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Utc;
+use phantom_core::TaskCategory;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::EventId;
 use phantom_core::traits::EventStore;
 use phantom_overlay::OverlayError;
+use phantom_session::context_file;
 
 use crate::context::PhantomContext;
 
@@ -45,6 +47,15 @@ pub struct TaskArgs {
     /// Skip FUSE mounting (agent works via OverlayLayer API only, no filesystem isolation)
     #[arg(long)]
     pub no_fuse: bool,
+    /// Tag the task with a maintenance category; the matching
+    /// `.phantom/rules/<category>.md` rule set is injected into the agent's
+    /// system prompt. One of: corrective, perfective, preventive, adaptive.
+    #[arg(long, value_parser = parse_task_category)]
+    pub category: Option<TaskCategory>,
+}
+
+fn parse_task_category(s: &str) -> Result<TaskCategory, String> {
+    s.parse::<TaskCategory>().map_err(|e| e.to_string())
 }
 
 pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
@@ -162,6 +173,18 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
 
     let base_short = base_commit.to_hex().chars().take(12).collect::<String>();
 
+    // If the task is tagged with a category, ensure the static rule files
+    // exist on disk and resolve the path to inject into the agent's system
+    // prompt. Idempotent write — safe to call on every task creation.
+    let category_rules_path = match args.category {
+        Some(category) => {
+            context_file::ensure_category_rules_dir(&ctx.phantom_dir)
+                .context("failed to write category rule files")?;
+            Some(context_file::rules_path(&ctx.phantom_dir, category))
+        }
+        None => None,
+    };
+
     if args.background {
         let task = match args.task {
             Some(t) => t,
@@ -202,7 +225,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             &task,
             &work_dir,
             cli_command,
-            None,
+            category_rules_path.as_deref(),
             &[],
         )?;
 
@@ -221,6 +244,9 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
         crate::ui::key_value("Log", log_file.display());
         crate::ui::key_value("Overlay", work_dir.display());
         crate::ui::key_value("Base", console::style(&base_short).cyan());
+        if let Some(category) = args.category {
+            crate::ui::key_value("Category", console::style(category.to_string()).cyan());
+        }
         if fuse_mounted {
             crate::ui::key_value("FUSE", console::style("mounted").green());
         }
@@ -270,7 +296,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             &base_commit,
             &work_dir,
             &args,
-            None,
+            category_rules_path.as_deref(),
         )
         .await?;
     }
