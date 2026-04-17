@@ -43,12 +43,13 @@ Phantom replaces branches with **changesets** — reorderable, atomic units of w
 - **Session-aware tasking** — Each `ph <agent>` launches a coding session (defaults to Claude Code) inside the overlay. Sessions are automatically captured and persisted, so re-entering the same agent resumes exactly where it left off.
 - **Semantic merging** — Conflict detection at the AST level via tree-sitter. Two agents adding different functions to the same file? No conflict.
 - **FUSE overlays** — Each agent gets an isolated copy-on-write filesystem. Reads fall through to trunk; writes are captured. No git branches, no rebasing.
-- **Event sourcing** — Every agent action is an immutable event in an append-only log. Full auditability, surgical rollback, and "what-if" replay.
-- **Live rebase** — When one agent's work is materialized, Phantom automatically rebases other agents' overlapping files at the symbol level and notifies them of trunk changes.
-- **Auto-submit** — Use `--auto-submit` (or its alias `--auto-materialize`) to automatically submit and merge an agent's work when the session exits.
+- **Event sourcing** — Every agent action is an immutable event in an append-only SQLite log. Full auditability, surgical rollback, and "what-if" replay.
+- **Live rebase** — When one agent's work is submitted, Phantom automatically rebases other agents' overlapping files at the symbol level and notifies them of trunk changes.
+- **Auto-submit** — Use `--auto-submit` (or its alias `--auto-materialize`) to automatically submit and merge an agent's work when the session exits. Always on for background agents.
+- **Background agents** — Run agents headless with `--background --task "..."`. A monitor process waits for completion and (optionally) auto-submits. Watch progress with `ph background`.
 - **AI-driven planning** *(experimental)* — `ph plan` decomposes a feature request into parallel agent tasks using an AI planner, then dispatches background agents.
 - **AI-driven conflict resolution** *(experimental)* — `ph resolve` launches a background AI agent with three-way conflict context to automatically resolve merge conflicts.
-- **Multi-language support** — Symbol extraction for Rust, TypeScript, JavaScript, Python, Go (including JSX/TSX), plus config formats (YAML, TOML, JSON, Bash, CSS, HCL/Terraform, Dockerfile, Makefile) via tree-sitter grammars.
+- **Multi-language support** — Symbol extraction for Rust, TypeScript, JavaScript (including JSX/TSX), Python, and Go, plus config formats (YAML, TOML, JSON, Bash, CSS, HCL/Terraform, Dockerfile, Makefile) via tree-sitter grammars.
 - **Zero-config conflict resolution** — Disjoint symbol changes auto-merge. True conflicts (same function modified by two agents) are detected and reported clearly.
 
 ## Quick Start
@@ -147,6 +148,7 @@ ph --help
 | `ph changes/c` | Show recent submits and materializations |
 | `ph rollback/rb` | Drop a changeset and revert its changes from trunk |
 | `ph background/b` | Watch background agents in real-time |
+| `ph exec/x` | Run an arbitrary command inside an agent's overlay view |
 | `ph destroy/rm` | Tear down an agent's overlay and FUSE mount |
 | `ph down` | Unmount all FUSE overlays and remove `.phantom/` |
 
@@ -349,6 +351,23 @@ ph b
 ph b -n 5
 ```
 
+### `ph exec` / `x`
+
+Run an arbitrary command inside an agent's overlay, seeing the merged trunk + agent view. If the overlay's FUSE mount is not already active, it is mounted temporarily for the duration of the command and unmounted afterwards.
+
+```bash
+# Run a build inside the agent's view
+ph exec agent-a -- cargo build
+
+# Inspect a file the agent modified (without touching trunk)
+ph x agent-b -- cat src/lib.rs
+
+# Run a script with the agent's working tree as cwd
+ph x agent-c -- ./scripts/lint.sh
+```
+
+Environment variables (`PHANTOM_AGENT_ID`, `PHANTOM_OVERLAY_DIR`, `PHANTOM_REPO_ROOT`) are exported into the spawned process.
+
 ### `ph destroy` / `rm`
 
 Remove an agent's overlay, unmount its FUSE filesystem, and clean up its resources (including persisted session data).
@@ -435,53 +454,51 @@ trunk and other agents.
 Phantom sits between your AI agents and the Git repository. Each agent gets an isolated FUSE overlay with a bound coding session. When an agent finishes, Phantom analyzes the changes at the AST level and merges them into trunk automatically.
 
 ```
-                     ┌─────────────────┐
-                     │  Orchestrator   │
-                     └────────┬────────┘
-                            task
-            ┌─────────────────┼─────────────────┐
-            ▼                 ▼                 ▼
-      ┌───────────┐    ┌───────────┐    ┌───────────┐
-      │  Agent A  │    │  Agent B  │    │  Agent C  │
-      │  Session  │    │  Session  │    │  Session  │
-      │  (FUSE)   │    │  (FUSE)   │    │  (FUSE)   │
-      └─────┬─────┘    └─────┬─────┘    └─────┬─────┘
-          submit             │                │
-            ▼                ▼                ▼
-      ┌───────────────────────────────────────────┐
-      │            Changesets (upper)             │
-      └─────────────────────┬─────────────────────┘
-                            │ check
-                            ▼
-                  ┌──────────────────┐
-                  │  Semantic Index  │◄──┐
-                  │  (tree-sitter)   │   │ parse
-                  └────────┬─────────┘   │
-                           │ merge       │
-                           ▼             │
-                  ┌──────────────────┐   │
-                  │  Trunk (git main)├───┘
-                  └────────┬─────────┘
-                           │ log
-                           ▼
-                  ┌──────────────────┐
-                  │  Event Log       │
-                  │  (SQLite)        │
-                  └──────────────────┘
+   ┌──────────┐   ┌──────────┐   ┌──────────┐
+   │ Agent A  │   │ Agent B  │   │ Agent C  │    ← Claude / Aider / any CLI
+   └────┬─────┘   └────┬─────┘   └────┬─────┘
+        │              │              │
+        ▼              ▼              ▼
+   ┌──────────┐   ┌──────────┐   ┌──────────┐
+   │ FUSE COW │   │ FUSE COW │   │ FUSE COW │    ← per-agent isolated fs
+   │  overlay │   │  overlay │   │  overlay │       upper = writes
+   └────┬─────┘   └────┬─────┘   └────┬─────┘       lower = trunk
+        │              │              │
+        │ ph sub       │              │
+        ▼              ▼              ▼
+   ╔══════════════════════════════════════╗
+   ║        Submit + Materialize          ║
+   ║  parse → symbols → 3-way semantic    ║    ← tree-sitter + semantic
+   ║  merge → git commit → ripple         ║       merge engine
+   ╚════════════════╦═════════════════════╝
+                    │
+            live rebase + notification
+            (to other agents' overlays
+             whose files overlap)
+                    │
+                    ▼
+         ┌────────────────────┐
+         │  Trunk (git main)  │ ────append───►  ┌────────────────────┐
+         └────────────────────┘                 │ Event Log (SQLite) │
+                                                │  append-only WAL   │
+                                                └────────────────────┘
+                                                auditable, replayable,
+                                                rollback-ready
 ```
 
 ### The merge problem Phantom solves
 
 ```
-  Git sees this:                    Phantom sees this:
+  Git sees text lines:                Phantom sees symbols:
 
-  handlers.rs                       handlers.rs
-  <<<<<<< claude-a                  ┌──────────────────────────┐
-  + fn handle_register()            │ fn handle_login()  [unchanged]
-  =======                           │ fn handle_register() [claude-a added]
-  + fn handle_admin()               │ fn handle_admin()    [claude-b added]
-  >>>>>>> claude-b                  └──────────────────────────┘
-                                    → Different symbols. Auto-merge.
+  handlers.rs                         handlers.rs
+  ─────────────────────────           ─────────────────────────────────────
+  <<<<<<< claude-a                     fn handle_login()     [unchanged]
+  + fn handle_register()               fn handle_register()  [claude-a added]
+  =======                              fn handle_admin()     [claude-b added]
+  + fn handle_admin()                 ─────────────────────────────────────
+  >>>>>>> claude-b                    → Disjoint symbol set. Auto-merge.
+  ─────────────────────────
   CONFLICT — manual fix needed
 ```
 
@@ -493,9 +510,9 @@ Phantom sits between your AI agents and the Git repository. Each agent gets an i
 
 3. **Pause / Resume** — The agent can exit the session at any time. Running `ph agent-a` again resumes the same coding session with the same overlay state. No work is lost.
 
-4. **Submit** — `ph sub agent-a` parses the modified files with tree-sitter, extracts what changed at the symbol level (functions added, structs modified, imports changed), records a changeset in the event log, and runs a three-way semantic merge against trunk. If the symbols the agent touched are disjoint from what changed on trunk, it auto-merges. If the same symbol was modified by two agents, it reports a conflict.
+4. **Submit** — `ph sub agent-a` parses the modified files with tree-sitter, extracts what changed at the symbol level (functions added, structs modified, imports changed), records a `ChangesetSubmitted` event, and runs a three-way semantic merge against trunk in a single step. If the symbols the agent touched are disjoint from what changed on trunk, it auto-merges and commits. If the same symbol was modified by two agents, the changeset is marked **Conflicted** and can be re-tasked or resolved with `ph resolve`.
 
-5. **Ripple** — After materialization, Phantom performs a live rebase on other active agents whose files overlap with the materialized changes. Files that were modified by both the agent and trunk are semantically merged in place. All agents are notified of the trunk change via a notification file.
+5. **Ripple** — Immediately after a successful submit, Phantom performs a live rebase on other active agents whose files overlap with the newly merged changes. Files that were modified by both the agent and trunk are semantically merged in place in the other agents' upper layers. All active agents are notified of the trunk change via a `.phantom/overlays/<agent>/trunk-notifications/` file, so their running sessions can discover trunk updates.
 
 ### Conflict resolution
 
@@ -514,22 +531,27 @@ For files without tree-sitter grammar support, Phantom falls back to text-level 
 
 ```
 phantom/
-├── Cargo.toml                    # Workspace root
+├── Cargo.toml                    # Workspace root (9 crates + integration tests)
 ├── crates/
-│   ├── phantom-cli/              # Binary — the `ph` command
+│   ├── phantom-cli/              # Binary — the `ph` command (clap-based)
 │   │   └── src/
-│   │       ├── main.rs           # CLI entry point (clap)
-│   │       ├── context.rs        # PhantomContext loader
-│   │       └── commands/         # Subcommand implementations
+│   │       ├── main.rs           # CLI entry point
+│   │       ├── cli.rs            # Argument definitions and subcommand routing
+│   │       ├── context.rs        # PhantomContext loader (.phantom/ discovery)
+│   │       ├── fs/               # FUSE mount helpers
+│   │       ├── services/         # Validation and shared service logic
+│   │       ├── ui/               # Terminal styling helpers
+│   │       └── commands/         # One module per subcommand
 │   ├── phantom-core/             # Core types, traits, errors (zero phantom deps)
+│   ├── phantom-git/              # Git operations (git2 wrapper, tree building, text merge)
 │   ├── phantom-events/           # SQLite event store (WAL mode), projection, replay
 │   ├── phantom-overlay/          # FUSE overlay filesystem, copy-on-write layer
 │   ├── phantom-semantic/         # tree-sitter parsing, semantic merge engine
-│   ├── phantom-orchestrator/     # Git ops, materialization, ripple, live rebase
+│   ├── phantom-orchestrator/     # Materialization, ripple, live rebase, submit service
 │   ├── phantom-session/          # PTY management, CLI adapters, context files, post-session automation
 │   └── phantom-testkit/          # Shared test utilities (builders, mocks, test repos)
 ├── tests/integration/            # End-to-end tests with real git repos
-└── docs/                         # Architecture and design documentation
+└── docs/                         # Architecture, event model, semantic merge design
 ```
 
 ## Supported Languages
@@ -588,32 +610,37 @@ cargo clippy -- -D warnings
 The integration tests create temporary git repositories, task simulated agents, and verify semantic merging behavior end-to-end:
 
 ```bash
-cargo test --test two_agents_disjoint       # Disjoint files auto-merge
-cargo test --test two_agents_same_file      # Same file, different symbols
-cargo test --test two_agents_same_symbol    # Same symbol = conflict detected
-cargo test --test materialize_and_ripple    # Trunk propagation to active agents
-cargo test --test rollback_replay           # Surgical rollback and replay
-cargo test --test event_log_query           # Event log querying
+cargo test --test two_agents_disjoint            # Disjoint files auto-merge
+cargo test --test two_agents_same_file           # Same file, different symbols
+cargo test --test two_agents_same_symbol         # Same symbol = conflict detected
+cargo test --test materialize_and_ripple         # Trunk propagation to active agents
+cargo test --test rollback_replay                # Surgical rollback and replay
+cargo test --test event_log_query                # Event log querying
+cargo test --test semantic_merge_fallback        # Text fallback for unsupported languages
+cargo test --test empty_submit_is_noop           # Zero-change submits are no-ops
+cargo test --test concurrent_submit_overlay_write # Race between submit and agent writes
+cargo test --test corrupted_event_store          # Recovery from corrupted event DB
+cargo test --test materialize_append_crash       # Crash mid-materialization
 ```
 
 ## Roadmap
 
 - [x] Core types and event store
 - [x] FUSE overlay with copy-on-write
-- [x] All CLI commands (init, task, submit, status, log, changes, rollback, destroy, background, down)
-- [x] Semantic merging (Rust, TypeScript/JavaScript, Python, Go, YAML, TOML, JSON, Bash, CSS, HCL, Dockerfile, Makefile)
+- [x] All CLI commands (init, task, submit, status, log, changes, rollback, destroy, background, exec, down)
+- [x] Semantic merging (Rust, TypeScript/JavaScript/TSX/JSX, Python, Go, YAML, TOML, JSON, Bash, CSS, HCL, Dockerfile, Makefile)
 - [x] Integration test suite
-- [x] Session-aware task with resume support
-- [x] Auto-submit and auto-materialize flags
-- [x] Live rebase on materialization
-- [x] PTY-based session capture (Claude Code)
+- [x] Session-aware tasking with resume support (PTY-based capture for Claude Code)
+- [x] Auto-submit / auto-materialize flag
+- [x] Live rebase and ripple notifications on submit
 - [x] `ph plan` — AI-driven multi-agent task decomposition *(experimental)*
 - [x] `ph resolve` — AI-driven conflict resolution *(experimental)*
+- [x] Minimal `.phantom/config.toml` (`default_cli` only)
+- [ ] Full configuration schema (`.phantom/config.toml`)
 - [ ] Agent re-task automation
 - [ ] Incremental parsing for large codebases
 - [ ] Additional CLI adapters (Aider, Cursor, Codex)
 - [ ] macOS NFS overlay fallback
-- [ ] Configuration file (`.phantom/config.toml`)
 - [ ] Benchmarks
 
 ## Contributing
@@ -626,7 +653,11 @@ Contributions are welcome. To get started:
 4. Create a branch and make your changes
 5. Submit a pull request
 
-See the [architecture documentation](docs/architecture.md) for design details.
+See the design documentation for details:
+- [architecture.md](docs/architecture.md) — crate layout and data flow
+- [event-model.md](docs/event-model.md) — event schema and replay semantics
+- [semantic-merge.md](docs/semantic-merge.md) — symbol extraction and three-way merge
+- [manual-tests.md](docs/manual-tests.md) — manual test scenarios
 
 ## License
 
