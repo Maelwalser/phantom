@@ -8,7 +8,7 @@ use phantom_events::{Projection, SnapshotManager, SqliteEventStore};
 use phantom_overlay::OverlayManager;
 
 use super::status::{self, extract_plan_prefix};
-use super::ui;
+use crate::ui;
 use crate::context::PhantomContext;
 
 
@@ -43,11 +43,9 @@ async fn print_tasks(
     overlay_agents.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Collect plan metadata for grouping.
-    let plan_query = phantom_events::query::EventQuery {
-        kind_prefixes: vec!["PlanCreated".into()],
-        ..Default::default()
-    };
-    let plan_events = events.query(&plan_query).await?;
+    let plan_events = events
+        .query(&crate::services::event_queries::plans_only())
+        .await?;
     let mut plan_requests: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for event in &plan_events {

@@ -136,12 +136,7 @@ fn cleanup_stale_fuse_mount(overlay_dir: &Path, agent_name: &str) {
 
     if !crate::pid_guard::is_process_alive(&record) {
         let mount_point = overlay_dir.join("mount");
-        let _ = std::process::Command::new("fusermount3")
-            .arg("-u")
-            .arg(&mount_point)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        let _ = crate::fs::fuse::unmount(&mount_point);
         let _ = std::fs::remove_file(&pid_file);
         debug!(
             agent = agent_name,

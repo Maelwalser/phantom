@@ -4,8 +4,8 @@ use chrono::Utc;
 use phantom_core::id::{AgentId, ChangesetId, SymbolId};
 use phantom_events::EventQuery;
 
-use super::agent_color::AgentPalette;
-use super::ui;
+use crate::ui::agent_color::AgentPalette;
+use crate::ui;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]

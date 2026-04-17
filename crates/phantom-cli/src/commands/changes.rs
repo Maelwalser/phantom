@@ -5,8 +5,8 @@ use phantom_core::id::AgentId;
 use phantom_events::EventQuery;
 use phantom_git::{GitOps, git_oid_to_oid};
 
-use super::agent_color::AgentPalette;
-use super::ui;
+use crate::ui::agent_color::AgentPalette;
+use crate::ui;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]

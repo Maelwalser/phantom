@@ -26,8 +26,7 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
     let overlays = ctx.open_overlays_restored()?;
-    let agent_id = AgentId::validate(&args.agent)
-        .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {e}", args.agent))?;
+    let agent_id = crate::services::validate::agent_id(&args.agent)?;
     let message = args.message;
 
     match submit_agent(&ctx, &events, &overlays, &agent_id, message.as_deref()).await? {

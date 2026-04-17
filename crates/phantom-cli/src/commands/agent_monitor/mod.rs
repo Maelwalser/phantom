@@ -5,19 +5,24 @@
 //! Spawned by `phantom <agent> --background`. The monitor is the parent of the
 //! claude process so it can `waitpid` to get the real exit code.
 
+mod deps;
+mod retry;
+mod status;
+
 use std::path::{Path, PathBuf};
 
-use crate::context::PhantomContext;
 use anyhow::Context;
 use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
-use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid};
+use phantom_core::id::{AgentId, ChangesetId, EventId};
 use phantom_core::traits::EventStore;
-use phantom_events::SqliteEventStore;
 use phantom_session::adapter;
 use phantom_session::context_file;
 use phantom_session::post_session::PostSessionOutcome;
-use serde::{Deserialize, Serialize};
+
+use crate::context::PhantomContext;
+
+pub use status::AgentStatus;
 
 #[derive(clap::Args)]
 pub struct AgentMonitorArgs {
@@ -48,21 +53,8 @@ pub struct AgentMonitorArgs {
     pub depends_on_agents: String,
 }
 
-/// Completion status written to `.phantom/overlays/<agent>/agent.status`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentStatus {
-    /// Exit code of the claude process (None if killed by signal).
-    pub exit_code: Option<i32>,
-    /// When the agent process completed.
-    pub completed_at: chrono::DateTime<Utc>,
-    /// Whether the changeset was successfully materialized.
-    pub materialized: bool,
-    /// Error message if something went wrong during post-completion.
-    pub error: Option<String>,
-}
-
 /// Path to the agent status file.
-pub fn status_path(phantom_dir: &std::path::Path, agent: &str) -> PathBuf {
+pub fn status_path(phantom_dir: &Path, agent: &str) -> PathBuf {
     phantom_dir
         .join("overlays")
         .join(agent)
@@ -70,17 +62,17 @@ pub fn status_path(phantom_dir: &std::path::Path, agent: &str) -> PathBuf {
 }
 
 /// Path to the agent PID file.
-pub fn pid_path(phantom_dir: &std::path::Path, agent: &str) -> PathBuf {
+pub fn pid_path(phantom_dir: &Path, agent: &str) -> PathBuf {
     phantom_dir.join("overlays").join(agent).join("agent.pid")
 }
 
 /// Path to the agent log file.
-pub fn log_path(phantom_dir: &std::path::Path, agent: &str) -> PathBuf {
+pub fn log_path(phantom_dir: &Path, agent: &str) -> PathBuf {
     phantom_dir.join("overlays").join(agent).join("agent.log")
 }
 
 /// Path to the monitor PID file.
-pub fn monitor_pid_path(phantom_dir: &std::path::Path, agent: &str) -> PathBuf {
+pub fn monitor_pid_path(phantom_dir: &Path, agent: &str) -> PathBuf {
     phantom_dir.join("overlays").join(agent).join("monitor.pid")
 }
 
@@ -106,7 +98,7 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         .collect();
 
     if !upstream_agents.is_empty() {
-        wait_for_dependencies(
+        deps::wait_for_dependencies(
             &ctx.phantom_dir,
             &events,
             &agent_id,
@@ -167,41 +159,11 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     };
     events.append(launch_event).await?;
 
-    // Run post-completion flow: always auto-submit on success.
-    let mut result = run_post_completion(&agent_id, &changeset_id, exit_code).await;
-
-    // Auto-retry once on conflict: rebase against current trunk and re-submit.
-    // This handles the common case where a parallel agent materialized first and
-    // the merge would succeed against the updated trunk.
-    if matches!(&result, Ok(PostSessionOutcome::Conflict { .. })) {
-        tracing::info!(agent = %agent_id, "conflict detected, retrying with updated trunk base");
-
-        if let Ok(retry_ctx) = PhantomContext::locate()
-            && let Ok(git) = retry_ctx.open_git()
-            && let Ok(current_head) = git.head_oid()
-        {
-            // Emit ConflictResolutionStarted with the new base so the
-            // submit service uses current trunk HEAD as the merge base.
-            let causal = events
-                .latest_event_for_changeset(&changeset_id)
-                .await
-                .unwrap_or(None);
-            let resolution_event = Event {
-                id: EventId(0),
-                timestamp: Utc::now(),
-                changeset_id: changeset_id.clone(),
-                agent_id: agent_id.clone(),
-                causal_parent: causal,
-                kind: EventKind::ConflictResolutionStarted {
-                    conflicts: vec![],
-                    new_base: Some(current_head),
-                },
-            };
-            if events.append(resolution_event).await.is_ok() {
-                result = run_post_completion(&agent_id, &changeset_id, exit_code).await;
-            }
-        }
-    }
+    // Run post-completion flow, with an auto-retry if the first attempt hits
+    // a conflict (another agent materialized first — rebase + retry).
+    let initial = run_post_completion(&agent_id, &changeset_id, exit_code).await;
+    let result =
+        retry::maybe_retry_on_conflict(&events, &agent_id, &changeset_id, exit_code, initial).await;
 
     // Build status from the outcome.
     let (status, should_destroy) = match &result {
@@ -253,7 +215,7 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
 
 /// Spawn the CLI agent process as our direct child, wait for it, return the exit code.
 fn spawn_and_wait_agent(
-    phantom_dir: &std::path::Path,
+    phantom_dir: &Path,
     agent: &str,
     work_dir: &Path,
     task: &str,
@@ -310,7 +272,7 @@ fn spawn_and_wait_agent(
 
 /// Run the post-completion flow: record completion, then auto-submit on
 /// success (submit now includes materialization).
-async fn run_post_completion(
+pub(super) async fn run_post_completion(
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
     exit_code: Option<i32>,
@@ -371,144 +333,4 @@ async fn run_post_completion(
         },
     )
     .await
-}
-
-/// Status of a single upstream dependency.
-#[allow(dead_code)]
-enum DepStatus {
-    /// The upstream changeset was materialized to trunk.
-    Materialized(GitOid),
-    /// The upstream is still in progress (no terminal event yet).
-    Pending,
-    /// The upstream failed (conflicted, dropped, or agent exited non-zero).
-    Failed(String),
-}
-
-/// Check the status of a single upstream agent by scanning its events.
-async fn check_upstream_status(
-    events: &SqliteEventStore,
-    upstream: &AgentId,
-) -> anyhow::Result<DepStatus> {
-    let agent_events = events.query_by_agent(upstream).await?;
-
-    // Walk backwards to find the most recent terminal event.
-    for event in agent_events.iter().rev() {
-        match &event.kind {
-            EventKind::ChangesetMaterialized { new_commit } => {
-                return Ok(DepStatus::Materialized(*new_commit));
-            }
-            EventKind::ChangesetConflicted { .. } => {
-                return Ok(DepStatus::Failed(format!(
-                    "upstream '{upstream}' has merge conflicts"
-                )));
-            }
-            EventKind::ChangesetDropped { reason } => {
-                return Ok(DepStatus::Failed(format!(
-                    "upstream '{upstream}' was dropped: {reason}"
-                )));
-            }
-            EventKind::AgentCompleted {
-                exit_code,
-                materialized,
-            } => {
-                if *exit_code != Some(0) {
-                    let code = exit_code
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "signal".into());
-                    return Ok(DepStatus::Failed(format!(
-                        "upstream '{upstream}' failed with exit code {code}"
-                    )));
-                }
-                // Agent completed successfully but hasn't materialized yet —
-                // materialization event should follow shortly.
-                if !materialized {
-                    return Ok(DepStatus::Pending);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok(DepStatus::Pending)
-}
-
-/// Wait for all upstream dependencies to materialize to trunk.
-///
-/// Emits an `AgentWaitingForDependencies` event, then polls the event store
-/// until all upstream agents have a `ChangesetMaterialized` event. Bails if
-/// any upstream fails.
-async fn wait_for_dependencies(
-    phantom_dir: &Path,
-    events: &SqliteEventStore,
-    agent_id: &AgentId,
-    changeset_id: &ChangesetId,
-    upstream_agents: &[AgentId],
-) -> anyhow::Result<()> {
-    // Emit waiting event for observability.
-    let causal_parent = events
-        .latest_event_for_changeset(changeset_id)
-        .await
-        .unwrap_or(None);
-    let wait_event = Event {
-        id: EventId(0),
-        timestamp: Utc::now(),
-        changeset_id: changeset_id.clone(),
-        agent_id: agent_id.clone(),
-        causal_parent,
-        kind: EventKind::AgentWaitingForDependencies {
-            upstream_agents: upstream_agents.to_vec(),
-        },
-    };
-    events.append(wait_event).await?;
-
-    // Write marker file so `phantom background` / `phantom status` can show
-    // the waiting state and the names of upstream agents.
-    let waiting_file = phantom_dir
-        .join("overlays")
-        .join(&agent_id.0)
-        .join("waiting.json");
-    let upstream_names: Vec<&str> = upstream_agents.iter().map(|a| a.0.as_str()).collect();
-    if let Ok(json) = serde_json::to_string(&upstream_names) {
-        let _ = std::fs::write(&waiting_file, json);
-    }
-
-    const INITIAL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
-    const MAX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(7200); // 2 hours
-
-    let start = std::time::Instant::now();
-    let mut poll_interval = INITIAL_POLL_INTERVAL;
-
-    loop {
-        let mut all_satisfied = true;
-
-        for upstream in upstream_agents {
-            match check_upstream_status(events, upstream).await? {
-                DepStatus::Materialized(_) => {} // satisfied
-                DepStatus::Failed(reason) => {
-                    anyhow::bail!("dependency failed, cannot start agent '{agent_id}': {reason}");
-                }
-                DepStatus::Pending => {
-                    all_satisfied = false;
-                }
-            }
-        }
-
-        if all_satisfied {
-            // Remove the waiting marker — agent is about to start.
-            let _ = std::fs::remove_file(&waiting_file);
-            return Ok(());
-        }
-
-        if start.elapsed() > MAX_WAIT {
-            let pending: Vec<&str> = upstream_agents.iter().map(|a| a.0.as_str()).collect();
-            anyhow::bail!(
-                "timed out waiting for upstream dependencies: {}",
-                pending.join(", ")
-            );
-        }
-
-        tokio::time::sleep(poll_interval).await;
-        poll_interval = poll_interval.mul_f32(1.5).min(MAX_POLL_INTERVAL);
-    }
 }

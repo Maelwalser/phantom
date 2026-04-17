@@ -8,7 +8,7 @@ use phantom_core::id::AgentId;
 use phantom_events::SnapshotManager;
 
 use super::status::{self, AgentRunState};
-use super::ui;
+use crate::ui;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]

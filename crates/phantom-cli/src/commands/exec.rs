@@ -6,11 +6,12 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::Context;
 
-use super::task::{is_fuse_mounted, spawn_fuse_daemon, FsOverrides};
 use crate::context::PhantomContext;
+use crate::fs::fuse;
 
 #[derive(clap::Args)]
 pub struct ExecArgs {
@@ -52,7 +53,7 @@ pub fn run(args: ExecArgs) -> anyhow::Result<()> {
     }
 
     let mount_point = overlay_root.join("mount");
-    let already_mounted = is_fuse_mounted(&mount_point);
+    let already_mounted = fuse::is_mounted(&mount_point);
 
     // Ensure FUSE is mounted.
     let mut guard = FuseCleanupGuard {
@@ -66,18 +67,14 @@ pub fn run(args: ExecArgs) -> anyhow::Result<()> {
         std::fs::create_dir_all(&mount_point)
             .with_context(|| format!("failed to create mount dir {}", mount_point.display()))?;
 
-        spawn_fuse_daemon(
+        fuse::spawn_daemon(
             &ctx.phantom_dir,
             &ctx.repo_root,
             &args.agent,
             &mount_point,
             &upper_dir,
-            &FsOverrides {
-                uid: None,
-                gid: None,
-                file_mode: None,
-                dir_mode: None,
-            },
+            &fuse::FsOverrides::default(),
+            Duration::from_secs(5),
         )
         .context("failed to mount FUSE overlay")?;
 

@@ -1,4 +1,3 @@
-pub mod agent_color;
 pub mod agent_monitor;
 pub mod background;
 pub mod changes;
@@ -17,5 +16,3 @@ pub mod status;
 pub mod submit;
 pub mod task;
 pub mod tasks;
-pub mod textbox;
-pub mod ui;

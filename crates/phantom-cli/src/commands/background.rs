@@ -15,7 +15,7 @@ use phantom_core::traits::EventStore;
 use crate::context::PhantomContext;
 
 use super::status::{self, AgentRunState};
-use super::ui;
+use crate::ui;
 
 #[derive(clap::Args)]
 pub struct BackgroundArgs {

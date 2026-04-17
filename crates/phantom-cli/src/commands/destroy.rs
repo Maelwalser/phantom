@@ -24,8 +24,7 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
     let events_store = ctx.open_events().await?;
     let mut overlays = ctx.open_overlays_restored()?;
 
-    let agent_id = AgentId::validate(&args.agent)
-        .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {e}", args.agent))?;
+    let agent_id = crate::services::validate::agent_id(&args.agent)?;
 
     // Find the changeset ID for this agent
     let events = events_store.query_by_agent(&agent_id).await?;
@@ -81,15 +80,7 @@ pub(crate) fn unmount_fuse(phantom_dir: &std::path::Path, agent: &str) {
     }
 
     // Try fusermount3 first (clean unmount)
-    let unmount_ok = std::process::Command::new("fusermount3")
-        .arg("-u")
-        .arg(&mount_point)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-
-    if unmount_ok {
+    if crate::fs::fuse::unmount(&mount_point) {
         info!(agent, "FUSE unmounted cleanly");
     } else {
         // Fallback: kill the daemon process (with PID reuse protection).

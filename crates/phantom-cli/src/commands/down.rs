@@ -112,7 +112,7 @@ pub fn run(args: &DownArgs) -> anyhow::Result<()> {
     // Phase 3: Verify no FUSE mounts remain before removing .phantom/.
     let still_mounted = agents
         .iter()
-        .filter(|a| is_fuse_mounted(&overlays_dir.join(a).join("mount")))
+        .filter(|a| crate::fs::fuse::is_mounted(&overlays_dir.join(a).join("mount")))
         .collect::<Vec<_>>();
 
     if !still_mounted.is_empty() {
@@ -157,22 +157,9 @@ fn list_agent_dirs(overlays_dir: &Path) -> Vec<String> {
 }
 
 /// Check if an agent has a live FUSE mount.
-fn is_fuse_mounted(mount_point: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-
-    let Some(parent) = mount_point.parent() else {
-        return false;
-    };
-
-    match (std::fs::metadata(mount_point), std::fs::metadata(parent)) {
-        (Ok(m), Ok(p)) => m.dev() != p.dev(),
-        _ => false,
-    }
-}
-
 fn agent_has_fuse(overlays_dir: &Path, agent: &str) -> bool {
     let mount_point = overlays_dir.join(agent).join("mount");
-    is_fuse_mounted(&mount_point)
+    crate::fs::fuse::is_mounted(&mount_point)
 }
 
 fn agent_has_process(overlays_dir: &Path, agent: &str) -> bool {
@@ -211,21 +198,13 @@ fn unmount_agent_fuse(overlays_dir: &Path, agent: &str) -> bool {
     // file was removed before being read in the clean-unmount path.
     let fuse_record = crate::pid_guard::read_pid_file(&pid_file);
 
-    if !is_fuse_mounted(&mount_point) {
+    if !crate::fs::fuse::is_mounted(&mount_point) {
         let _ = std::fs::remove_file(&pid_file);
         return true;
     }
 
     // Try clean unmount.
-    let unmount_ok = std::process::Command::new("fusermount3")
-        .arg("-u")
-        .arg(&mount_point)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-
-    if unmount_ok {
+    if crate::fs::fuse::unmount(&mount_point) {
         info!(agent, "FUSE unmounted cleanly");
 
         // Kill the FUSE daemon process.
@@ -242,15 +221,7 @@ fn unmount_agent_fuse(overlays_dir: &Path, agent: &str) -> bool {
         crate::pid_guard::kill_process(record, libc::SIGTERM);
         std::thread::sleep(Duration::from_millis(300));
 
-        let retry_ok = std::process::Command::new("fusermount3")
-            .arg("-u")
-            .arg(&mount_point)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-
-        if retry_ok {
+        if crate::fs::fuse::unmount(&mount_point) {
             info!(agent, "FUSE unmounted after killing daemon");
             let _ = std::fs::remove_file(&pid_file);
             return true;
@@ -264,14 +235,7 @@ fn unmount_agent_fuse(overlays_dir: &Path, agent: &str) -> bool {
 /// Lazy unmount as a last resort.
 fn lazy_unmount(overlays_dir: &Path, agent: &str) {
     let mount_point = overlays_dir.join(agent).join("mount");
-
-    let _ = std::process::Command::new("fusermount3")
-        .arg("-uz")
-        .arg(&mount_point)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
+    crate::fs::fuse::lazy_unmount(&mount_point);
     info!(agent, "attempted lazy unmount");
 }
 

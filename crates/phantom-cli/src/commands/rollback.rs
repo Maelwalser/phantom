@@ -16,7 +16,7 @@ use phantom_events::snapshot::SnapshotManager;
 use phantom_events::store::SqliteEventStore;
 use phantom_git::GitOps;
 
-use super::ui;
+use crate::ui;
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]

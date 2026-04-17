@@ -44,7 +44,7 @@ pub async fn run() -> anyhow::Result<()> {
         console::style("✓").green(),
         cwd.display()
     );
-    super::ui::action_hint("phantom <agent>", "to create your first task.");
+    crate::ui::action_hint("phantom <agent>", "to create your first task.");
     Ok(())
 }
 
