@@ -8,7 +8,7 @@
 </div>
 
 **A version control designed for AI coding tools**<br/>
-Phantom is an event sourced, semantic aware version control layer for agentic AI development, built on top of Git. It enables multiple AI coding agents to work on the same codebase simultaneously with automatic symbol-level conflict detection, filesystem isolation using FUSE, and instant propagation of finished work.
+Built on top of Git, Phantom allows multiple AI tools to safely edit a single codebase at the same time. It uses event-sourcing and isolated file systems to track and separate active work, while automatically resolving conflicts at the logic level before instantly syncing finished code.
 
 <p align="center">
   <img src="docs/assets/demo.gif" alt="Phantom CLI demo" width="800" />
@@ -27,16 +27,27 @@ Phantom is an event sourced, semantic aware version control layer for agentic AI
 
 ---
 
-## Why Phantom?
+## Goals
 
-Git branches model human workflows, long-lived divergent lines of work reconciled later. Agentic development is different: multiple agents work on small, scoped tasks simultaneously, and their outputs must compose cleanly without manual merge resolution.
+Phantom is a proof of concept for a new kind of version control, one designed for how AI code development actually works.
 
-| Approach      | What happens when two agents edit the same file?                           |
-| ------------- | -------------------------------------------------------------------------- |
-| Git worktrees | Line-based conflict. Human must intervene.                                 |
-| **Phantom**   | AST-level semantic merge. Auto-resolves if different symbols were touched. |
+### Problems Phantom is trying to solve
 
-Phantom replaces branches with **changesets**, reorderable, atomic units of work. Two agents can add different functions to the same file and Phantom merges them automatically, because it understands code structure, not just text lines.
+- **Git branches are the wrong primitive for agents.** Branches were designed for long-lived, human-driven divergence with manual reconciliation at the end. Agents produce short-lived, fine-grained units of work that should compose automatically.
+- **Line-based merges don't understand code.** Two agents adding different functions to the same file shouldn't conflict, but text-level diffing says they do. The merge should happen at the level of *symbols*, not *lines*.
+- **Working trees don't isolate.** When multiple agents share a checkout, one agent's in-progress write becomes another agent's unstable read. Each agent needs its own view of the repository without the overhead of full clones.
+- **There's no audit trail for autonomous work.** When an agent rewrites a codebase unattended, you need to know exactly what happened, when, and why — and you need to be able to roll any single change back cleanly.
+- **Agent context gets lost between sessions.** Restarting an agent shouldn't mean rebuilding its mental model from scratch. Sessions should be first-class and resumable.
+
+### What Phantom is exploring
+
+- **Changesets instead of branches** — atomic, reorderable, auditable units of work keyed by symbols rather than lines.
+- **FUSE overlays instead of worktrees** — per-agent copy-on-write filesystems with read-through to trunk.
+- **Semantic merging instead of textual merging** — tree-sitter-powered AST diffing so disjoint symbol changes compose automatically.
+- **Event sourcing instead of reflog** — every action is an immutable event, enabling surgical rollback, replay, and "what-if" analysis.
+- **Session-aware tasking** — each agent has a persistent, resumable coding session bound to its overlay.
+
+Phantom is not a replacement for Git. It sits on top of Git and uses it as the durable source of truth. The goal is to find out which of these ideas are worth keeping if we ever build a version control system from scratch for a world where most code is written by agents.
 
 ## Features
 
@@ -235,7 +246,7 @@ ph re
 
 Decompose a feature request into parallel agent tasks. An AI planner analyzes the codebase, breaks the work into independent domains, creates overlays for each, and dispatches background agents. Domains can declare `depends_on` relationships — agents in later waves wait for their upstream agents to submit and materialize to trunk before starting, and refresh their base commit onto the updated trunk once upstream work lands. If any upstream agent fails, dependent agents abort rather than starting against stale state.
 
-> **Note:** This command is experimental and under active development. Behavior and flags may change between releases.
+> **Note:** This command is experimental and under active development.
 
 ```bash
 # Interactive — opens an editor for the description
@@ -258,13 +269,13 @@ ph plan "add caching" --no-submit
 
 Auto-resolve merge conflicts by launching a background AI agent with three-way conflict context (base/ours/theirs). The agent receives a specialized `.phantom-task.md` with conflict resolution instructions.
 
-> **Note:** This command is experimental and under active development. Behavior and flags may change between releases.
+> **Note:** This command is experimental and under active development.
 
 ```bash
 ph resolve agent-a
 ```
 
-Guards against infinite resolution loops — if a resolution is already in progress, the command will tell you to wait or drop the changeset.
+Guards against infinite resolution loops, if a resolution is already in progress, the command will tell you to wait or drop the changeset.
 
 ### `ph rollback` / `rb`
 
