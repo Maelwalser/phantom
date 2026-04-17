@@ -101,6 +101,18 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
 
     let events = events_store.query(&query).await?;
 
+    // In non-verbose mode, `ChangesetSubmitted` is redundant with the
+    // `ChangesetMaterialized` / `ChangesetConflicted` event that always
+    // follows a submit — collapse the pair to a single line per outcome.
+    let events: Vec<_> = if args.verbose {
+        events
+    } else {
+        events
+            .into_iter()
+            .filter(|e| !matches!(e.kind, phantom_core::EventKind::ChangesetSubmitted { .. }))
+            .collect()
+    };
+
     if events.is_empty() {
         ui::empty_state(
             "No events found.",
@@ -193,26 +205,26 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
             format!("FileDeleted {{ {} }}", path.display())
         }
         EventKind::ChangesetSubmitted { operations } => {
-            format!("ChangesetSubmitted {{ {} op(s) }}", operations.len())
+            format!("submitted {{ {} op(s) }}", operations.len())
         }
         EventKind::ChangesetMergeChecked { result } => {
             let status = match result {
                 phantom_core::MergeCheckResult::Clean => "clean",
                 phantom_core::MergeCheckResult::Conflicted(_) => "conflicted",
             };
-            format!("ChangesetMergeChecked {{ {status} }}")
+            format!("merge-checked {{ {status} }}")
         }
         EventKind::ChangesetMaterialized { new_commit } => {
             format!(
-                "ChangesetMaterialized {{ commit: {} }}",
+                "materialized {{ commit: {} }}",
                 short_hex(&new_commit.to_hex())
             )
         }
         EventKind::ChangesetConflicted { conflicts } => {
-            format!("ChangesetConflicted {{ {} conflict(s) }}", conflicts.len())
+            format!("conflicted {{ {} conflict(s) }}", conflicts.len())
         }
         EventKind::ChangesetDropped { reason } => {
-            format!("ChangesetDropped {{ {reason} }}")
+            format!("dropped {{ {reason} }}")
         }
         EventKind::TrunkAdvanced { new_commit, .. } => {
             format!(
