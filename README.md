@@ -47,7 +47,8 @@ Phantom replaces branches with **changesets** — reorderable, atomic units of w
 - **Live rebase** — When one agent's work is submitted, Phantom automatically rebases other agents' overlapping files at the symbol level and notifies them of trunk changes.
 - **Auto-submit** — Use `--auto-submit` (or its alias `--auto-materialize`) to automatically submit and merge an agent's work when the session exits. Always on for background agents.
 - **Background agents** — Run agents headless with `--background --task "..."`. A monitor process waits for completion and (optionally) auto-submits. Watch progress with `ph background`.
-- **AI-driven planning** *(experimental)* — `ph plan` decomposes a feature request into parallel agent tasks using an AI planner, then dispatches background agents.
+- **Agent dependencies** — Background agents can be configured to wait for upstream agents to submit and materialize to trunk before they start. The monitor polls the event log for upstream `ChangesetMaterialized` events, bails if any upstream is conflicted or dropped, and once deps resolve refreshes the dependent agent's base commit and context file so it sees the upstream work. A waiting agent surfaces in `ph status` and `ph background` with its upstream list, and emits an `AgentWaitingForDependencies` event for audit. Used by `ph plan` to sequence waves (e.g. a scaffold domain that owns shared config runs first, feature domains wait on it).
+- **AI-driven planning** *(experimental)* — `ph plan` decomposes a feature request into parallel agent tasks using an AI planner, then dispatches background agents — including dependency edges between domains so conflicting waves run sequentially while disjoint work runs in parallel.
 - **AI-driven conflict resolution** *(experimental)* — `ph resolve` launches a background AI agent with three-way conflict context to automatically resolve merge conflicts.
 - **Multi-language support** — Symbol extraction for Rust, TypeScript, JavaScript (including JSX/TSX), Python, and Go, plus config formats (YAML, TOML, JSON, Bash, CSS, HCL/Terraform, Dockerfile, Makefile) via tree-sitter grammars.
 - **Zero-config conflict resolution** — Disjoint symbol changes auto-merge. True conflicts (same function modified by two agents) are detected and reported clearly.
@@ -232,7 +233,7 @@ ph re
 
 ### `ph plan` *(experimental)*
 
-Decompose a feature request into parallel agent tasks. An AI planner analyzes the codebase, breaks the work into independent domains, creates overlays for each, and dispatches background agents.
+Decompose a feature request into parallel agent tasks. An AI planner analyzes the codebase, breaks the work into independent domains, creates overlays for each, and dispatches background agents. Domains can declare `depends_on` relationships — agents in later waves wait for their upstream agents to submit and materialize to trunk before starting, and refresh their base commit onto the updated trunk once upstream work lands. If any upstream agent fails, dependent agents abort rather than starting against stale state.
 
 > **Note:** This command is experimental and under active development. Behavior and flags may change between releases.
 
