@@ -8,6 +8,7 @@
 //! If an overlay already exists for the agent, the command resumes the existing
 //! session (reuses changeset ID, skips event emission, re-mounts FUSE if needed).
 
+mod category;
 mod resume;
 mod spawn;
 
@@ -15,12 +16,10 @@ use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Utc;
-use phantom_core::TaskCategory;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::EventId;
 use phantom_core::traits::EventStore;
 use phantom_overlay::OverlayError;
-use phantom_session::context_file;
 
 use crate::context::PhantomContext;
 
@@ -28,6 +27,7 @@ pub(crate) use resume::generate_changeset_id;
 pub(crate) use spawn::spawn_agent_monitor;
 
 #[derive(clap::Args)]
+#[allow(clippy::struct_excessive_bools)] // CLI flags — each bool is independent.
 pub struct TaskArgs {
     /// Agent identifier (e.g. "agent-a")
     pub agent: String,
@@ -47,15 +47,28 @@ pub struct TaskArgs {
     /// Skip FUSE mounting (agent works via OverlayLayer API only, no filesystem isolation)
     #[arg(long)]
     pub no_fuse: bool,
-    /// Tag the task with a maintenance category; the matching
-    /// `.phantom/rules/<category>.md` rule set is injected into the agent's
-    /// system prompt. One of: corrective, perfective, preventive, adaptive.
-    #[arg(long, value_parser = parse_task_category)]
-    pub category: Option<TaskCategory>,
-}
-
-fn parse_task_category(s: &str) -> Result<TaskCategory, String> {
-    s.parse::<TaskCategory>().map_err(|e| e.to_string())
+    /// Tag the task with a maintenance category OR point at a custom `.md`
+    /// rules file. Built-in names (corrective / perfective / preventive /
+    /// adaptive) resolve to the matching `.phantom/rules/<name>.md` rule
+    /// set. Any other value is treated as a path to a markdown file, which
+    /// is injected verbatim via `--append-system-prompt-file`.
+    ///
+    /// Passing `--category` with no value opens an interactive menu of the
+    /// four built-ins.
+    #[arg(
+        long,
+        visible_alias = "cat",
+        num_args = 0..=1,
+        default_missing_value = "",
+        conflicts_with = "custom",
+    )]
+    pub category: Option<String>,
+    /// Open a multiline textbox to author a bespoke rule body for this task.
+    /// The typed markdown is saved to `.phantom/rules/custom/<agent>.md` and
+    /// injected via `--append-system-prompt-file`. Conflicts with
+    /// `--category`.
+    #[arg(long, conflicts_with = "category")]
+    pub custom: bool,
 }
 
 pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
@@ -66,6 +79,20 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
 
     let agent_id = crate::services::validate::agent_id(&args.agent)?;
     let head = git.head_oid().context("failed to read HEAD")?;
+
+    // Resolve the user's category choice before creating the overlay. If the
+    // user cancels an interactive menu or textbox, exit cleanly without
+    // leaving a partial overlay behind. For resume flows where no explicit
+    // flag was passed, check for a previously-saved custom rule file.
+    let resolved_category = match category::resolve_category(&args, &ctx.repo_root) {
+        Ok(Some(r)) => Some(r),
+        Ok(None) => category::implicit_resume_from_custom(&ctx.phantom_dir, &args.agent),
+        Err(e) if e.to_string() == category::CANCELLED => {
+            println!("  {}", console::style("Cancelled.").dim());
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
 
     // Try to create a new overlay. If one already exists, switch to resume mode.
     let (changeset_id, base_commit, is_new, mount_point, upper_dir) =
@@ -173,19 +200,15 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
 
     let base_short = base_commit.to_hex().chars().take(12).collect::<String>();
 
-    // If the task is tagged with a category, ensure the static rule files
-    // exist on disk and resolve the path to inject into the agent's system
-    // prompt. Idempotent write — safe to call on every task creation. For
-    // `TaskCategory::Custom(_)` no canonical body exists, so we skip the
-    // system-prompt injection and let the task run without category rules.
-    let category_rules_path = match args.category.as_ref() {
-        Some(category) if category.is_builtin() => {
-            context_file::ensure_category_rules_dir(&ctx.phantom_dir)
-                .context("failed to write category rule files")?;
-            Some(context_file::rules_path(&ctx.phantom_dir, category))
-        }
-        _ => None,
-    };
+    // Materialise the resolved category into a concrete rules-file path on
+    // disk. `Builtin` ensures the four static files exist; `File` passes the
+    // user-supplied path through unchanged; `Inline` writes the textbox body
+    // to `.phantom/rules/custom/<agent>.md`.
+    let category_rules_path = resolved_category
+        .as_ref()
+        .map(|r| r.materialise(&ctx.phantom_dir, &args.agent))
+        .transpose()
+        .context("failed to prepare category rules file")?;
 
     if args.background {
         let task = match args.task {
@@ -253,8 +276,8 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
         crate::ui::key_value("Log", log_file.display());
         crate::ui::key_value("Overlay", work_dir.display());
         crate::ui::key_value("Base", console::style(&base_short).cyan());
-        if let Some(category) = args.category.as_ref() {
-            crate::ui::key_value("Category", console::style(category.to_string()).cyan());
+        if let Some(resolved) = resolved_category.as_ref() {
+            crate::ui::key_value("Category", console::style(resolved.display_label()).cyan());
         }
         if fuse_mounted {
             crate::ui::key_value("FUSE", console::style("mounted").green());

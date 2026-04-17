@@ -30,9 +30,9 @@ fn init_git_repo() -> TempDir {
     dir
 }
 
-/// Build a `Command` for the `phantom` binary with working dir set.
+/// Build a `Command` for the `ph` binary with working dir set.
 fn phantom(dir: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("phantom").unwrap();
+    let mut cmd = Command::cargo_bin("ph").unwrap();
     cmd.current_dir(dir).env("RUST_LOG", "");
     cmd
 }
@@ -225,4 +225,136 @@ fn phantom_task_interactive_auto_submit_with_no_changes() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No changes detected"));
+}
+
+#[test]
+fn phantom_task_category_builtin_writes_rules_file_and_shows_label() {
+    let dir = init_git_repo();
+    phantom(dir.path()).arg("init").assert().success();
+
+    phantom(dir.path())
+        .args([
+            "agent-cat-builtin",
+            "--background",
+            "--task",
+            "fix bug",
+            "--category",
+            "corrective",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Category"))
+        .stdout(predicate::str::contains("corrective"));
+
+    for name in ["corrective", "perfective", "preventive", "adaptive"] {
+        assert!(
+            dir.path()
+                .join(format!(".phantom/rules/{name}.md"))
+                .is_file(),
+            "missing rules file for {name}"
+        );
+    }
+}
+
+#[test]
+fn phantom_task_cat_alias_resolves_same_as_category() {
+    let dir = init_git_repo();
+    phantom(dir.path()).arg("init").assert().success();
+
+    phantom(dir.path())
+        .args([
+            "agent-cat-alias",
+            "--background",
+            "--task",
+            "refactor",
+            "--cat",
+            "perfective",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("perfective"));
+}
+
+#[test]
+fn phantom_task_category_with_external_md_path_succeeds() {
+    let dir = init_git_repo();
+    phantom(dir.path()).arg("init").assert().success();
+
+    let rules_path = dir.path().join("my-rules.md");
+    fs::write(&rules_path, "# My Rules\n\nBe careful.\n").unwrap();
+
+    phantom(dir.path())
+        .args([
+            "agent-cat-file",
+            "--background",
+            "--task",
+            "anything",
+            "--category",
+            rules_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("file: my-rules.md"));
+}
+
+#[test]
+fn phantom_task_category_missing_path_fails() {
+    let dir = init_git_repo();
+    phantom(dir.path()).arg("init").assert().success();
+
+    phantom(dir.path())
+        .args([
+            "agent-cat-miss",
+            "--background",
+            "--task",
+            "x",
+            "--category",
+            "./does-not-exist.md",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does-not-exist.md"));
+}
+
+#[test]
+fn phantom_task_category_non_md_extension_fails() {
+    let dir = init_git_repo();
+    phantom(dir.path()).arg("init").assert().success();
+
+    let txt = dir.path().join("rules.txt");
+    fs::write(&txt, "x").unwrap();
+
+    phantom(dir.path())
+        .args([
+            "agent-cat-ext",
+            "--background",
+            "--task",
+            "x",
+            "--category",
+            txt.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(".md"));
+}
+
+#[test]
+fn phantom_task_category_and_custom_conflict() {
+    let dir = init_git_repo();
+    phantom(dir.path()).arg("init").assert().success();
+
+    // clap's `conflicts_with` fires before we even reach the resolver.
+    phantom(dir.path())
+        .args([
+            "agent-conflict",
+            "--background",
+            "--task",
+            "x",
+            "--category",
+            "corrective",
+            "--custom",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }

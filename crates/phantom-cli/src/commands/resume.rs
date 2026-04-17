@@ -98,6 +98,7 @@ pub async fn run(_args: ResumeArgs) -> anyhow::Result<()> {
         command: None,
         no_fuse: false,
         category: None,
+        custom: false,
     })
     .await
 }
