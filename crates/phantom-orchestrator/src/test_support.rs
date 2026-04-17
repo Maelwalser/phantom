@@ -50,8 +50,9 @@ impl EventStore for MockEventStore {
         Ok(vec![])
     }
 
-    async fn query_by_agent(&self, _id: &AgentId) -> Result<Vec<Event>, CoreError> {
-        Ok(vec![])
+    async fn query_by_agent(&self, id: &AgentId) -> Result<Vec<Event>, CoreError> {
+        let events = self.events.read().unwrap();
+        Ok(events.iter().filter(|e| e.agent_id == *id).cloned().collect())
     }
 
     async fn query_all(&self) -> Result<Vec<Event>, CoreError> {
