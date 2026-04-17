@@ -185,10 +185,13 @@ mod tests {
             _ours: &[u8],
             _theirs: &[u8],
             path: &Path,
-        ) -> Result<MergeResult, CoreError> {
+        ) -> Result<phantom_core::conflict::MergeReport, CoreError> {
+            use phantom_core::conflict::MergeReport;
             match self.merge_results.get(path) {
-                Some(result) => Ok(result.clone()),
-                None => Ok(MergeResult::Clean(b"default merged content".to_vec())),
+                Some(result) => Ok(MergeReport::semantic(result.clone())),
+                None => Ok(MergeReport::semantic(MergeResult::Clean(
+                    b"default merged content".to_vec(),
+                ))),
             }
         }
     }

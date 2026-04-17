@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use phantom_core::conflict::{ConflictDetail, ConflictKind, ConflictSpan, MergeResult};
+use phantom_core::conflict::{
+    ConflictDetail, ConflictKind, ConflictSpan, MergeResult, MergeStrategy,
+};
 use phantom_core::error::CoreError;
 use phantom_core::id::ChangesetId;
 use phantom_core::symbol::SymbolEntry;
@@ -19,13 +21,18 @@ use super::text::text_merge;
 /// Parses all three versions, detects conflicts at the symbol level, and
 /// reconstructs the merged file from symbol regions. Falls back to text merge
 /// if the reconstructed file has syntax errors.
+///
+/// Returns the merge outcome paired with the strategy used to produce it:
+/// [`MergeStrategy::Semantic`] for the normal path, or
+/// [`MergeStrategy::TextFallbackInvalidSyntax`] when the reconstructed file
+/// fails to re-parse and the function falls back to `text_merge`.
 pub(super) fn semantic_merge(
     parser: &Parser,
     base: &[u8],
     ours: &[u8],
     theirs: &[u8],
     path: &Path,
-) -> Result<MergeResult, CoreError> {
+) -> Result<(MergeResult, MergeStrategy), CoreError> {
     let base_symbols = parser
         .parse_file(path, base)
         .map_err(|e| CoreError::Semantic(e.to_string()))?;
@@ -110,7 +117,7 @@ pub(super) fn semantic_merge(
     }
 
     if !conflicts.is_empty() {
-        return Ok(MergeResult::Conflict(conflicts));
+        return Ok((MergeResult::Conflict(conflicts), MergeStrategy::Semantic));
     }
 
     // No conflicts — reconstruct the merged file
@@ -130,10 +137,13 @@ pub(super) fn semantic_merge(
             ?path,
             "semantic merge produced invalid syntax, falling back to text merge"
         );
-        return Ok(text_merge(base, ours, theirs, path));
+        return Ok((
+            text_merge(base, ours, theirs, path),
+            MergeStrategy::TextFallbackInvalidSyntax,
+        ));
     }
 
-    Ok(MergeResult::Clean(merged))
+    Ok((MergeResult::Clean(merged), MergeStrategy::Semantic))
 }
 
 /// Which side of a merge carried a surviving modification against the other side's deletion.
@@ -234,6 +244,19 @@ mod tests {
 
     fn merge(base: &str, ours: &str, theirs: &str) -> MergeResult {
         let parser = Parser::new();
+        let (result, _strategy) = semantic_merge(
+            &parser,
+            base.as_bytes(),
+            ours.as_bytes(),
+            theirs.as_bytes(),
+            Path::new("test.rs"),
+        )
+        .expect("parse should succeed");
+        result
+    }
+
+    fn merge_with_strategy(base: &str, ours: &str, theirs: &str) -> (MergeResult, MergeStrategy) {
+        let parser = Parser::new();
         semantic_merge(
             &parser,
             base.as_bytes(),
@@ -242,6 +265,14 @@ mod tests {
             Path::new("test.rs"),
         )
         .expect("parse should succeed")
+    }
+
+    #[test]
+    fn clean_semantic_merge_tagged_as_semantic() {
+        let base = "fn a() { 1 }\n";
+        let edited = "fn a() { 2 }\n";
+        let (_r, strategy) = merge_with_strategy(base, edited, edited);
+        assert_eq!(strategy, MergeStrategy::Semantic);
     }
 
     #[test]

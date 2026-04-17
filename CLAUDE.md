@@ -31,9 +31,9 @@ phantom status                       # Show overlays, changesets, queue
 phantom log [filter]                 # Query event log (agent name or cs-id)
 phantom changes                      # Recent submits and materializations
 phantom background                   # Watch background agents
-phantom destroy <agent>              # Tear down overlay
+phantom destroy <agent>              # Tear down overlay (immediate, no prompt)
 phantom rollback [changeset-id]      # Drop changeset, replay downstream
-phantom down                         # Unmount all overlays, remove .phantom/
+phantom down                         # Unmount all overlays, remove .phantom/ (prompts unless -f)
 ```
 
 ## Workspace Structure

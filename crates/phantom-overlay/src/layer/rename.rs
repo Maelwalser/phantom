@@ -16,6 +16,7 @@ use tracing::debug;
 use crate::error::OverlayError;
 use crate::trunk_view::walk_files;
 use crate::types::{FileType, is_hidden, is_passthrough, reparent_children};
+use crate::whiteout::is_safe_symlink_target;
 
 use super::OverlayLayer;
 use super::io_util::ensure_parent_dir;
@@ -203,6 +204,12 @@ impl OverlayLayer {
                 FileType::Symlink => {
                     let src = self.resolve_path(&child_old)?;
                     let link_target = fs::read_link(&src)?;
+                    // Drop symlinks whose target would escape the overlay at
+                    // the new location.  The link may have been safe at its
+                    // old position but unsafe relative to the new depth.
+                    if !is_safe_symlink_target(&link_target, &child_new) {
+                        continue;
+                    }
                     let dst = self.upper.join(&child_new);
                     ensure_parent_dir(&dst)?;
                     std::os::unix::fs::symlink(&link_target, &dst)?;

@@ -42,11 +42,91 @@ fn symlink_getattr_reports_symlink_type() {
     let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
     layer
-        .create_symlink(Path::new("mylink"), Path::new("/some/target"))
+        .create_symlink(Path::new("mylink"), Path::new("target.txt"))
         .unwrap();
 
     let meta = layer.getattr(Path::new("mylink")).unwrap();
     assert!(meta.is_symlink(), "getattr should report symlink file type");
+}
+
+#[test]
+fn create_symlink_rejects_absolute_target() {
+    let (lower, upper) = setup();
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+    let err = layer
+        .create_symlink(Path::new("escape"), Path::new("/etc/passwd"))
+        .expect_err("absolute symlink target must be refused");
+    drop(err);
+    // The link must not have been written.
+    assert!(
+        upper.path().join("escape").symlink_metadata().is_err(),
+        "rejected symlink must not leave artifacts in upper layer"
+    );
+}
+
+#[test]
+fn create_symlink_rejects_parentdir_escape() {
+    let (lower, upper) = setup();
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+    layer
+        .create_symlink(Path::new("escape"), Path::new("../../outside"))
+        .expect_err("parent-dir escape must be refused");
+}
+
+#[test]
+fn create_symlink_allows_relative_target_within_subtree() {
+    let (lower, upper) = setup();
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+    // link at sub/link → parent depth 1 → `..` then `peer` stays inside.
+    layer
+        .create_symlink(Path::new("sub/link"), Path::new("../peer"))
+        .expect("safe relative symlink must succeed");
+}
+
+#[test]
+fn read_symlink_hides_unsafe_on_disk_target() {
+    let (lower, upper) = setup();
+    // Plant an unsafe absolute-target symlink directly in the upper layer,
+    // bypassing `create_symlink`. Simulates out-of-band tampering.
+    std::os::unix::fs::symlink("/etc/passwd", upper.path().join("planted")).unwrap();
+
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+    // read_symlink must refuse to expose the unsafe target.
+    let err = layer
+        .read_symlink(Path::new("planted"))
+        .expect_err("unsafe planted symlink must not be exposed via read_symlink");
+    drop(err);
+}
+
+#[test]
+fn rename_copyup_skips_unsafe_symlink_from_lower() {
+    // When a directory lives only in the lower layer and is renamed, the
+    // overlay copies it up to the upper layer at the new name.  That
+    // copy-up path is the one that creates *new* symlinks on disk, so
+    // unsafe targets planted in lower must be filtered out.
+    let (lower, upper) = setup();
+    std::fs::create_dir_all(lower.path().join("src")).unwrap();
+    std::fs::write(lower.path().join("src/keep.txt"), b"ok").unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", lower.path().join("src/evil")).unwrap();
+
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+    layer
+        .rename_file(Path::new("src"), Path::new("src2"))
+        .expect("rename must not fail just because a child is unsafe");
+
+    assert!(
+        upper.path().join("src2/keep.txt").exists(),
+        "safe sibling should have been copied up"
+    );
+    assert!(
+        upper.path().join("src2/evil").symlink_metadata().is_err(),
+        "unsafe planted symlink must not be re-created at the new path"
+    );
 }
 
 #[test]

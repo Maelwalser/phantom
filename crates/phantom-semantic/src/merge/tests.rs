@@ -6,13 +6,35 @@
 
 use std::path::Path;
 
-use phantom_core::conflict::{ConflictKind, MergeResult};
+use phantom_core::conflict::{ConflictKind, MergeResult, MergeStrategy};
 use phantom_core::traits::SemanticAnalyzer;
 
 use super::SemanticMerger;
 
 fn merger() -> SemanticMerger {
     SemanticMerger::new()
+}
+
+/// Run `three_way_merge` and unwrap the report down to the merge result.
+/// Keeps the rest of the tests in terms of `MergeResult` rather than the
+/// new `MergeReport` wrapper.
+fn merge(base: &[u8], ours: &[u8], theirs: &[u8], path: &Path) -> MergeResult {
+    merger()
+        .three_way_merge(base, ours, theirs, path)
+        .unwrap()
+        .result
+}
+
+/// Variant that returns the strategy alongside the result for tests that
+/// need to assert on the fallback classification.
+fn merge_with_strategy(
+    base: &[u8],
+    ours: &[u8],
+    theirs: &[u8],
+    path: &Path,
+) -> (MergeResult, MergeStrategy) {
+    let report = merger().three_way_merge(base, ours, theirs, path).unwrap();
+    (report.result, report.strategy)
 }
 
 #[test]
@@ -23,7 +45,8 @@ fn both_add_different_functions_merges_cleanly() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -50,7 +73,8 @@ fn both_modify_same_function_conflicts() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Conflict(conflicts) => {
@@ -72,7 +96,8 @@ fn one_adds_other_modifies_different_function() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -93,7 +118,8 @@ fn delete_and_modify_same_symbol_conflicts() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Conflict(conflicts) => {
@@ -116,7 +142,8 @@ fn both_add_identical_function_deduplicates() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -138,7 +165,8 @@ fn both_add_same_import_deduplicates() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -157,7 +185,8 @@ fn disjoint_changes_merge_cleanly() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -177,7 +206,8 @@ fn unsupported_file_falls_back_to_text_merge() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("config.xyz"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -196,7 +226,8 @@ fn identical_ours_and_theirs_returns_clean() {
 
     let result = merger()
         .three_way_merge(base, same, same, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     assert!(matches!(result, MergeResult::Clean(_)));
 }
@@ -209,7 +240,8 @@ fn appended_symbols_no_double_newline() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -251,6 +283,48 @@ fn syntax_validation_ignores_unsupported_languages() {
     );
 }
 
+// -------- MergeStrategy reporting -----------------------------------------
+
+#[test]
+fn short_circuit_tagged_as_trivial() {
+    let base = b"fn a() {}\n";
+    // ours == theirs → short circuit
+    let (result, strategy) = merge_with_strategy(base, base, base, Path::new("test.rs"));
+    assert!(matches!(result, MergeResult::Clean(_)));
+    assert_eq!(strategy, MergeStrategy::Trivial);
+}
+
+#[test]
+fn clean_semantic_path_tagged_as_semantic() {
+    let base = b"fn a() {}\n";
+    let ours = b"fn a() {}\nfn b() {}\n";
+    let theirs = b"fn a() {}\nfn c() {}\n";
+    let (result, strategy) = merge_with_strategy(base, ours, theirs, Path::new("test.rs"));
+    assert!(matches!(result, MergeResult::Clean(_)));
+    assert_eq!(strategy, MergeStrategy::Semantic);
+}
+
+#[test]
+fn unsupported_language_tagged_as_text_fallback() {
+    let base = b"line1\nline2\n";
+    let ours = b"line1\nline2_modified\n";
+    let theirs = b"line1\nline2\nline3\n";
+    let (_result, strategy) = merge_with_strategy(base, ours, theirs, Path::new("data.xyz"));
+    assert_eq!(strategy, MergeStrategy::TextFallbackUnsupported);
+    assert!(strategy.is_text_fallback());
+}
+
+#[test]
+fn merge_helper_returns_plain_result() {
+    // Exercise the `merge` helper so it isn't dead code; also asserts the
+    // semantic path still produces a clean merge for disjoint edits.
+    let base = b"fn a() { 1 }\n";
+    let ours = b"fn a() { 2 }\n";
+    let theirs = b"fn a() { 1 }\nfn b() {}\n";
+    let result = merge(base, ours, theirs, Path::new("test.rs"));
+    assert!(matches!(result, MergeResult::Clean(_)));
+}
+
 #[test]
 fn new_function_added_after_existing_preserves_order() {
     // Agent adds a function between two existing ones — it should NOT end up at EOF.
@@ -260,7 +334,8 @@ fn new_function_added_after_existing_preserves_order() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -287,7 +362,8 @@ fn new_use_statement_added_before_functions() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -313,7 +389,8 @@ fn both_sides_add_at_different_positions() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -341,7 +418,8 @@ fn adjacent_insertions_at_zero_byte_boundary_preserve_order() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {
@@ -371,7 +449,8 @@ fn multiple_functions_added_after_same_anchor_preserve_order() {
 
     let result = merger()
         .three_way_merge(base, ours, theirs, Path::new("test.rs"))
-        .unwrap();
+        .unwrap()
+        .result;
 
     match result {
         MergeResult::Clean(merged) => {

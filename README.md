@@ -357,9 +357,14 @@ Remove an agent's overlay, unmount its FUSE filesystem, and clean up its resourc
 ph rm agent-a
 ```
 
+> **Note:** `ph destroy` is destructive and immediate — there is no confirmation
+> prompt. The overlay, FUSE mount, and persisted session data are removed as
+> soon as the command runs. If you want a prompted teardown of the entire
+> `.phantom/` directory, use `ph down` instead.
+
 ### `ph down`
 
-Tear down Phantom entirely: unmount all active FUSE overlays, kill all agent and monitor processes, and remove the `.phantom/` directory. This is the safe way to remove Phantom — running `rm -rf .phantom` while FUSE overlays are mounted is dangerous.
+**Prompts for confirmation unless `-f` is passed.** Tears down Phantom entirely: unmount all active FUSE overlays, kill all agent and monitor processes, and remove the `.phantom/` directory. This is the safe way to remove Phantom — running `rm -rf .phantom` while FUSE overlays are mounted is dangerous.
 
 ```bash
 # With confirmation prompt

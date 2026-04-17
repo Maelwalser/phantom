@@ -111,7 +111,7 @@ pub fn rebase_agent(
                 let result = analyzer
                     .three_way_merge(&[], &ours, &theirs, file)
                     .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
-                match result {
+                match result.result {
                     MergeResult::Clean(content) => {
                         atomic_write_upper(upper_dir, file, &content)?;
                         merged.push(file.clone());
@@ -131,7 +131,7 @@ pub fn rebase_agent(
                 let result = analyzer
                     .three_way_merge(&base_content, &ours, &theirs, file)
                     .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
-                match result {
+                match result.result {
                     MergeResult::Clean(content) => {
                         atomic_write_upper(upper_dir, file, &content)?;
                         merged.push(file.clone());
@@ -308,26 +308,29 @@ mod tests {
             ours: &[u8],
             theirs: &[u8],
             _path: &Path,
-        ) -> Result<MergeResult, phantom_core::CoreError> {
+        ) -> Result<phantom_core::conflict::MergeReport, phantom_core::CoreError> {
+            use phantom_core::conflict::{MergeReport, MergeStrategy};
             let base_s = String::from_utf8_lossy(base);
             let ours_s = String::from_utf8_lossy(ours);
             let theirs_s = String::from_utf8_lossy(theirs);
-            match diffy::merge(&base_s, &ours_s, &theirs_s) {
-                Ok(merged) => Ok(MergeResult::Clean(merged.into_bytes())),
-                Err(_) => Ok(MergeResult::Conflict(vec![
-                    phantom_core::conflict::ConflictDetail {
-                        kind: phantom_core::conflict::ConflictKind::RawTextConflict,
-                        file: PathBuf::new(),
-                        symbol_id: None,
-                        ours_changeset: phantom_core::id::ChangesetId("trunk".into()),
-                        theirs_changeset: phantom_core::id::ChangesetId("agent".into()),
-                        description: "text merge conflict".into(),
-                        ours_span: None,
-                        theirs_span: None,
-                        base_span: None,
-                    },
-                ])),
-            }
+            let result = match diffy::merge(&base_s, &ours_s, &theirs_s) {
+                Ok(merged) => MergeResult::Clean(merged.into_bytes()),
+                Err(_) => MergeResult::Conflict(vec![phantom_core::conflict::ConflictDetail {
+                    kind: phantom_core::conflict::ConflictKind::RawTextConflict,
+                    file: PathBuf::new(),
+                    symbol_id: None,
+                    ours_changeset: phantom_core::id::ChangesetId("trunk".into()),
+                    theirs_changeset: phantom_core::id::ChangesetId("agent".into()),
+                    description: "text merge conflict".into(),
+                    ours_span: None,
+                    theirs_span: None,
+                    base_span: None,
+                }]),
+            };
+            Ok(MergeReport {
+                result,
+                strategy: MergeStrategy::TextFallbackUnsupported,
+            })
         }
     }
 

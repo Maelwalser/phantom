@@ -111,6 +111,10 @@ pub(super) async fn run(
 
     // H-ORC2: record the submission event AFTER materialization succeeds to
     // avoid orphaned ChangesetSubmitted events when materialize fails.
+    // If *this* append fails, trunk already holds the commit but no audit
+    // event is persisted — recovery relies on git metadata.  The invariant
+    // ("trunk moves, no orphan event") is pinned by
+    // tests/integration/tests/materialize_append_crash.rs.
     record_changeset_submitted(
         ctx.events,
         agent_ctx.changeset_id,

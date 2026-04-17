@@ -12,7 +12,7 @@ use tracing::trace;
 use crate::error::OverlayError;
 use crate::trunk_view::read_dir_entries;
 use crate::types::{DirEntry, is_hidden};
-use crate::whiteout::INTERNAL_FILES;
+use crate::whiteout::{INTERNAL_FILES, is_safe_symlink_target};
 
 use super::OverlayLayer;
 use super::classify::ResolvedPath;
@@ -42,12 +42,23 @@ impl OverlayLayer {
 
     /// Read the target of a symbolic link.
     ///
-    /// Resolves the path through the overlay layers and reads the symlink target.
+    /// Resolves the path through the overlay layers and reads the symlink
+    /// target.  Targets that escape the overlay root (absolute paths or
+    /// `..`-traversals that step outside) are not exposed — the call
+    /// returns `PathNotFound` as if the link did not exist.  This prevents
+    /// out-of-band writes to the upper layer from being reachable through
+    /// the FUSE surface.
     pub fn read_symlink(&self, rel_path: &Path) -> Result<PathBuf, OverlayError> {
         match self.classify(rel_path) {
             ResolvedPath::Upper(path)
             | ResolvedPath::Lower(path)
-            | ResolvedPath::Passthrough(path) => Ok(fs::read_link(&path)?),
+            | ResolvedPath::Passthrough(path) => {
+                let target = fs::read_link(&path)?;
+                if !is_safe_symlink_target(&target, rel_path) {
+                    return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+                }
+                Ok(target)
+            }
             ResolvedPath::NotFound => Err(OverlayError::PathNotFound(rel_path.to_path_buf())),
         }
     }

@@ -10,7 +10,7 @@ mod text;
 use std::path::Path;
 
 use phantom_core::changeset::SemanticOperation;
-use phantom_core::conflict::MergeResult;
+use phantom_core::conflict::{MergeReport, MergeResult, MergeStrategy};
 use phantom_core::error::CoreError;
 use phantom_core::symbol::SymbolEntry;
 
@@ -63,36 +63,43 @@ impl phantom_core::traits::SemanticAnalyzer for SemanticMerger {
         ours: &[u8],
         theirs: &[u8],
         path: &Path,
-    ) -> Result<MergeResult, CoreError> {
-        // If content is identical, short-circuit
+    ) -> Result<MergeReport, CoreError> {
+        // Short-circuit paths — conceptually semantically accurate, but no
+        // parse happened, so tag them as Trivial to distinguish from the
+        // full semantic path.
         if ours == theirs {
-            return Ok(MergeResult::Clean(ours.to_vec()));
+            return Ok(MergeReport::trivial(MergeResult::Clean(ours.to_vec())));
         }
         if ours == base {
-            return Ok(MergeResult::Clean(theirs.to_vec()));
+            return Ok(MergeReport::trivial(MergeResult::Clean(theirs.to_vec())));
         }
         if theirs == base {
-            return Ok(MergeResult::Clean(ours.to_vec()));
+            return Ok(MergeReport::trivial(MergeResult::Clean(ours.to_vec())));
         }
 
-        // Try semantic merge if language is supported
+        // Try semantic merge if language is supported.
         if self.parser.supports_language(path) {
-            match conflict::semantic_merge(&self.parser, base, ours, theirs, path) {
-                Ok(result) => return Ok(result),
-                Err(_) => {
-                    // Fall through to text-based merge
-                    tracing::warn!(?path, "semantic merge failed, falling back to text merge");
-                }
-            }
-        } else {
-            tracing::info!(
-                ?path,
-                "unsupported language — using line-based text merge (no syntax validation)"
-            );
+            return if let Ok((result, strategy)) =
+                conflict::semantic_merge(&self.parser, base, ours, theirs, path)
+            {
+                Ok(MergeReport { result, strategy })
+            } else {
+                tracing::warn!(?path, "semantic merge failed, falling back to text merge");
+                Ok(MergeReport::text_fallback(
+                    text::text_merge(base, ours, theirs, path),
+                    MergeStrategy::TextFallbackSemanticError,
+                ))
+            };
         }
 
-        // Fallback: line-based three-way merge
-        Ok(text::text_merge(base, ours, theirs, path))
+        tracing::info!(
+            ?path,
+            "unsupported language — using line-based text merge (no syntax validation)"
+        );
+        Ok(MergeReport::text_fallback(
+            text::text_merge(base, ours, theirs, path),
+            MergeStrategy::TextFallbackUnsupported,
+        ))
     }
 
     fn supports_language(&self, path: &Path) -> bool {

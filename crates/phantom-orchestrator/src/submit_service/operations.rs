@@ -184,8 +184,10 @@ mod tests {
             _ours: &[u8],
             theirs: &[u8],
             _path: &Path,
-        ) -> Result<MergeResult, CoreError> {
-            Ok(MergeResult::Clean(theirs.to_vec()))
+        ) -> Result<phantom_core::conflict::MergeReport, CoreError> {
+            Ok(phantom_core::conflict::MergeReport::semantic(
+                MergeResult::Clean(theirs.to_vec()),
+            ))
         }
     }
 
@@ -215,8 +217,10 @@ mod tests {
             _ours: &[u8],
             theirs: &[u8],
             _path: &Path,
-        ) -> Result<MergeResult, CoreError> {
-            Ok(MergeResult::Clean(theirs.to_vec()))
+        ) -> Result<phantom_core::conflict::MergeReport, CoreError> {
+            Ok(phantom_core::conflict::MergeReport::semantic(
+                MergeResult::Clean(theirs.to_vec()),
+            ))
         }
     }
 

@@ -13,7 +13,7 @@ use tracing::{debug, trace};
 
 use crate::error::OverlayError;
 use crate::types::{is_hidden, is_passthrough};
-use crate::whiteout::is_safe_relative_path;
+use crate::whiteout::{is_safe_relative_path, is_safe_symlink_target};
 
 use super::OverlayLayer;
 use super::io_util::ensure_parent_dir;
@@ -188,6 +188,13 @@ impl OverlayLayer {
     /// previously deleted.
     pub fn create_symlink(&self, rel_path: &Path, target: &Path) -> Result<(), OverlayError> {
         if is_hidden(rel_path) {
+            return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+        }
+        // Refuse symlinks whose target escapes the overlay root.  Absolute
+        // targets and `..`-traversals that step outside are rejected so one
+        // agent cannot plant a link that points into another agent's overlay
+        // or a system path.
+        if !is_safe_symlink_target(target, rel_path) {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
 

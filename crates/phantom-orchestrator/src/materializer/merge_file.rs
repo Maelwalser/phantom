@@ -10,7 +10,7 @@ use std::path::Path;
 use tracing::debug;
 
 use phantom_core::changeset::Changeset;
-use phantom_core::conflict::{ConflictDetail, ConflictKind, MergeResult};
+use phantom_core::conflict::{ConflictDetail, ConflictKind, MergeReport, MergeResult};
 use phantom_core::id::ChangesetId;
 use phantom_core::traits::SemanticAnalyzer;
 
@@ -97,11 +97,11 @@ fn merge_new_file(
     match git.read_file_at_commit(ctx.head, file) {
         Ok(ours) => {
             // File added on trunk too — merge with empty base.
-            let result = ctx
+            let report = ctx
                 .analyzer
                 .three_way_merge(&[], &ours, theirs, file)
                 .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
-            Ok(merge_result_to_outcome(result, file, ctx.analyzer))
+            Ok(report_to_outcome(report))
         }
         Err(GitError::NotFound(_)) => Ok(MergeFileOutcome::Merged {
             content: theirs.to_vec(),
@@ -168,12 +168,12 @@ fn merge_existing_file(
     }
 
     // Three-way semantic merge.
-    let result = ctx
+    let report = ctx
         .analyzer
         .three_way_merge(base_content, &ours, theirs, file)
         .map_err(|e| OrchestratorError::Semantic(e.to_string()))?;
 
-    Ok(merge_result_to_outcome(result, file, ctx.analyzer))
+    Ok(report_to_outcome(report))
 }
 
 /// Return `true` iff the agent and trunk modified disjoint symbol sets in
@@ -205,16 +205,18 @@ fn symbols_disjoint(
     !agent_syms.iter().any(|s| trunk_names.contains(s.as_str()))
 }
 
-/// Convert a [`MergeResult`] into a [`MergeFileOutcome`], tracking text fallback.
-fn merge_result_to_outcome(
-    result: MergeResult,
-    file: &Path,
-    analyzer: &dyn SemanticAnalyzer,
-) -> MergeFileOutcome {
-    match result {
+/// Convert a [`MergeReport`] into a [`MergeFileOutcome`].
+///
+/// The report's strategy drives the `text_fallback` flag: any
+/// [`MergeStrategy`](phantom_core::conflict::MergeStrategy) variant whose
+/// `is_text_fallback()` returns true is reported as a fallback so the CLI
+/// can warn the operator.
+fn report_to_outcome(report: MergeReport) -> MergeFileOutcome {
+    let text_fallback = report.strategy.is_text_fallback();
+    match report.result {
         MergeResult::Clean(content) => MergeFileOutcome::Merged {
-            text_fallback: !analyzer.supports_language(file),
             content,
+            text_fallback,
         },
         MergeResult::Conflict(conflicts) => MergeFileOutcome::Conflicted(conflicts),
     }

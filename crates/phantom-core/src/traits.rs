@@ -10,7 +10,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 
 use crate::changeset::SemanticOperation;
-use crate::conflict::MergeResult;
+use crate::conflict::MergeReport;
 use crate::error::CoreError;
 use crate::event::Event;
 use crate::id::{AgentId, ChangesetId, EventId};
@@ -78,13 +78,16 @@ pub trait SemanticAnalyzer: Send + Sync {
     -> Vec<SemanticOperation>;
 
     /// Perform a three-way semantic merge.
+    ///
+    /// Returns a [`MergeReport`] wrapping the outcome with the strategy that
+    /// produced it, so callers can surface text-fallback cases to users.
     fn three_way_merge(
         &self,
         base: &[u8],
         ours: &[u8],
         theirs: &[u8],
         path: &Path,
-    ) -> Result<MergeResult, CoreError>;
+    ) -> Result<MergeReport, CoreError>;
 
     /// Check if the given file path has a supported language for semantic
     /// analysis. Returns `false` by default.

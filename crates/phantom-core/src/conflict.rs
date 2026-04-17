@@ -97,13 +97,108 @@ pub enum MergeCheckResult {
 
 /// Outcome of a three-way semantic merge.
 ///
-/// Returned by [`SemanticAnalyzer::three_way_merge`](crate::traits::SemanticAnalyzer::three_way_merge).
+/// Returned by [`SemanticAnalyzer::three_way_merge`](crate::traits::SemanticAnalyzer::three_way_merge)
+/// as part of a [`MergeReport`] carrying the strategy used.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MergeResult {
     /// The merge produced clean output.
     Clean(Vec<u8>),
     /// The merge found conflicts that require re-tasking.
     Conflict(Vec<ConflictDetail>),
+}
+
+/// Which algorithm produced a [`MergeResult`].
+///
+/// The semantic merger prefers symbol-level analysis but falls back to a
+/// line-based text merge in several situations (unsupported language,
+/// semantic-merger error, syntax errors in the reconstructed output).
+/// Callers surface this to users so they know when a merge was decided by
+/// plain text diff rather than syntactic understanding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MergeStrategy {
+    /// Full tree-sitter-based semantic merge succeeded end-to-end.
+    Semantic,
+    /// Short-circuit: one side equals base, or both sides are identical.
+    /// Conceptually accurate; no parse required.
+    Trivial,
+    /// Language has no tree-sitter extractor — used line-based merge only.
+    TextFallbackUnsupported,
+    /// Semantic merger returned an error (parse failure, malformed input).
+    TextFallbackSemanticError,
+    /// Semantic merge produced output that failed to re-parse cleanly.
+    TextFallbackInvalidSyntax,
+}
+
+impl MergeStrategy {
+    /// Returns `true` if this strategy represents a fallback to line-based
+    /// text merge.  Useful for gating user-facing warnings.
+    #[must_use]
+    pub fn is_text_fallback(&self) -> bool {
+        matches!(
+            self,
+            Self::TextFallbackUnsupported
+                | Self::TextFallbackSemanticError
+                | Self::TextFallbackInvalidSyntax,
+        )
+    }
+
+    /// Human-readable short name of the strategy, suitable for CLI output.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Semantic => "semantic",
+            Self::Trivial => "trivial",
+            Self::TextFallbackUnsupported => "text (unsupported language)",
+            Self::TextFallbackSemanticError => "text (semantic merger error)",
+            Self::TextFallbackInvalidSyntax => "text (invalid merged syntax)",
+        }
+    }
+}
+
+/// A merge outcome plus the strategy that produced it.
+///
+/// Additive wrapper around [`MergeResult`] introduced so callers can tell
+/// a semantic merge apart from a text-level fallback without parsing log
+/// lines.  Destructure `report.result` if you only care about clean / conflict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeReport {
+    /// The actual merge outcome (clean bytes or conflict list).
+    pub result: MergeResult,
+    /// Which algorithm produced `result`.
+    pub strategy: MergeStrategy,
+}
+
+impl MergeReport {
+    /// Construct a report flagged as produced by full semantic analysis.
+    #[must_use]
+    pub fn semantic(result: MergeResult) -> Self {
+        Self {
+            result,
+            strategy: MergeStrategy::Semantic,
+        }
+    }
+
+    /// Construct a trivially-decided report (short-circuit path).
+    #[must_use]
+    pub fn trivial(result: MergeResult) -> Self {
+        Self {
+            result,
+            strategy: MergeStrategy::Trivial,
+        }
+    }
+
+    /// Construct a report produced by a text-level fallback.
+    #[must_use]
+    pub fn text_fallback(result: MergeResult, reason: MergeStrategy) -> Self {
+        debug_assert!(
+            reason.is_text_fallback(),
+            "text_fallback requires a fallback strategy"
+        );
+        Self {
+            result,
+            strategy: reason,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -231,5 +326,45 @@ mod tests {
         let json = serde_json::to_string(&conflict).unwrap();
         let back: MergeResult = serde_json::from_str(&json).unwrap();
         assert_eq!(conflict, back);
+    }
+
+    #[test]
+    fn merge_strategy_classifies_fallbacks() {
+        assert!(!MergeStrategy::Semantic.is_text_fallback());
+        assert!(!MergeStrategy::Trivial.is_text_fallback());
+        assert!(MergeStrategy::TextFallbackUnsupported.is_text_fallback());
+        assert!(MergeStrategy::TextFallbackSemanticError.is_text_fallback());
+        assert!(MergeStrategy::TextFallbackInvalidSyntax.is_text_fallback());
+    }
+
+    #[test]
+    fn serde_merge_strategy_roundtrip() {
+        for s in [
+            MergeStrategy::Semantic,
+            MergeStrategy::Trivial,
+            MergeStrategy::TextFallbackUnsupported,
+            MergeStrategy::TextFallbackSemanticError,
+            MergeStrategy::TextFallbackInvalidSyntax,
+        ] {
+            let json = serde_json::to_string(&s).unwrap();
+            let back: MergeStrategy = serde_json::from_str(&json).unwrap();
+            assert_eq!(s, back);
+        }
+    }
+
+    #[test]
+    fn serde_merge_report_roundtrip() {
+        let report = MergeReport::semantic(MergeResult::Clean(b"ok".to_vec()));
+        let json = serde_json::to_string(&report).unwrap();
+        let back: MergeReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(report, back);
+
+        let fallback = MergeReport::text_fallback(
+            MergeResult::Clean(b"textual".to_vec()),
+            MergeStrategy::TextFallbackInvalidSyntax,
+        );
+        let json = serde_json::to_string(&fallback).unwrap();
+        let back: MergeReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(fallback, back);
     }
 }
