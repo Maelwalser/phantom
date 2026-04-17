@@ -6,7 +6,7 @@ use phantom_core::id::GitOid;
 
 use crate::GitOps;
 use crate::error::GitError;
-use crate::helpers::collect_files_recursive;
+use crate::fs_walk::collect_files_recursive;
 
 // ---------------------------------------------------------------------------
 // GitOps test-only extensions
