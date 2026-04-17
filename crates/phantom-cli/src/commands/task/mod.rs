@@ -175,14 +175,16 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
 
     // If the task is tagged with a category, ensure the static rule files
     // exist on disk and resolve the path to inject into the agent's system
-    // prompt. Idempotent write — safe to call on every task creation.
-    let category_rules_path = match args.category {
-        Some(category) => {
+    // prompt. Idempotent write — safe to call on every task creation. For
+    // `TaskCategory::Custom(_)` no canonical body exists, so we skip the
+    // system-prompt injection and let the task run without category rules.
+    let category_rules_path = match args.category.as_ref() {
+        Some(category) if category.is_builtin() => {
             context_file::ensure_category_rules_dir(&ctx.phantom_dir)
                 .context("failed to write category rule files")?;
             Some(context_file::rules_path(&ctx.phantom_dir, category))
         }
-        None => None,
+        _ => None,
     };
 
     if args.background {
@@ -200,12 +202,19 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             },
         };
 
-        super::interactive::write_context_file(
+        // Detect the repo's toolchain once so the agent sees concrete
+        // verification commands instead of abstract verbs. Empty toolchains
+        // render no block — backwards-compatible.
+        let detector = phantom_toolchain::ToolchainDetector::new();
+        let toolchain = detector.detect_repo_root(&ctx.repo_root);
+
+        phantom_session::context_file::write_context_file_with_toolchain(
             &work_dir,
             &agent_id,
             &changeset_id,
             &base_commit,
             Some(&task),
+            Some(&toolchain),
         )?;
 
         // Spawn the monitor process, which in turn spawns the agent CLI as its
@@ -244,7 +253,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
         crate::ui::key_value("Log", log_file.display());
         crate::ui::key_value("Overlay", work_dir.display());
         crate::ui::key_value("Base", console::style(&base_short).cyan());
-        if let Some(category) = args.category {
+        if let Some(category) = args.category.as_ref() {
             crate::ui::key_value("Category", console::style(category.to_string()).cyan());
         }
         if fuse_mounted {

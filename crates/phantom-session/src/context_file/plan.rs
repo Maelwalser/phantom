@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use anyhow::Context;
+use phantom_toolchain::{Toolchain, VerificationVerb};
 
 /// Write a domain-specific instruction file for a `phantom plan` agent.
 ///
@@ -15,6 +16,27 @@ pub fn write_plan_domain_instructions(
     plan: &phantom_core::plan::Plan,
     cross_domain_signatures: Option<&str>,
 ) -> anyhow::Result<()> {
+    write_plan_domain_instructions_with_toolchain(
+        instructions_path,
+        domain,
+        plan,
+        cross_domain_signatures,
+        None,
+    )
+}
+
+/// Extended form of [`write_plan_domain_instructions`] that injects the repo's
+/// auto-detected toolchain commands. When `domain.verification` is empty the
+/// detected commands are used directly; when the planner already supplied
+/// verification commands they are kept and the detected commands are shown as
+/// a supplementary "Auto-detected" block.
+pub fn write_plan_domain_instructions_with_toolchain(
+    instructions_path: &Path,
+    domain: &phantom_core::plan::PlanDomain,
+    plan: &phantom_core::plan::Plan,
+    cross_domain_signatures: Option<&str>,
+    toolchain: Option<&Toolchain>,
+) -> anyhow::Result<()> {
     use std::fmt::Write as _;
 
     let mut content = String::new();
@@ -22,8 +44,12 @@ pub fn write_plan_domain_instructions(
     // Category rules go first so the byte-identical rule body stays at the
     // top of the prompt across every agent in the same category (cache-
     // friendly). A trailing divider separates rules from the domain body.
-    if let Some(category) = domain.category {
-        content.push_str(super::category_rules::rules_body(category));
+    // `rules_body` returns `None` for [`TaskCategory::Custom`], in which case
+    // we fall through without a rules block.
+    if let Some(category) = domain.category.as_ref()
+        && let Some(body) = super::category_rules::rules_body(category)
+    {
+        content.push_str(body);
         if !content.ends_with('\n') {
             content.push('\n');
         }
@@ -117,14 +143,42 @@ pub fn write_plan_domain_instructions(
         let _ = writeln!(content);
     }
 
-    // Verification
-    if !domain.verification.is_empty() {
+    // Verification — prefer the planner's explicit commands when present,
+    // otherwise fall back to the auto-detected toolchain. When both are
+    // present, list the planner commands first and append the detected set
+    // under an "Auto-detected" subheading so the agent can see alternatives
+    // without losing the planner's intent.
+    let has_planner_commands = !domain.verification.is_empty();
+    let detected_lines: Vec<String> = toolchain
+        .filter(|t| !t.is_empty())
+        .map(|t| {
+            VerificationVerb::ALL
+                .iter()
+                .filter_map(|verb| {
+                    t.command_for(*verb)
+                        .map(|cmd| format!("- {label}: `{cmd}`", label = verb.human_label()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if has_planner_commands || !detected_lines.is_empty() {
         let _ = writeln!(content, "## Verification");
-        let _ = writeln!(content, "Run these commands before finishing:");
-        for cmd in &domain.verification {
-            let _ = writeln!(content, "```");
-            let _ = writeln!(content, "{cmd}");
-            let _ = writeln!(content, "```");
+        if has_planner_commands {
+            let _ = writeln!(content, "Run these commands before finishing:");
+            for cmd in &domain.verification {
+                let _ = writeln!(content, "```");
+                let _ = writeln!(content, "{cmd}");
+                let _ = writeln!(content, "```");
+            }
+        }
+        if !detected_lines.is_empty() {
+            if has_planner_commands {
+                let _ = writeln!(content, "\n### Auto-detected for this repo");
+            }
+            for line in &detected_lines {
+                let _ = writeln!(content, "{line}");
+            }
         }
         let _ = writeln!(content);
     }
@@ -225,6 +279,71 @@ mod tests {
     }
 
     #[test]
+    fn toolchain_fills_verification_when_planner_empty() {
+        use phantom_toolchain::{DetectedLanguage, Toolchain};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("inst.md");
+        let mut plan = sample_plan(None);
+        plan.domains[0].verification.clear();
+
+        let toolchain = Toolchain {
+            language: Some(DetectedLanguage::Rust),
+            test_cmd: Some("cargo test".into()),
+            build_cmd: Some("cargo build".into()),
+            lint_cmd: None,
+            typecheck_cmd: None,
+            format_check_cmd: None,
+        };
+
+        write_plan_domain_instructions_with_toolchain(
+            &path,
+            &plan.domains[0],
+            &plan,
+            None,
+            Some(&toolchain),
+        )
+        .unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+
+        assert!(body.contains("## Verification"));
+        assert!(body.contains("`cargo test`"));
+        assert!(!body.contains("Auto-detected"));
+    }
+
+    #[test]
+    fn planner_verification_takes_precedence_but_toolchain_appears_below() {
+        use phantom_toolchain::{DetectedLanguage, Toolchain};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("inst.md");
+        let plan = sample_plan(None); // `cargo test` is the planner command.
+
+        let toolchain = Toolchain {
+            language: Some(DetectedLanguage::Rust),
+            test_cmd: Some("cargo test --all".into()),
+            build_cmd: Some("cargo build".into()),
+            ..Toolchain::empty()
+        };
+
+        write_plan_domain_instructions_with_toolchain(
+            &path,
+            &plan.domains[0],
+            &plan,
+            None,
+            Some(&toolchain),
+        )
+        .unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+
+        let planner_pos = body.find("cargo test\n").expect("planner command missing");
+        let auto_pos = body.find("Auto-detected").expect("auto-detected missing");
+        let detected_pos = body.find("cargo test --all").expect("detected missing");
+        assert!(planner_pos < auto_pos);
+        assert!(auto_pos < detected_pos);
+    }
+
+    #[test]
     fn category_rules_sit_at_byte_zero_for_cache_stability() {
         // Two domains that differ only in their downstream content must share
         // an identical prefix (the category rules body) so the prompt cache
@@ -242,7 +361,9 @@ mod tests {
 
         let a = std::fs::read(&path_a).unwrap();
         let b = std::fs::read(&path_b).unwrap();
-        let prefix_len = super::super::category_rules::rules_body(TaskCategory::Adaptive).len();
+        let prefix_len = super::super::category_rules::rules_body(&TaskCategory::Adaptive)
+            .expect("Adaptive has a canonical body")
+            .len();
         assert_eq!(
             &a[..prefix_len],
             &b[..prefix_len],

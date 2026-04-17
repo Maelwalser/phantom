@@ -95,18 +95,30 @@ pub(super) async fn dispatch_domain(
         Some(cross_domain_sigs.as_str())
     };
 
+    // Detect the repo's toolchain once per-domain so the generated instructions
+    // and context file reference concrete commands for the agent's language.
+    let detector = phantom_toolchain::ToolchainDetector::new();
+    let toolchain = detector.detect_repo_root(&ctx.repo_root);
+
     // Generate the domain instruction file.
     let instructions_dir = plan_dir.join("instructions");
     let instructions_path = instructions_dir.join(format!("{}.md", domain.agent_id));
-    context_file::write_plan_domain_instructions(&instructions_path, domain, plan, sigs_ref)?;
+    context_file::write_plan_domain_instructions_with_toolchain(
+        &instructions_path,
+        domain,
+        plan,
+        sigs_ref,
+        Some(&toolchain),
+    )?;
 
     // Write context file into overlay.
-    context_file::write_context_file(
+    context_file::write_context_file_with_toolchain(
         &work_dir,
         &agent_id,
         &cs_id,
         &head,
         Some(&domain.description),
+        Some(&toolchain),
     )?;
 
     // Spawn the agent monitor with the custom instruction file.

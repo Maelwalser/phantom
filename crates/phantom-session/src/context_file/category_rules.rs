@@ -21,23 +21,32 @@ use phantom_core::TaskCategory;
 pub const RULES_DIR: &str = "rules";
 
 /// Resolve the absolute path of the rules file for a given category inside a
-/// phantom directory. Does NOT check that the file exists.
-pub fn rules_path(phantom_dir: &Path, category: TaskCategory) -> PathBuf {
+/// phantom directory. Does NOT check that the file exists. For
+/// [`TaskCategory::Custom`] the returned path uses the user's custom label as
+/// the filename stem — the file will not be populated by
+/// [`ensure_category_rules_dir`], so callers must verify existence before
+/// passing the path to `--append-system-prompt-file`.
+pub fn rules_path(phantom_dir: &Path, category: &TaskCategory) -> PathBuf {
     phantom_dir
         .join(RULES_DIR)
         .join(format!("{}.md", category.as_str()))
 }
 
 /// Write the static rules markdown body for `category` to `path`. Idempotent:
-/// overwrites byte-identically each call so prompt caches stay warm.
-pub fn write_category_rules_file(path: &Path, category: TaskCategory) -> anyhow::Result<()> {
+/// overwrites byte-identically each call so prompt caches stay warm. Returns
+/// `Ok(false)` without writing when the category has no canonical body (i.e.
+/// [`TaskCategory::Custom`]); `Ok(true)` when the file was written.
+pub fn write_category_rules_file(path: &Path, category: &TaskCategory) -> anyhow::Result<bool> {
+    let Some(body) = rules_body(category) else {
+        return Ok(false);
+    };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
     }
-    std::fs::write(path, rules_body(category))
+    std::fs::write(path, body)
         .with_context(|| format!("failed to write {} rules to {}", category, path.display()))?;
-    Ok(())
+    Ok(true)
 }
 
 /// Ensure `.phantom/rules/` exists and contains the four static rule files.
@@ -46,21 +55,24 @@ pub fn ensure_category_rules_dir(phantom_dir: &Path) -> anyhow::Result<PathBuf> 
     let dir = phantom_dir.join(RULES_DIR);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create rules directory {}", dir.display()))?;
-    for cat in TaskCategory::ALL {
+    for cat in &TaskCategory::ALL {
         write_category_rules_file(&rules_path(phantom_dir, cat), cat)?;
     }
     Ok(dir)
 }
 
-/// Return the static markdown body for a category. Public so callers that need
-/// to compose category rules into a larger instruction file (e.g. the plan
-/// dispatcher) can prepend the body without going through the filesystem.
-pub fn rules_body(category: TaskCategory) -> &'static str {
+/// Return the static markdown body for a category. Returns `None` for
+/// [`TaskCategory::Custom`] since custom labels carry no canonical body —
+/// callers that want to compose rules into a larger instruction file must
+/// treat `None` as "no rules block for this task".
+#[must_use]
+pub fn rules_body(category: &TaskCategory) -> Option<&'static str> {
     match category {
-        TaskCategory::Corrective => CORRECTIVE,
-        TaskCategory::Perfective => PERFECTIVE,
-        TaskCategory::Preventive => PREVENTIVE,
-        TaskCategory::Adaptive => ADAPTIVE,
+        TaskCategory::Corrective => Some(CORRECTIVE),
+        TaskCategory::Perfective => Some(PERFECTIVE),
+        TaskCategory::Preventive => Some(PREVENTIVE),
+        TaskCategory::Adaptive => Some(ADAPTIVE),
+        TaskCategory::Custom(_) => None,
     }
 }
 
@@ -269,8 +281,8 @@ mod tests {
 
     #[test]
     fn rules_body_is_nonempty_for_all_categories() {
-        for cat in TaskCategory::ALL {
-            let body = rules_body(cat);
+        for cat in &TaskCategory::ALL {
+            let body = rules_body(cat).unwrap_or("");
             assert!(!body.is_empty(), "category {cat} has empty body");
             assert!(
                 body.starts_with("# Phantom Task Rules:"),
@@ -285,19 +297,60 @@ mod tests {
 
     #[test]
     fn rules_body_category_matches_content() {
-        assert!(rules_body(TaskCategory::Corrective).contains("Corrective (bug fix)"));
-        assert!(rules_body(TaskCategory::Perfective).contains("Perfective (refactor"));
-        assert!(rules_body(TaskCategory::Preventive).contains("Preventive (test hardening)"));
-        assert!(rules_body(TaskCategory::Adaptive).contains("Adaptive (new feature"));
+        assert!(
+            rules_body(&TaskCategory::Corrective)
+                .unwrap()
+                .contains("Corrective (bug fix)")
+        );
+        assert!(
+            rules_body(&TaskCategory::Perfective)
+                .unwrap()
+                .contains("Perfective (refactor")
+        );
+        assert!(
+            rules_body(&TaskCategory::Preventive)
+                .unwrap()
+                .contains("Preventive (test hardening)")
+        );
+        assert!(
+            rules_body(&TaskCategory::Adaptive)
+                .unwrap()
+                .contains("Adaptive (new feature")
+        );
     }
 
     #[test]
     fn rules_body_contains_key_adversarial_clauses() {
-        assert!(rules_body(TaskCategory::Corrective).contains("PHANTOM_UNREPRODUCIBLE:"));
-        assert!(rules_body(TaskCategory::Corrective).contains("PHANTOM_ESCALATION:"));
-        assert!(rules_body(TaskCategory::Perfective).contains("PHANTOM_TEST_CONTRACT_CHANGE:"));
-        assert!(rules_body(TaskCategory::Preventive).contains("PHANTOM_REFACTOR_REQUIRED:"));
-        assert!(rules_body(TaskCategory::Adaptive).contains("PHANTOM_ARCHITECTURE_REQUIRED:"));
+        assert!(
+            rules_body(&TaskCategory::Corrective)
+                .unwrap()
+                .contains("PHANTOM_UNREPRODUCIBLE:")
+        );
+        assert!(
+            rules_body(&TaskCategory::Corrective)
+                .unwrap()
+                .contains("PHANTOM_ESCALATION:")
+        );
+        assert!(
+            rules_body(&TaskCategory::Perfective)
+                .unwrap()
+                .contains("PHANTOM_TEST_CONTRACT_CHANGE:")
+        );
+        assert!(
+            rules_body(&TaskCategory::Preventive)
+                .unwrap()
+                .contains("PHANTOM_REFACTOR_REQUIRED:")
+        );
+        assert!(
+            rules_body(&TaskCategory::Adaptive)
+                .unwrap()
+                .contains("PHANTOM_ARCHITECTURE_REQUIRED:")
+        );
+    }
+
+    #[test]
+    fn rules_body_for_custom_is_none() {
+        assert!(rules_body(&TaskCategory::Custom("x".into())).is_none());
     }
 
     #[test]
@@ -305,16 +358,29 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("corrective.md");
 
-        write_category_rules_file(&path, TaskCategory::Corrective).unwrap();
+        let wrote = write_category_rules_file(&path, &TaskCategory::Corrective).unwrap();
+        assert!(wrote);
         let first = std::fs::read(&path).unwrap();
 
-        write_category_rules_file(&path, TaskCategory::Corrective).unwrap();
+        let wrote_again = write_category_rules_file(&path, &TaskCategory::Corrective).unwrap();
+        assert!(wrote_again);
         let second = std::fs::read(&path).unwrap();
 
         assert_eq!(
             first, second,
             "rules file must be byte-identical across writes"
         );
+    }
+
+    #[test]
+    fn write_category_rules_file_skips_custom() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom.md");
+
+        let wrote =
+            write_category_rules_file(&path, &TaskCategory::Custom("migrate-v1".into())).unwrap();
+        assert!(!wrote, "Custom categories have no canonical body");
+        assert!(!path.exists(), "no file should be created for Custom");
     }
 
     #[test]
@@ -325,11 +391,11 @@ mod tests {
         let rules_dir = ensure_category_rules_dir(phantom_dir).unwrap();
         assert_eq!(rules_dir, phantom_dir.join(RULES_DIR));
 
-        for cat in TaskCategory::ALL {
+        for cat in &TaskCategory::ALL {
             let path = rules_path(phantom_dir, cat);
             assert!(path.exists(), "missing rules file for {cat}");
             let body = std::fs::read_to_string(&path).unwrap();
-            assert!(body.contains(&format!("{cat}").to_string()) || !body.is_empty());
+            assert!(body.contains(&format!("{cat}")) || !body.is_empty());
         }
     }
 
@@ -341,13 +407,13 @@ mod tests {
         ensure_category_rules_dir(phantom_dir).unwrap();
         let before: Vec<Vec<u8>> = TaskCategory::ALL
             .iter()
-            .map(|c| std::fs::read(rules_path(phantom_dir, *c)).unwrap())
+            .map(|c| std::fs::read(rules_path(phantom_dir, c)).unwrap())
             .collect();
 
         ensure_category_rules_dir(phantom_dir).unwrap();
         let after: Vec<Vec<u8>> = TaskCategory::ALL
             .iter()
-            .map(|c| std::fs::read(rules_path(phantom_dir, *c)).unwrap())
+            .map(|c| std::fs::read(rules_path(phantom_dir, c)).unwrap())
             .collect();
 
         assert_eq!(before, after);
@@ -357,12 +423,21 @@ mod tests {
     fn rules_path_uses_lowercase_filename() {
         let dir = std::path::Path::new("/tmp/phantom");
         assert_eq!(
-            rules_path(dir, TaskCategory::Corrective),
+            rules_path(dir, &TaskCategory::Corrective),
             std::path::PathBuf::from("/tmp/phantom/rules/corrective.md")
         );
         assert_eq!(
-            rules_path(dir, TaskCategory::Adaptive),
+            rules_path(dir, &TaskCategory::Adaptive),
             std::path::PathBuf::from("/tmp/phantom/rules/adaptive.md")
+        );
+    }
+
+    #[test]
+    fn rules_path_for_custom_uses_custom_payload() {
+        let dir = std::path::Path::new("/tmp/phantom");
+        assert_eq!(
+            rules_path(dir, &TaskCategory::Custom("migrate-v1".into())),
+            std::path::PathBuf::from("/tmp/phantom/rules/migrate-v1.md")
         );
     }
 }

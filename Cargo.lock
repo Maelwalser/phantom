@@ -1305,6 +1305,7 @@ dependencies = [
  "phantom-overlay",
  "phantom-semantic",
  "phantom-session",
+ "phantom-toolchain",
  "predicates",
  "serde",
  "serde_json",
@@ -1445,6 +1446,7 @@ dependencies = [
  "phantom-orchestrator",
  "phantom-overlay",
  "phantom-semantic",
+ "phantom-toolchain",
  "regex",
  "serde",
  "serde_json",
@@ -1467,6 +1469,18 @@ dependencies = [
  "phantom-semantic",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "phantom-toolchain"
+version = "0.1.0"
+dependencies = [
+ "phantom-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

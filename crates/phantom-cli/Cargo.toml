@@ -15,6 +15,7 @@ phantom-git = { workspace = true }
 phantom-events = { workspace = true }
 phantom-overlay = { workspace = true, features = ["fuse"] }
 phantom-semantic = { workspace = true }
+phantom-toolchain = { workspace = true }
 phantom-orchestrator = { workspace = true }
 phantom-session = { workspace = true }
 clap = { workspace = true }

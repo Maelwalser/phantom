@@ -13,6 +13,7 @@ phantom-events = { workspace = true }
 phantom-orchestrator = { workspace = true }
 phantom-overlay = { workspace = true }
 phantom-semantic = { workspace = true }
+phantom-toolchain = { workspace = true }
 anyhow = { workspace = true }
 diffy = { workspace = true }
 chrono = { workspace = true }

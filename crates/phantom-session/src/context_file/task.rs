@@ -12,6 +12,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use phantom_core::id::{AgentId, ChangesetId, GitOid};
+use phantom_toolchain::{Toolchain, VerificationVerb};
 
 use super::CONTEXT_FILE;
 
@@ -33,8 +34,28 @@ pub fn write_context_file(
     base_commit: &GitOid,
     task: Option<&str>,
 ) -> anyhow::Result<()> {
+    write_context_file_with_toolchain(upper_dir, agent_id, changeset_id, base_commit, task, None)
+}
+
+/// Like [`write_context_file`] but also injects a "Verification (this repo)"
+/// block populated from the detected [`Toolchain`]. Written between the Agent
+/// Info and Task sections so the dynamic prefix (everything above `## Trunk
+/// Updates`) remains stable per repo for prompt-cache reuse.
+pub fn write_context_file_with_toolchain(
+    upper_dir: &Path,
+    agent_id: &AgentId,
+    changeset_id: &ChangesetId,
+    base_commit: &GitOid,
+    task: Option<&str>,
+    toolchain: Option<&Toolchain>,
+) -> anyhow::Result<()> {
     let base_hex = base_commit.to_hex();
     let base_short = &base_hex[..12.min(base_hex.len())];
+
+    let verification_section = toolchain
+        .filter(|t| !t.is_empty())
+        .map(render_verification_block)
+        .unwrap_or_default();
 
     let task_section = match task {
         Some(t) if !t.is_empty() => format!("\n## Task\n{t}\n"),
@@ -55,7 +76,7 @@ trunk and other agents.
 - Agent: {agent_id}
 - Changeset: {changeset_id}
 - Base commit: {base_short}
-{task_section}{UPDATES_SECTION}"#
+{verification_section}{task_section}{UPDATES_SECTION}"#
     );
 
     let path = upper_dir.join(CONTEXT_FILE);
@@ -63,6 +84,26 @@ trunk and other agents.
         .with_context(|| format!("failed to write context file to {}", path.display()))?;
 
     Ok(())
+}
+
+/// Render the "Verification (this repo)" block. Commands are listed in the
+/// canonical verb order defined by [`VerificationVerb::ALL`]. Missing verbs
+/// are skipped.
+pub(crate) fn render_verification_block(toolchain: &Toolchain) -> String {
+    use std::fmt::Write as _;
+
+    let mut block = String::from(
+        "\n## Verification (this repo)\n\
+         These commands cover the project's detected toolchain. Phantom runs \
+         the pre-submit checks — fabricating success will not pass semantic \
+         merge.\n",
+    );
+    for verb in VerificationVerb::ALL {
+        if let Some(cmd) = toolchain.command_for(verb) {
+            let _ = writeln!(block, "- {label}: `{cmd}`", label = verb.human_label());
+        }
+    }
+    block
 }
 
 /// Append an incremental update to the context file's dynamic section.
@@ -214,5 +255,108 @@ mod tests {
 
         // No file should have been created.
         assert!(!dir.path().join(CONTEXT_FILE).exists());
+    }
+
+    #[test]
+    fn toolchain_block_injected_before_task_section() {
+        use phantom_toolchain::{DetectedLanguage, Toolchain};
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent_id = phantom_core::id::AgentId("a".into());
+        let changeset_id = phantom_core::id::ChangesetId("cs".into());
+        let base_commit = phantom_core::id::GitOid([0u8; 20]);
+
+        let toolchain = Toolchain {
+            language: Some(DetectedLanguage::Rust),
+            test_cmd: Some("cargo test".into()),
+            build_cmd: Some("cargo build".into()),
+            lint_cmd: Some("cargo clippy".into()),
+            typecheck_cmd: None,
+            format_check_cmd: Some("cargo fmt --check".into()),
+        };
+
+        write_context_file_with_toolchain(
+            dir.path(),
+            &agent_id,
+            &changeset_id,
+            &base_commit,
+            Some("do thing"),
+            Some(&toolchain),
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
+        let verification_pos = content
+            .find("## Verification (this repo)")
+            .expect("verification block missing");
+        let task_pos = content.find("## Task").expect("task section missing");
+        let updates_pos = content.find("## Trunk Updates").unwrap();
+
+        assert!(
+            verification_pos < task_pos,
+            "Verification block must appear before Task"
+        );
+        assert!(
+            task_pos < updates_pos,
+            "Task must still appear before Trunk Updates"
+        );
+        assert!(content.contains("`cargo test`"));
+        assert!(!content.contains("Run the type checker"));
+    }
+
+    #[test]
+    fn toolchain_block_absent_when_toolchain_empty() {
+        use phantom_toolchain::Toolchain;
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent_id = phantom_core::id::AgentId("a".into());
+        let changeset_id = phantom_core::id::ChangesetId("cs".into());
+        let base_commit = phantom_core::id::GitOid([0u8; 20]);
+
+        write_context_file_with_toolchain(
+            dir.path(),
+            &agent_id,
+            &changeset_id,
+            &base_commit,
+            Some("t"),
+            Some(&Toolchain::empty()),
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join(CONTEXT_FILE)).unwrap();
+        assert!(!content.contains("## Verification (this repo)"));
+    }
+
+    #[test]
+    fn write_context_file_remains_byte_identical_without_toolchain() {
+        // Back-compat: write_context_file (no toolchain) must produce the
+        // same bytes as write_context_file_with_toolchain(.., None).
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let agent_id = phantom_core::id::AgentId("a".into());
+        let changeset_id = phantom_core::id::ChangesetId("cs".into());
+        let base_commit = phantom_core::id::GitOid([0u8; 20]);
+
+        write_context_file(
+            dir_a.path(),
+            &agent_id,
+            &changeset_id,
+            &base_commit,
+            Some("x"),
+        )
+        .unwrap();
+        write_context_file_with_toolchain(
+            dir_b.path(),
+            &agent_id,
+            &changeset_id,
+            &base_commit,
+            Some("x"),
+            None,
+        )
+        .unwrap();
+
+        let a = std::fs::read(dir_a.path().join(CONTEXT_FILE)).unwrap();
+        let b = std::fs::read(dir_b.path().join(CONTEXT_FILE)).unwrap();
+        assert_eq!(a, b);
     }
 }

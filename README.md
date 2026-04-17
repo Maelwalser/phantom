@@ -8,7 +8,7 @@
 </div>
 
 **A version control designed for AI coding tools**<br/>
-Phantom is an event-sourced, semantic-aware version control layer for agentic AI development, built on top of Git. It enables multiple AI coding agents to work on the same codebase simultaneously with automatic symbol-level conflict detection, FUSE-based filesystem isolation, and instant propagation of finished work.
+Phantom is an event sourced, semantic aware version control layer for agentic AI development, built on top of Git. It enables multiple AI coding agents to work on the same codebase simultaneously with automatic symbol-level conflict detection, filesystem isolation using FUSE, and instant propagation of finished work.
 
 <p align="center">
   <img src="docs/assets/demo.gif" alt="Phantom CLI demo" width="800" />
@@ -29,14 +29,14 @@ Phantom is an event-sourced, semantic-aware version control layer for agentic AI
 
 ## Why Phantom?
 
-Git branches model human workflows — long-lived divergent lines of work reconciled later. Agentic development is different: multiple agents work on small, scoped tasks simultaneously, and their outputs must compose cleanly without manual merge resolution.
+Git branches model human workflows, long-lived divergent lines of work reconciled later. Agentic development is different: multiple agents work on small, scoped tasks simultaneously, and their outputs must compose cleanly without manual merge resolution.
 
 | Approach      | What happens when two agents edit the same file?                           |
 | ------------- | -------------------------------------------------------------------------- |
 | Git worktrees | Line-based conflict. Human must intervene.                                 |
 | **Phantom**   | AST-level semantic merge. Auto-resolves if different symbols were touched. |
 
-Phantom replaces branches with **changesets** — reorderable, atomic units of work. Two agents can add different functions to the same file and Phantom merges them automatically, because it understands code structure, not just text lines.
+Phantom replaces branches with **changesets**, reorderable, atomic units of work. Two agents can add different functions to the same file and Phantom merges them automatically, because it understands code structure, not just text lines.
 
 ## Features
 

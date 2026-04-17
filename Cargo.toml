@@ -6,6 +6,7 @@ members = [
     "crates/phantom-events",
     "crates/phantom-overlay",
     "crates/phantom-semantic",
+    "crates/phantom-toolchain",
     "crates/phantom-orchestrator",
     "crates/phantom-session",
     "crates/phantom-cli",
@@ -24,6 +25,7 @@ phantom-git = { path = "crates/phantom-git" }
 phantom-events = { path = "crates/phantom-events" }
 phantom-overlay = { path = "crates/phantom-overlay" }
 phantom-semantic = { path = "crates/phantom-semantic" }
+phantom-toolchain = { path = "crates/phantom-toolchain" }
 phantom-orchestrator = { path = "crates/phantom-orchestrator" }
 phantom-session = { path = "crates/phantom-session" }
 phantom-testkit = { path = "crates/phantom-testkit" }

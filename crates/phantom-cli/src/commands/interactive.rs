@@ -16,10 +16,6 @@ use tracing::warn;
 use super::task::TaskArgs;
 use crate::context::PhantomContext;
 
-// Re-export write_context_file so task.rs can still call
-// `super::interactive::write_context_file(...)`.
-pub use phantom_session::context_file::write_context_file;
-
 /// Run an interactive CLI session inside the agent's overlay.
 ///
 /// Blocks until the spawned process exits, then optionally auto-submits the
@@ -37,13 +33,19 @@ pub async fn run_interactive_session(
     let command = args.command.as_deref().unwrap_or(&config_default);
     let cli_adapter = adapter::adapter_for(command);
 
+    // Detect repo toolchain once and thread it through so the context file
+    // gets a concrete per-repo verification block.
+    let detector = phantom_toolchain::ToolchainDetector::new();
+    let toolchain = detector.detect_repo_root(&ctx.repo_root);
+
     // Write context file into the working directory.
-    context_file::write_context_file(
+    context_file::write_context_file_with_toolchain(
         work_dir,
         agent_id,
         changeset_id,
         base_commit,
         args.task.as_deref(),
+        Some(&toolchain),
     )?;
 
     // Load a previously saved session for this agent + CLI combination.

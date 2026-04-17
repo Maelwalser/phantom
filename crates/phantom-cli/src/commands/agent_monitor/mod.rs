@@ -119,13 +119,18 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         )
         .context("failed to update current_base after deps resolved")?;
 
-        // Rewrite the context file with the updated base commit.
-        context_file::write_context_file(
+        // Rewrite the context file with the updated base commit. Re-detecting
+        // the toolchain is cheap (stat-only, stateless) and keeps the
+        // verification block consistent with the freshly-materialised trunk.
+        let toolchain =
+            phantom_toolchain::ToolchainDetector::new().detect_repo_root(&ctx.repo_root);
+        context_file::write_context_file_with_toolchain(
             &work_dir,
             &agent_id,
             &changeset_id,
             &new_head,
             Some(&args.task),
+            Some(&toolchain),
         )?;
     }
 

@@ -20,9 +20,9 @@ mod task;
 pub use category_rules::{
     RULES_DIR, ensure_category_rules_dir, rules_body, rules_path, write_category_rules_file,
 };
-pub use plan::write_plan_domain_instructions;
+pub use plan::{write_plan_domain_instructions, write_plan_domain_instructions_with_toolchain};
 pub use resolve::{ResolveConflictContext, write_resolve_context_file, write_resolve_rules_file};
-pub use task::{append_context_update, write_context_file};
+pub use task::{append_context_update, write_context_file, write_context_file_with_toolchain};
 
 /// Name of the generated context file placed in the overlay.
 pub const CONTEXT_FILE: &str = ".phantom-task.md";
