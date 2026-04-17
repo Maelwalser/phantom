@@ -1,68 +1,59 @@
-# Phantom CLI Demo — real user workflow
+# Phantom CLI demo — real user workflow.
 #
-# The setup script has already run:
-#   phantom init, phantom task (x2), and agents wrote code.
-# This tape shows the commands a user types to check status,
-# submit work, materialize to trunk, and query the event log.
-#
-# 1. Run: bash docs/assets/demo-setup.sh
-# 2. Run: vhs docs/assets/demo.tape
+# Prereqs:
+#   1) `ph` on PATH  (cargo install --path crates/phantom-cli)
+#   2) Run: bash docs/assets/demo-setup.sh
+#   3) Then: vhs docs/assets/demo.tape
 
 Output docs/assets/demo.gif
 
-Require phantom
+Require ph
 
-Set Shell "bash"
-Set FontSize 15
-Set Width 960
-Set Height 600
-Set Theme "Catppuccin Mocha"
-Set Padding 16
-Set Framerate 24
-Set TypingSpeed 75ms
-Set CursorBlink false
-Env RUST_LOG "off"
+Set Shell        "bash"
+Set FontSize     15
+Set Width        960
+Set Height       640
+Set Theme        "Catppuccin Mocha"
+Set Padding      16
+Set Framerate    24
+Set TypingSpeed  60ms
+Set CursorBlink  false
+Env RUST_LOG     "off"
 
-# cd into the demo repo (already initialized by setup script)
+# Enter the pre-initialized demo repo (setup script ran first).
 Type "cd /tmp/phantom-demo"
-Sleep 300ms
+Sleep 250ms
 Enter
-Sleep 800ms
+Sleep 600ms
 
-# ── Check what's running ───────────────────────────────────────
-Type "phantom status"
-Sleep 500ms
+# ── Status: two overlays, each tasked, each with a pending file ──
+Type "ph st"
+Sleep 400ms
 Enter
 Sleep 3500ms
 
-# ── Submit claude-a's work as a changeset ──────────────────────
-Type "phantom submit claude-a"
-Sleep 500ms
-Enter
-Sleep 2500ms
-
-# ── Materialize claude-a to trunk ──────────────────────────────
-Type@60ms `phantom materialize $(phantom log claude-a | grep -oP 'cs-\S+' | head -1)`
-Sleep 500ms
+# ── Submit agent-a's work: semantic extract → merge → commit ────
+Type "ph sub agent-a"
+Sleep 400ms
 Enter
 Sleep 3000ms
 
-# ── Submit claude-b's work ─────────────────────────────────────
-Type "phantom submit claude-b"
-Sleep 500ms
-Enter
-Sleep 2500ms
-
-# ── Materialize claude-b — different file, auto-merges! ────────
-Type@60ms `phantom materialize $(phantom log claude-b | grep -oP 'cs-\S+' | head -1)`
-Sleep 500ms
+# ── Submit agent-b's work: different symbols, auto-merges cleanly ─
+Type "ph sub agent-b"
+Sleep 400ms
 Enter
 Sleep 3000ms
 
-# ── Query the full audit trail ─────────────────────────────────
-Type "phantom log"
-Sleep 500ms
+# ── Materialization log: human-readable commit summaries per agent ──
+Type "ph c"
+Sleep 400ms
+Enter
+Sleep 3500ms
+
+# ── Full audit trail: every task, every submit, every materialization ──
+Type "ph l"
+Sleep 400ms
 Enter
 Sleep 4500ms
 
-Sleep 2000ms
+Sleep 1500ms

@@ -1,44 +1,65 @@
 #!/usr/bin/env bash
-# Sets up the demo: repo + phantom init + tasked agents with staged work.
-# Run BEFORE: vhs docs/assets/demo.tape
+# Sets up the demo repo: git init + `ph init` + two tasked overlays with
+# simulated agent work staged in the upper layers.
+#
+# Run this BEFORE: vhs docs/assets/demo.tape
+#
+# We stage work directly into the overlay `upper/` dirs instead of spawning
+# real background agents so the demo is deterministic and doesn't depend on
+# any coding CLI being installed. Each agent's overlay is created via
+# `ph <agent> --command true --task "..."`, which emits a `TaskCreated` event
+# (so `ph status` shows the task description) without actually running an AI.
 set -euo pipefail
 export RUST_LOG=off
 
 DEMO_DIR="/tmp/phantom-demo"
+
+# Tear down any previous demo cleanly (unmounts FUSE if still mounted).
+if [ -d "$DEMO_DIR/.phantom" ]; then
+    (cd "$DEMO_DIR" && ph down -f >/dev/null 2>&1) || true
+fi
 rm -rf "$DEMO_DIR"
 mkdir -p "$DEMO_DIR"
 cd "$DEMO_DIR"
 
-# Create a small Rust project
+# Tiny Rust project — just enough to have real symbols on trunk.
 git init -b main --quiet
+git config user.email "demo@phantom.dev"
+git config user.name  "Phantom Demo"
+
 mkdir src
-cat > src/handlers.rs << 'RUST'
+cat > src/handlers.rs <<'RUST'
 pub fn handle_login(user: &str) -> bool {
     !user.is_empty()
 }
 RUST
-cat > src/lib.rs << 'RUST'
+cat > src/lib.rs <<'RUST'
 pub fn greet(name: &str) -> String {
     format!("Hello, {name}!")
 }
 RUST
-cat > main.rs << 'RUST'
+cat > main.rs <<'RUST'
 fn main() {
     println!("hello");
 }
 RUST
+
 git add .
 git commit -m "initial commit" --quiet
 
-# Initialize phantom and task agents
-phantom init >/dev/null 2>&1
-phantom task claude-a --background --task "add user registration" >/dev/null 2>&1
-phantom task claude-b --background --task "add rate limiting" >/dev/null 2>&1
+# Initialize Phantom and create two overlays with real TaskCreated events.
+# --command true keeps it synchronous and CLI-free.
+ph init >/dev/null
+ph agent-a --command true --task "add user registration" >/dev/null
+ph agent-b --command true --task "add rate limiting"      >/dev/null
 
-# Simulate agent work: write files into overlays
-# (In real usage, Claude/Cursor writes through the FUSE mount)
-mkdir -p .phantom/overlays/claude-a/upper/src
-cat > .phantom/overlays/claude-a/upper/src/handlers.rs << 'RUST'
+# Simulate the agents writing code. In real usage Claude/Cursor/etc write
+# through the FUSE mount; here we drop files straight into the upper layer
+# so `ph sub` picks them up just the same.
+mkdir -p .phantom/overlays/agent-a/upper/src
+mkdir -p .phantom/overlays/agent-b/upper/src
+
+cat > .phantom/overlays/agent-a/upper/src/handlers.rs <<'RUST'
 pub fn handle_login(user: &str) -> bool {
     !user.is_empty()
 }
@@ -48,8 +69,7 @@ pub fn handle_register(user: &str, email: &str) -> String {
 }
 RUST
 
-mkdir -p .phantom/overlays/claude-b/upper/src
-cat > .phantom/overlays/claude-b/upper/src/lib.rs << 'RUST'
+cat > .phantom/overlays/agent-b/upper/src/lib.rs <<'RUST'
 pub fn greet(name: &str) -> String {
     format!("Hello, {name}!")
 }
@@ -59,5 +79,5 @@ pub fn rate_limit(ip: &str, max_requests: u32) -> bool {
 }
 RUST
 
-echo "Demo ready: phantom initialized, agents tasked, code staged."
+echo "Demo ready in $DEMO_DIR"
 echo "Run: vhs docs/assets/demo.tape"
