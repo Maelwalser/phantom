@@ -57,8 +57,7 @@ fn whiteout_persistence_across_instances() {
     }
 
     // New instance from the same upper dir should restore whiteouts.
-    let layer2 =
-        OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+    let layer2 = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
     assert!(!layer2.exists(Path::new("persist.txt")));
     assert!(layer2.read_file(Path::new("persist.txt")).is_err());
 }

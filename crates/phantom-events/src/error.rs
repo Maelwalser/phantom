@@ -30,6 +30,12 @@ pub enum EventStoreError {
     #[error("snapshot corrupted: {0}")]
     SnapshotCorrupted(String),
 
+    /// A row contained an integer that fell outside the expected range
+    /// (e.g. a negative value where a monotonically increasing id was expected).
+    /// Indicates database corruption or manual tampering.
+    #[error("corrupted row: {0}")]
+    CorruptedRow(String),
+
     /// An error from phantom-core.
     #[error("core error: {0}")]
     Core(#[from] CoreError),

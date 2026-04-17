@@ -8,10 +8,8 @@ use phantom_events::{Projection, SnapshotManager, SqliteEventStore};
 use phantom_overlay::OverlayManager;
 
 use super::status::{self, extract_plan_prefix};
-use crate::ui;
 use crate::context::PhantomContext;
-
-
+use crate::ui;
 
 #[derive(clap::Args)]
 pub struct TasksArgs {}

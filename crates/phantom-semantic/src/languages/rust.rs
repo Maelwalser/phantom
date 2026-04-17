@@ -59,18 +59,44 @@ fn extract_from_node(
             }
         }
         "struct_item" => push_named_symbol(
-            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::Struct,
+            symbols,
+            node,
+            source,
+            file_path,
+            scope_parts,
+            ROOT_SCOPE,
+            SymbolKind::Struct,
         ),
         "enum_item" => push_named_symbol(
-            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::Enum,
+            symbols,
+            node,
+            source,
+            file_path,
+            scope_parts,
+            ROOT_SCOPE,
+            SymbolKind::Enum,
         ),
         "trait_item" => push_named_symbol(
-            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::Trait,
+            symbols,
+            node,
+            source,
+            file_path,
+            scope_parts,
+            ROOT_SCOPE,
+            SymbolKind::Trait,
         ),
         "impl_item" => {
             let impl_name = extract_impl_name(node, source);
             let scope = build_scope(scope_parts, ROOT_SCOPE);
-            push_symbol(symbols, &scope, &impl_name, SymbolKind::Impl, node, source, file_path);
+            push_symbol(
+                symbols,
+                &scope,
+                &impl_name,
+                SymbolKind::Impl,
+                node,
+                source,
+                file_path,
+            );
             // Recurse into impl body for methods
             if let Some(body) = node.child_by_field_name("body") {
                 let mut new_scope = scope_parts.to_vec();
@@ -84,20 +110,48 @@ fn extract_from_node(
         "use_declaration" => {
             let text = node_text(node, source);
             let scope = build_scope(scope_parts, ROOT_SCOPE);
-            push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
+            push_symbol(
+                symbols,
+                &scope,
+                &text,
+                SymbolKind::Import,
+                node,
+                source,
+                file_path,
+            );
         }
         "const_item" => push_named_symbol(
-            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::Const,
+            symbols,
+            node,
+            source,
+            file_path,
+            scope_parts,
+            ROOT_SCOPE,
+            SymbolKind::Const,
         ),
         "type_item" => push_named_symbol(
-            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::TypeAlias,
+            symbols,
+            node,
+            source,
+            file_path,
+            scope_parts,
+            ROOT_SCOPE,
+            SymbolKind::TypeAlias,
         ),
         "mod_item" => {
             let Some(name) = child_field_text(node, "name", source) else {
                 return;
             };
             let scope = build_scope(scope_parts, ROOT_SCOPE);
-            push_symbol(symbols, &scope, &name, SymbolKind::Module, node, source, file_path);
+            push_symbol(
+                symbols,
+                &scope,
+                &name,
+                SymbolKind::Module,
+                node,
+                source,
+                file_path,
+            );
             if let Some(body) = node.child_by_field_name("body") {
                 let mut new_scope = scope_parts.to_vec();
                 new_scope.push(name);
@@ -108,7 +162,13 @@ fn extract_from_node(
             return;
         }
         "macro_definition" => push_named_symbol(
-            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::Function,
+            symbols,
+            node,
+            source,
+            file_path,
+            scope_parts,
+            ROOT_SCOPE,
+            SymbolKind::Function,
         ),
         _ => {}
     }

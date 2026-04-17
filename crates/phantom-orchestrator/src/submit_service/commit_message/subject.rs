@@ -160,7 +160,9 @@ mod tests {
 
     #[test]
     fn subject_truncates_when_too_long() {
-        let names: Vec<String> = (0..30).map(|i| format!("very_long_symbol_name_{i}")).collect();
+        let names: Vec<String> = (0..30)
+            .map(|i| format!("very_long_symbol_name_{i}"))
+            .collect();
         let ops: Vec<SemanticOperation> = names
             .iter()
             .map(|n| SemanticOperation::AddSymbol {

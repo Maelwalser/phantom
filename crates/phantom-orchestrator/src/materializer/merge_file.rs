@@ -75,9 +75,15 @@ pub(super) fn merge_single_file(
 
     match base {
         None => merge_new_file(git, file, ctx, &theirs),
-        Some(base_content) => {
-            merge_existing_file(git, file, changeset, ctx, &base_content, &theirs, agent_file_ops)
-        }
+        Some(base_content) => merge_existing_file(
+            git,
+            file,
+            changeset,
+            ctx,
+            &base_content,
+            &theirs,
+            agent_file_ops,
+        ),
     }
 }
 
@@ -185,8 +191,12 @@ fn symbols_disjoint(
     if agent_syms.is_empty() {
         return false;
     }
-    let base_syms = analyzer.extract_symbols(file, base_content).unwrap_or_default();
-    let trunk_syms = analyzer.extract_symbols(file, trunk_content).unwrap_or_default();
+    let base_syms = analyzer
+        .extract_symbols(file, base_content)
+        .unwrap_or_default();
+    let trunk_syms = analyzer
+        .extract_symbols(file, trunk_content)
+        .unwrap_or_default();
     let trunk_ops = analyzer.diff_symbols(&base_syms, &trunk_syms);
     let trunk_names: HashSet<String> = trunk_ops
         .iter()

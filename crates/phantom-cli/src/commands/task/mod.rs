@@ -57,85 +57,84 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
     let head = git.head_oid().context("failed to read HEAD")?;
 
     // Try to create a new overlay. If one already exists, switch to resume mode.
-    let (changeset_id, base_commit, is_new, mount_point, upper_dir) = match overlays
-        .create_overlay(agent_id.clone(), &ctx.repo_root)
-    {
-        Ok(handle) => {
-            let mount_point = handle.mount_point.clone();
-            let upper_dir = handle.upper_dir.clone();
+    let (changeset_id, base_commit, is_new, mount_point, upper_dir) =
+        match overlays.create_overlay(agent_id.clone(), &ctx.repo_root) {
+            Ok(handle) => {
+                let mount_point = handle.mount_point.clone();
+                let upper_dir = handle.upper_dir.clone();
 
-            let cs_id = generate_changeset_id();
+                let cs_id = generate_changeset_id();
 
-            let event = Event {
-                id: EventId(0),
-                timestamp: Utc::now(),
-                changeset_id: cs_id.clone(),
-                agent_id: agent_id.clone(),
-                causal_parent: None,
-                kind: EventKind::TaskCreated {
-                    base_commit: head,
-                    task: args.task.clone().unwrap_or_default(),
-                },
-            };
-            events.append(event).await?;
+                let event = Event {
+                    id: EventId(0),
+                    timestamp: Utc::now(),
+                    changeset_id: cs_id.clone(),
+                    agent_id: agent_id.clone(),
+                    causal_parent: None,
+                    kind: EventKind::TaskCreated {
+                        base_commit: head,
+                        task: args.task.clone().unwrap_or_default(),
+                    },
+                };
+                events.append(event).await?;
 
-            phantom_orchestrator::live_rebase::write_current_base(
-                &ctx.phantom_dir,
-                &agent_id,
-                &head,
-            )
-            .context("failed to write initial current_base")?;
+                phantom_orchestrator::live_rebase::write_current_base(
+                    &ctx.phantom_dir,
+                    &agent_id,
+                    &head,
+                )
+                .context("failed to write initial current_base")?;
 
-            (cs_id, head, true, mount_point, upper_dir)
-        }
-        Err(OverlayError::AlreadyExists(_)) => {
-            let (old_cs_id, old_base) =
-                resume::recover_changeset_from_events(&events, &agent_id).await?;
-            let resume_status = resume::check_changeset_resumable(&events, &old_cs_id).await?;
+                (cs_id, head, true, mount_point, upper_dir)
+            }
+            Err(OverlayError::AlreadyExists(_)) => {
+                let (old_cs_id, old_base) =
+                    resume::recover_changeset_from_events(&events, &agent_id).await?;
+                let resume_status = resume::check_changeset_resumable(&events, &old_cs_id).await?;
 
-            let upper_dir = overlays.upper_dir(&agent_id)?.to_path_buf();
-            let mount_point = ctx
-                .phantom_dir
-                .join("overlays")
-                .join(&agent_id.0)
-                .join("mount");
+                let upper_dir = overlays.upper_dir(&agent_id)?.to_path_buf();
+                let mount_point = ctx
+                    .phantom_dir
+                    .join("overlays")
+                    .join(&agent_id.0)
+                    .join("mount");
 
-            // If the previous changeset was materialized, start a new one
-            // so the agent can continue working on the same overlay.
-            let (cs_id, base) = match resume_status {
-                resume::ResumeStatus::Materialized => {
-                    let new_cs_id = generate_changeset_id();
-                    let event = Event {
-                        id: EventId(0),
-                        timestamp: Utc::now(),
-                        changeset_id: new_cs_id.clone(),
-                        agent_id: agent_id.clone(),
-                        causal_parent: None,
-                        kind: EventKind::TaskCreated {
-                            base_commit: head,
-                            task: args.task.clone().unwrap_or_default(),
-                        },
-                    };
-                    events.append(event).await?;
+                // If the previous changeset was materialized, start a new one
+                // so the agent can continue working on the same overlay.
+                let (cs_id, base) = match resume_status {
+                    resume::ResumeStatus::Materialized => {
+                        let new_cs_id = generate_changeset_id();
+                        let event = Event {
+                            id: EventId(0),
+                            timestamp: Utc::now(),
+                            changeset_id: new_cs_id.clone(),
+                            agent_id: agent_id.clone(),
+                            causal_parent: None,
+                            kind: EventKind::TaskCreated {
+                                base_commit: head,
+                                task: args.task.clone().unwrap_or_default(),
+                            },
+                        };
+                        events.append(event).await?;
 
-                    phantom_orchestrator::live_rebase::write_current_base(
-                        &ctx.phantom_dir,
-                        &agent_id,
-                        &head,
-                    )
-                    .context("failed to write current_base for new changeset")?;
+                        phantom_orchestrator::live_rebase::write_current_base(
+                            &ctx.phantom_dir,
+                            &agent_id,
+                            &head,
+                        )
+                        .context("failed to write current_base for new changeset")?;
 
-                    (new_cs_id, head)
-                }
-                resume::ResumeStatus::Submitted | resume::ResumeStatus::InProgress => {
-                    (old_cs_id, old_base)
-                }
-            };
+                        (new_cs_id, head)
+                    }
+                    resume::ResumeStatus::Submitted | resume::ResumeStatus::InProgress => {
+                        (old_cs_id, old_base)
+                    }
+                };
 
-            (cs_id, base, false, mount_point, upper_dir)
-        }
-        Err(e) => return Err(e.into()),
-    };
+                (cs_id, base, false, mount_point, upper_dir)
+            }
+            Err(e) => return Err(e.into()),
+        };
 
     // Spawn FUSE daemon unless --no-fuse or already mounted.
     let already_mounted = crate::fs::fuse::is_mounted(&mount_point);

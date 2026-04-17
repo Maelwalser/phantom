@@ -16,8 +16,8 @@ use phantom_events::snapshot::SnapshotManager;
 use phantom_events::store::SqliteEventStore;
 use phantom_git::GitOps;
 
-use crate::ui;
 use crate::context::PhantomContext;
+use crate::ui;
 
 #[derive(clap::Args)]
 pub struct RollbackArgs {

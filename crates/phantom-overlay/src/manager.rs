@@ -113,10 +113,10 @@ impl OverlayManager {
             if !entry.file_type()?.is_dir() {
                 continue;
             }
-            if let Some(name) = entry.file_name().to_str() {
-                if entry.path().join("upper").is_dir() {
-                    agents.push(AgentId(name.to_string()));
-                }
+            if let Some(name) = entry.file_name().to_str()
+                && entry.path().join("upper").is_dir()
+            {
+                agents.push(AgentId(name.to_string()));
             }
         }
         Ok(agents)

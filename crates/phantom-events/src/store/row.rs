@@ -39,14 +39,34 @@ pub(crate) fn row_to_event(row: &SqliteRow) -> Result<Event, EventStoreError> {
         }
     };
 
-    let causal_parent: Option<i64> = row.try_get("causal_parent").unwrap_or(None);
+    // A missing `causal_parent` column is expected when reading rows written
+    // by an older binary (the column was added in schema v4). Any other
+    // decode error indicates corruption or a type mismatch and must
+    // propagate — `unwrap_or(None)` would silently conflate the two.
+    let causal_parent: Option<i64> = match row.try_get("causal_parent") {
+        Ok(v) => v,
+        Err(sqlx::Error::ColumnNotFound(_)) => None,
+        Err(e) => return Err(e.into()),
+    };
 
     Ok(Event {
-        id: EventId(id as u64),
+        id: EventId(checked_id(id, "id")?),
         timestamp,
         changeset_id: ChangesetId(changeset_id),
         agent_id: AgentId(agent_id),
-        causal_parent: causal_parent.map(|v| EventId(v as u64)),
+        causal_parent: causal_parent
+            .map(|v| checked_id(v, "causal_parent").map(EventId))
+            .transpose()?,
         kind,
+    })
+}
+
+/// Convert a SQLite `INTEGER PRIMARY KEY` value to a [`u64`].
+///
+/// `INTEGER PRIMARY KEY AUTOINCREMENT` is monotonically increasing from 1,
+/// so a negative value on read indicates database corruption or tampering.
+pub(super) fn checked_id(raw: i64, column: &str) -> Result<u64, EventStoreError> {
+    u64::try_from(raw).map_err(|_| {
+        EventStoreError::CorruptedRow(format!("column '{column}' contains negative value {raw}"))
     })
 }

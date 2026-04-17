@@ -6,8 +6,7 @@ use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
 use super::{
-    LanguageExtractor, build_scope, child_field_text, for_each_named_child, node_text,
-    push_symbol,
+    LanguageExtractor, build_scope, child_field_text, for_each_named_child, node_text, push_symbol,
 };
 
 const ROOT_SCOPE: &str = "module";
@@ -62,7 +61,15 @@ fn extract_py_node(
                 return;
             };
             let scope = build_scope(scope_parts, ROOT_SCOPE);
-            push_symbol(symbols, &scope, &name, SymbolKind::Class, node, source, file_path);
+            push_symbol(
+                symbols,
+                &scope,
+                &name,
+                SymbolKind::Class,
+                node,
+                source,
+                file_path,
+            );
             if let Some(body) = node.child_by_field_name("body") {
                 let mut new_scope = scope_parts.to_vec();
                 new_scope.push(name);
@@ -75,7 +82,15 @@ fn extract_py_node(
         "import_statement" | "import_from_statement" => {
             let text = node_text(node, source);
             let scope = build_scope(scope_parts, ROOT_SCOPE);
-            push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
+            push_symbol(
+                symbols,
+                &scope,
+                &text,
+                SymbolKind::Import,
+                node,
+                source,
+                file_path,
+            );
         }
         _ => {}
     }

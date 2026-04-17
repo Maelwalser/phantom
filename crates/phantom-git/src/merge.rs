@@ -2,10 +2,10 @@
 
 use std::path::PathBuf;
 
+use phantom_core::MergeResult;
 use phantom_core::conflict::{ConflictDetail, ConflictKind};
 use phantom_core::id::ChangesetId;
 use phantom_core::is_binary_or_non_utf8;
-use phantom_core::MergeResult;
 
 use crate::error::GitError;
 

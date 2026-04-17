@@ -62,10 +62,7 @@ pub fn run(args: &DownArgs) -> anyhow::Result<()> {
         }
         println!(
             "  {}",
-            console::style(
-                "This will unmount all FUSE overlays, kill all agent processes,"
-            )
-            .dim()
+            console::style("This will unmount all FUSE overlays, kill all agent processes,").dim()
         );
         println!(
             "  {}",

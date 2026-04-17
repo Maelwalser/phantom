@@ -69,7 +69,10 @@ impl OverlayLayer {
         }
 
         // Snapshot whiteouts once for the duration of this listing.
-        let whiteouts = self.whiteouts.read().unwrap();
+        let whiteouts = self
+            .whiteouts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let mut seen = HashSet::new();
         let mut entries = Vec::new();

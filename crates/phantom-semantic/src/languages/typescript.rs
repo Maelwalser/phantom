@@ -6,8 +6,7 @@ use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
 use super::{
-    LanguageExtractor, build_scope, for_each_named_child, node_text, push_named_symbol,
-    push_symbol,
+    LanguageExtractor, build_scope, for_each_named_child, node_text, push_named_symbol, push_symbol,
 };
 
 const ROOT_SCOPE: &str = "module";
@@ -90,7 +89,15 @@ fn extract_ts_node(
                 return;
             };
             let scope = build_scope(scope_parts, ROOT_SCOPE);
-            push_symbol(symbols, &scope, &name, SymbolKind::Class, node, source, file_path);
+            push_symbol(
+                symbols,
+                &scope,
+                &name,
+                SymbolKind::Class,
+                node,
+                source,
+                file_path,
+            );
             // Recurse into class body for methods
             if let Some(body) = node.child_by_field_name("body") {
                 let mut new_scope = scope_parts.to_vec();
@@ -126,7 +133,15 @@ fn extract_ts_node(
         "import_statement" => {
             let text = node_text(node, source);
             let scope = build_scope(scope_parts, ROOT_SCOPE);
-            push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
+            push_symbol(
+                symbols,
+                &scope,
+                &text,
+                SymbolKind::Import,
+                node,
+                source,
+                file_path,
+            );
         }
         "export_statement" => {
             // Check if it has a declaration child — extract that instead
@@ -135,7 +150,15 @@ fn extract_ts_node(
             } else {
                 let text = node_text(node, source);
                 let scope = build_scope(scope_parts, ROOT_SCOPE);
-                push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
+                push_symbol(
+                    symbols,
+                    &scope,
+                    &text,
+                    SymbolKind::Import,
+                    node,
+                    source,
+                    file_path,
+                );
             }
             return;
         }

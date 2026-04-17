@@ -174,12 +174,15 @@ impl Filesystem for PhantomFs {
         all_entries.sort_by(|a, b| a.2.cmp(&b.2));
 
         let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
-        self.open_dirs.write().unwrap().insert(
-            fh,
-            DirSnapshot {
-                entries: all_entries,
-            },
-        );
+        self.open_dirs
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                fh,
+                DirSnapshot {
+                    entries: all_entries,
+                },
+            );
         reply.opened(FileHandle(fh), FopenFlags::empty());
     }
 
@@ -191,7 +194,10 @@ impl Filesystem for PhantomFs {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let dirs = self.open_dirs.read().unwrap();
+        let dirs = self
+            .open_dirs
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(snapshot) = dirs.get(&fh.0) else {
             reply.error(Errno::EBADF);
             return;
@@ -220,7 +226,10 @@ impl Filesystem for PhantomFs {
         _flags: OpenFlags,
         reply: ReplyEmpty,
     ) {
-        self.open_dirs.write().unwrap().remove(&fh.0);
+        self.open_dirs
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&fh.0);
         reply.ok();
     }
 
@@ -288,7 +297,10 @@ impl Filesystem for PhantomFs {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        let open_files = self.open_files.read().unwrap();
+        let open_files = self
+            .open_files
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(open_file) = open_files.get(&fh.0) else {
             reply.error(Errno::EBADF);
             return;
@@ -317,7 +329,10 @@ impl Filesystem for PhantomFs {
         _lock_owner: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
-        let open_files = self.open_files.read().unwrap();
+        let open_files = self
+            .open_files
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(open_file) = open_files.get(&fh.0) else {
             reply.error(Errno::EBADF);
             return;
@@ -396,13 +411,16 @@ impl Filesystem for PhantomFs {
                 };
 
                 let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
-                self.open_files.write().unwrap().insert(
-                    fh,
-                    OpenFile {
-                        file,
-                        writable: true,
-                    },
-                );
+                self.open_files
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(
+                        fh,
+                        OpenFile {
+                            file,
+                            writable: true,
+                        },
+                    );
                 let now = SystemTime::now();
                 let perm = (mode & 0o7777) as u16;
                 let attr = FileAttr {
@@ -660,7 +678,10 @@ impl Filesystem for PhantomFs {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        self.open_files.write().unwrap().remove(&fh.0);
+        self.open_files
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&fh.0);
         reply.ok();
     }
 

@@ -39,7 +39,10 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), EventStoreEr
         });
     }
 
-    for m in migrations::MIGRATIONS.iter().filter(|m| m.version > current) {
+    for m in migrations::MIGRATIONS
+        .iter()
+        .filter(|m| m.version > current)
+    {
         tracing::debug!(target: "phantom_events::schema", to = m.version, name = m.name, "applying migration");
         migrations::apply(m, pool).await?;
         sqlx::query("UPDATE schema_meta SET value = $1 WHERE key = 'schema_version'")

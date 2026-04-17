@@ -12,9 +12,9 @@ use phantom_core::traits::EventStore;
 use crate::error::OrchestratorError;
 use crate::git::{self, GitOps};
 
+use super::MaterializeResult;
 use super::commit;
 use super::events;
-use super::MaterializeResult;
 
 /// Read overlay files and commit via the git object database (blobs → tree →
 /// commit), eliminating the TOCTOU window of the old working-tree-based flow.

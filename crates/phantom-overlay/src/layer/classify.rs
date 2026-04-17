@@ -47,7 +47,12 @@ impl OverlayLayer {
             };
         }
 
-        if self.whiteouts.read().unwrap().contains(rel_path) {
+        if self
+            .whiteouts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(rel_path)
+        {
             return ResolvedPath::NotFound;
         }
 

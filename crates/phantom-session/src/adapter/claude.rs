@@ -83,8 +83,9 @@ impl CliAdapter for ClaudeAdapter {
 
     fn extract_session_id(&self, output_tail: &str) -> Option<String> {
         // Claude Code prints: "claude --resume <UUID>" near the end of output.
+        // RFC 4122 permits either case, so match both.
         let re = Regex::new(
-            r"claude --resume ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+            r"(?i)claude --resume ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
         )
         .ok()?;
         re.captures(output_tail)

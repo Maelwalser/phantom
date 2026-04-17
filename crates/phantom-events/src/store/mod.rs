@@ -127,6 +127,8 @@ impl EventStore for SqliteEventStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(EventStoreError::from)?;
-        Ok(row.map(|(id,)| EventId(id as u64)))
+        row.map(|(id,)| row::checked_id(id, "id").map(EventId))
+            .transpose()
+            .map_err(Into::into)
     }
 }

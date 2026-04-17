@@ -59,8 +59,7 @@ pub(super) fn extract_operations(
     let mut counts = OpCounts::default();
 
     for file in modified {
-        let agent_content =
-            std::fs::read(upper_dir.join(file)).map_err(OrchestratorError::Io)?;
+        let agent_content = std::fs::read(upper_dir.join(file)).map_err(OrchestratorError::Io)?;
         let ops = diff_file(git, analyzer, base_commit, file, &agent_content);
         for op in &ops {
             counts.tally(op);
@@ -262,7 +261,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(extracted.all_ops.len(), 1);
-        assert!(matches!(&extracted.all_ops[0], SemanticOperation::AddSymbol { .. }));
+        assert!(matches!(
+            &extracted.all_ops[0],
+            SemanticOperation::AddSymbol { .. }
+        ));
         assert_eq!(extracted.counts.additions, 1);
         assert_eq!(extracted.counts.modifications, 0);
         assert_eq!(extracted.counts.deletions, 0);

@@ -49,18 +49,13 @@ mod tests {
 
     #[test]
     fn rejects_parent_traversal() {
-        let err =
-            validate_path(Path::new("../outside.txt"), Path::new("/repo")).unwrap_err();
+        let err = validate_path(Path::new("../outside.txt"), Path::new("/repo")).unwrap_err();
         assert!(err.to_string().contains("parent traversal"), "{err}");
     }
 
     #[test]
     fn rejects_deep_parent_traversal() {
-        let err = validate_path(
-            Path::new("src/../../etc/passwd"),
-            Path::new("/repo"),
-        )
-        .unwrap_err();
+        let err = validate_path(Path::new("src/../../etc/passwd"), Path::new("/repo")).unwrap_err();
         assert!(err.to_string().contains("parent traversal"), "{err}");
     }
 

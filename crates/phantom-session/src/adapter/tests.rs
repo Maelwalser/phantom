@@ -26,6 +26,16 @@ fn test_claude_extract_no_match() {
 }
 
 #[test]
+fn test_claude_extract_uppercase_uuid() {
+    let adapter = ClaudeAdapter;
+    let output = "claude --resume B6578224-E8F1-4959-8644-20632F24EBA8\n";
+    assert_eq!(
+        adapter.extract_session_id(output),
+        Some("B6578224-E8F1-4959-8644-20632F24EBA8".to_string())
+    );
+}
+
+#[test]
 fn test_claude_extract_with_ansi_noise() {
     let adapter = ClaudeAdapter;
     // The output buffer may contain ANSI escape codes around the text,

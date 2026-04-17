@@ -266,7 +266,10 @@ mod tests {
         };
         assert_eq!(details.len(), 1);
         assert!(matches!(details[0].kind, ConflictKind::BothModifiedSymbol));
-        assert!(details[0].base_span.is_none(), "both-added has no base span");
+        assert!(
+            details[0].base_span.is_none(),
+            "both-added has no base span"
+        );
         assert!(details[0].description.contains("added"));
     }
 

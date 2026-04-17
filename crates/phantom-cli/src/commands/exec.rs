@@ -38,7 +38,7 @@ impl Drop for FuseCleanupGuard {
     }
 }
 
-pub fn run(args: ExecArgs) -> anyhow::Result<()> {
+pub fn run(args: &ExecArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
 
     // Validate agent exists.

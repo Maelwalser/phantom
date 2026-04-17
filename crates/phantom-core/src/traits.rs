@@ -92,4 +92,3 @@ pub trait SemanticAnalyzer: Send + Sync {
         false
     }
 }
-

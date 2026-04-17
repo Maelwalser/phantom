@@ -5,9 +5,9 @@ use phantom_core::id::AgentId;
 use phantom_events::EventQuery;
 use phantom_git::{GitOps, git_oid_to_oid};
 
-use crate::ui::agent_color::AgentPalette;
-use crate::ui;
 use crate::context::PhantomContext;
+use crate::ui;
+use crate::ui::agent_color::AgentPalette;
 
 #[derive(clap::Args)]
 pub struct ChangesArgs {

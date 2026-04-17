@@ -9,8 +9,8 @@ use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
 use super::{
-    LanguageExtractor, child_field_text, first_child_text_of_kind, for_each_named_child,
-    node_text, push_symbol,
+    LanguageExtractor, child_field_text, first_child_text_of_kind, for_each_named_child, node_text,
+    push_symbol,
 };
 
 const ROOT_SCOPE: &str = "script";

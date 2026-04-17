@@ -55,7 +55,10 @@ impl OverlayLayer {
 
         // Phase 1: Snapshot whiteout state under read lock.
         let (child_whiteouts, lower_old_exists, lower) = {
-            let wo = self.whiteouts.read().unwrap();
+            let wo = self
+                .whiteouts
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let lower = self.lower_path();
             let child_wo = reparent_children(wo.iter(), old, old)
                 .into_iter()
@@ -73,7 +76,10 @@ impl OverlayLayer {
         let whiteout_inserts = self.do_rename_io(old, new, lower_old_exists, &lower)?;
 
         // Phase 3: Reconcile whiteouts atomically under write lock.
-        let mut wo = self.whiteouts.write().unwrap();
+        let mut wo = self
+            .whiteouts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut changed = false;
 
         for path in &whiteout_inserts {

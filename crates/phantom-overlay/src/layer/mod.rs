@@ -75,7 +75,10 @@ impl OverlayLayer {
 
     /// Read the lower path. Helper to reduce lock boilerplate.
     pub(super) fn lower_path(&self) -> PathBuf {
-        self.lower.read().unwrap().clone()
+        self.lower
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Return a reference to the upper directory path.

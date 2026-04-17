@@ -43,7 +43,12 @@ impl OverlayLayer {
         // I/O happens before acquiring the whiteout lock.
         fs::write(&upper_path, data)?;
 
-        if self.whiteouts.write().unwrap().remove(rel_path) {
+        if self
+            .whiteouts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(rel_path)
+        {
             self.persist_whiteouts_or_warn();
         }
 
@@ -81,7 +86,11 @@ impl OverlayLayer {
         } else {
             // File only exists in the lower layer — COW copy to upper before truncating.
             let lower_path = self.lower_path().join(rel_path);
-            let is_whiteout = self.whiteouts.read().unwrap().contains(rel_path);
+            let is_whiteout = self
+                .whiteouts
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(rel_path);
             if !lower_path.exists() && !is_whiteout {
                 return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
             }
@@ -107,7 +116,12 @@ impl OverlayLayer {
             }
         }
 
-        if self.whiteouts.write().unwrap().remove(rel_path) {
+        if self
+            .whiteouts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(rel_path)
+        {
             self.persist_whiteouts_or_warn();
         }
 
@@ -137,7 +151,12 @@ impl OverlayLayer {
             return Ok(());
         }
 
-        if self.whiteouts.read().unwrap().contains(rel_path) {
+        if self
+            .whiteouts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(rel_path)
+        {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
 
@@ -184,7 +203,12 @@ impl OverlayLayer {
         ensure_parent_dir(&upper_path)?;
         std::os::unix::fs::symlink(target, &upper_path)?;
 
-        if self.whiteouts.write().unwrap().remove(rel_path) {
+        if self
+            .whiteouts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(rel_path)
+        {
             self.persist_whiteouts_or_warn();
         }
 
@@ -219,7 +243,14 @@ impl OverlayLayer {
         let upper_exists = fs::symlink_metadata(&upper_path).is_ok();
         let lower_exists = fs::symlink_metadata(&lower_path).is_ok();
 
-        if !upper_exists && !lower_exists && !self.whiteouts.read().unwrap().contains(rel_path) {
+        if !upper_exists
+            && !lower_exists
+            && !self
+                .whiteouts
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(rel_path)
+        {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
 
@@ -263,7 +294,12 @@ impl OverlayLayer {
 
         if upper_path.exists() {
             // Already in the upper layer.
-            if self.whiteouts.write().unwrap().remove(rel_path) {
+            if self
+                .whiteouts
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(rel_path)
+            {
                 self.persist_whiteouts_or_warn();
             }
             return Ok(upper_path);
@@ -271,7 +307,11 @@ impl OverlayLayer {
 
         // Not in upper — check lower for COW copy.
         let lower_path = self.lower_path().join(rel_path);
-        let is_whiteout = self.whiteouts.read().unwrap().contains(rel_path);
+        let is_whiteout = self
+            .whiteouts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(rel_path);
         if !lower_path.exists() && !is_whiteout {
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
@@ -291,7 +331,12 @@ impl OverlayLayer {
         }
 
         // Brief write lock to update whiteout set after I/O is done.
-        if self.whiteouts.write().unwrap().remove(rel_path) {
+        if self
+            .whiteouts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(rel_path)
+        {
             self.persist_whiteouts_or_warn();
         }
 

@@ -34,7 +34,12 @@ impl OverlayLayer {
     /// Return the set of paths that have been deleted (whiteout'd).
     #[must_use]
     pub fn deleted_files(&self) -> Vec<PathBuf> {
-        self.whiteouts.read().unwrap().iter().cloned().collect()
+        self.whiteouts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Update the lower layer pointer (e.g. when trunk advances).
@@ -44,7 +49,10 @@ impl OverlayLayer {
             new = %new_lower.display(),
             "lower layer updated"
         );
-        *self.lower.write().unwrap() = new_lower;
+        *self
+            .lower
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = new_lower;
     }
 
     /// Persist the whiteout set to `upper/.whiteouts.json`.
@@ -53,7 +61,10 @@ impl OverlayLayer {
     /// before the I/O (atomic write).
     pub fn persist_whiteouts(&self) -> Result<(), OverlayError> {
         let json = {
-            let whiteouts = self.whiteouts.read().unwrap();
+            let whiteouts = self
+                .whiteouts
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let ws = WhiteoutSet {
                 paths: whiteouts
                     .iter()
@@ -70,7 +81,12 @@ impl OverlayLayer {
 
     /// Remove a path from the whiteout set (used when re-writing a deleted file).
     pub fn remove_whiteout(&self, rel_path: &std::path::Path) {
-        if self.whiteouts.write().unwrap().remove(rel_path) {
+        if self
+            .whiteouts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(rel_path)
+        {
             // Best-effort persist; errors are non-fatal here.
             self.persist_whiteouts_or_warn();
         }
@@ -99,7 +115,10 @@ impl OverlayLayer {
             }
         }
 
-        self.whiteouts.write().unwrap().clear();
+        self.whiteouts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
 
         debug!(upper = %self.upper.display(), "upper layer cleared after materialization");
         Ok(())

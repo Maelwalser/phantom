@@ -16,10 +16,7 @@ use phantom_core::id::{AgentId, ChangesetId, GitOid};
 /// as events are encountered. Shared implementation for both full replay
 /// ([`super::Projection::from_events`]) and incremental replay
 /// ([`super::Projection::from_snapshot`]).
-pub(super) fn apply_events(
-    changesets: &mut HashMap<ChangesetId, Changeset>,
-    events: &[Event],
-) {
+pub(super) fn apply_events(changesets: &mut HashMap<ChangesetId, Changeset>, events: &[Event]) {
     for event in events {
         let cs = changesets
             .entry(event.changeset_id.clone())

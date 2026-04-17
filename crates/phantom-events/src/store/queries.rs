@@ -11,7 +11,7 @@ use crate::query::EventQuery;
 
 use super::SqliteEventStore;
 use super::query_builder::{QueryBuilder, apply_event_filters};
-use super::row::row_to_event;
+use super::row::{checked_id, row_to_event};
 
 impl SqliteEventStore {
     /// Append an event, returning the auto-generated [`EventId`].
@@ -32,8 +32,10 @@ impl SqliteEventStore {
         .execute(&self.pool)
         .await?;
 
-        let id = result.last_insert_rowid() as u64;
-        Ok(EventId(id))
+        Ok(EventId(checked_id(
+            result.last_insert_rowid(),
+            "last_insert_rowid",
+        )?))
     }
 
     /// Execute a flexible query against the event store.
@@ -93,7 +95,7 @@ impl SqliteEventStore {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM events WHERE dropped = 0")
             .fetch_one(&self.pool)
             .await?;
-        Ok(row.0 as u64)
+        checked_id(row.0, "count")
     }
 
     /// Return events whose `id` is strictly greater than `after`, in

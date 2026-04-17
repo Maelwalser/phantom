@@ -70,8 +70,7 @@ fn update_lower_changes_fallthrough() {
     fs::write(lower1.path().join("a.txt"), b"lower1").unwrap();
     fs::write(lower2.path().join("b.txt"), b"lower2").unwrap();
 
-    let layer =
-        OverlayLayer::new(lower1.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+    let layer = OverlayLayer::new(lower1.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
     assert!(layer.exists(Path::new("a.txt")));
     assert!(!layer.exists(Path::new("b.txt")));
 

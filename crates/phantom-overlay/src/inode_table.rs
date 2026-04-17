@@ -64,7 +64,12 @@ impl InodeTable {
     }
 
     pub(crate) fn get_path(&self, ino: u64) -> Option<PathBuf> {
-        self.inner.read().unwrap().ino_to_path.get(&ino).cloned()
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ino_to_path
+            .get(&ino)
+            .cloned()
     }
 
     /// Return the inode for `path`, creating a new one if necessary.
@@ -81,7 +86,10 @@ impl InodeTable {
     /// (e.g. LSP indexing), consider migrating to `DashMap` or
     /// per-shard locking.
     pub(crate) fn get_or_create_inode(&self, path: &PathBuf) -> u64 {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(&ino) = inner.path_to_ino.get(path) {
             *inner.lookup_count.entry(ino).or_insert(0) += 1;
             return ino;
@@ -101,7 +109,10 @@ impl InodeTable {
     /// storage path.  The inode is marked as unlinked; `forget()` will
     /// perform final cleanup when the kernel drops all references.
     pub(crate) fn unlink(&self, path: &PathBuf) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(ino) = inner.path_to_ino.remove(path) {
             inner.unlinked.insert(ino);
         }
@@ -110,7 +121,11 @@ impl InodeTable {
     /// Returns `true` if the inode has been unlinked from the directory
     /// tree but still has outstanding kernel references.
     pub(crate) fn is_unlinked(&self, ino: u64) -> bool {
-        self.inner.read().unwrap().unlinked.contains(&ino)
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unlinked
+            .contains(&ino)
     }
 
     /// Re-key an inode (and all child inodes for directory renames) from
@@ -125,7 +140,10 @@ impl InodeTable {
             return;
         }
 
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // The destination is being overwritten (POSIX rename semantics).
         // Remove from path_to_ino so lookup no longer finds it, but
@@ -189,7 +207,10 @@ impl InodeTable {
             return;
         }
 
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(count) = inner.lookup_count.get_mut(&ino) {
             *count = count.saturating_sub(nlookup);
             if *count == 0 {
@@ -215,7 +236,10 @@ impl InodeTable {
     /// whose `forget` was never dispatched (e.g. after an unclean
     /// unmount or agent crash).
     pub(crate) fn purge_unlinked(&self) -> usize {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let stale: Vec<u64> = inner
             .unlinked
             .iter()

@@ -16,8 +16,8 @@ use crate::live_rebase;
 use crate::materializer::Materializer;
 use crate::ripple;
 
-use super::notifications::{write_notification_and_base, write_trunk_update};
 use super::RippleEffect;
+use super::notifications::{write_notification_and_base, write_trunk_update};
 
 /// Shared context for ripple processing across all affected agents.
 pub(super) struct RippleContext<'a> {

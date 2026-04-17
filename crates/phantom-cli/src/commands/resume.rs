@@ -8,8 +8,8 @@ use phantom_core::id::AgentId;
 use phantom_events::SnapshotManager;
 
 use super::status::{self, AgentRunState};
-use crate::ui;
 use crate::context::PhantomContext;
+use crate::ui;
 
 #[derive(clap::Args)]
 pub struct ResumeArgs {}
@@ -30,7 +30,12 @@ pub async fn run(_args: ResumeArgs) -> anyhow::Result<()> {
     // Filter to non-background agents (Idle run state = no agent.pid / agent.status).
     let mut interactive_agents: Vec<&AgentId> = agent_ids
         .iter()
-        .filter(|a| matches!(status::read_agent_run_state(&ctx.phantom_dir, &a.0), AgentRunState::Idle))
+        .filter(|a| {
+            matches!(
+                status::read_agent_run_state(&ctx.phantom_dir, &a.0),
+                AgentRunState::Idle
+            )
+        })
         .collect();
     interactive_agents.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -63,10 +68,7 @@ pub async fn run(_args: ResumeArgs) -> anyhow::Result<()> {
                         format!("  {}", ui::truncate_line(&cs.task, task_max))
                     };
 
-                    format!(
-                        "{:<16} {status_str}  ({}){task}",
-                        agent.0, age
-                    )
+                    format!("{:<16} {status_str}  ({}){task}", agent.0, age)
                 }
                 None => format!("{:<16} {}", agent.0, ui::style_dim("no changeset")),
             }

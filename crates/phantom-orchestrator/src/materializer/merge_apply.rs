@@ -13,11 +13,11 @@ use crate::error::OrchestratorError;
 use crate::git::{self, GitOps};
 use crate::ops::group_ops_by_file;
 
+use super::MaterializeResult;
 use super::commit;
 use super::events;
 use super::merge_file::{self, MergeFileOutcome};
 use super::path_validation;
-use super::MaterializeResult;
 
 /// Bundled context for a merge-apply operation, avoiding excessive parameter counts.
 pub(super) struct MergeContext<'a> {
