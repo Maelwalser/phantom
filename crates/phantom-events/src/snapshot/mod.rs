@@ -3,34 +3,26 @@
 //! [`SnapshotManager`] avoids replaying the entire event log on every
 //! [`Projection`] build by persisting periodic snapshots of the changeset
 //! map and replaying only the events that occurred after the snapshot.
+//!
+//! Orchestration lives here; the DB I/O is in [`repository`] and the
+//! auto-save threshold is in [`policy`].
 
-use std::collections::HashMap;
-
-use chrono::Utc;
 use tracing::debug;
-
-use phantom_core::changeset::Changeset;
-use phantom_core::id::{ChangesetId, EventId};
 
 use crate::error::EventStoreError;
 use crate::projection::Projection;
 use crate::store::SqliteEventStore;
 
-/// Default number of tail events that triggers a new snapshot write.
-const DEFAULT_SNAPSHOT_INTERVAL: u64 = 100;
+mod policy;
+mod repository;
 
-/// A persisted snapshot of projection state at a given event ID.
-struct ProjectionSnapshot {
-    /// The event ID up to which this snapshot is valid.
-    snapshot_at: EventId,
-    /// Serialized changeset map.
-    changesets: HashMap<ChangesetId, Changeset>,
-}
+use policy::SnapshotPolicy;
+use repository::SnapshotRepository;
 
 /// Manages projection snapshot lifecycle: load, build, auto-save, invalidate.
 pub struct SnapshotManager<'a> {
     store: &'a SqliteEventStore,
-    snapshot_interval: u64,
+    policy: SnapshotPolicy,
 }
 
 impl<'a> SnapshotManager<'a> {
@@ -38,7 +30,7 @@ impl<'a> SnapshotManager<'a> {
     pub fn new(store: &'a SqliteEventStore) -> Self {
         Self {
             store,
-            snapshot_interval: DEFAULT_SNAPSHOT_INTERVAL,
+            policy: SnapshotPolicy::new(),
         }
     }
 
@@ -47,8 +39,12 @@ impl<'a> SnapshotManager<'a> {
     pub fn with_interval(store: &'a SqliteEventStore, interval: u64) -> Self {
         Self {
             store,
-            snapshot_interval: interval,
+            policy: SnapshotPolicy::with_interval(interval),
         }
+    }
+
+    fn repository(&self) -> SnapshotRepository<'_> {
+        SnapshotRepository::new(self.store)
     }
 
     /// Build a [`Projection`] using the most efficient path available:
@@ -57,7 +53,8 @@ impl<'a> SnapshotManager<'a> {
     /// 2. Replay only events after the snapshot.
     /// 3. If enough new events were replayed, persist a new snapshot.
     pub async fn build_projection(&self) -> Result<Projection, EventStoreError> {
-        let snapshot = self.load_latest().await?;
+        let repo = self.repository();
+        let snapshot = repo.load_latest().await?;
 
         let (projection, tail_len) = if let Some(snap) = snapshot {
             let tail = self.store.query_after_id(snap.snapshot_at).await?;
@@ -76,10 +73,10 @@ impl<'a> SnapshotManager<'a> {
         };
 
         // Auto-save a new snapshot if we replayed enough events.
-        if tail_len >= self.snapshot_interval {
-            let latest_id = self.latest_event_id().await?;
+        if self.policy.should_snapshot(tail_len) {
+            let latest_id = repo.latest_event_id().await?;
             let changesets = projection.clone_changesets();
-            if let Err(e) = self.save(latest_id, &changesets).await {
+            if let Err(e) = repo.save(latest_id, &changesets).await {
                 // Snapshot save failure is non-fatal — we still have
                 // a valid in-memory projection.
                 tracing::warn!(error = %e, "failed to save projection snapshot");
@@ -93,62 +90,9 @@ impl<'a> SnapshotManager<'a> {
 
     /// Delete all snapshots. Called when events are dropped (rollback).
     pub async fn invalidate_all(&self) -> Result<(), EventStoreError> {
-        sqlx::query("DELETE FROM projection_snapshots")
-            .execute(&self.store.pool)
-            .await?;
+        self.repository().invalidate_all().await?;
         debug!("invalidated all projection snapshots");
         Ok(())
-    }
-
-    /// Load the most recent snapshot from the database.
-    async fn load_latest(&self) -> Result<Option<ProjectionSnapshot>, EventStoreError> {
-        let row: Option<(i64, Vec<u8>)> = sqlx::query_as(
-            "SELECT snapshot_at, data FROM projection_snapshots
-             ORDER BY snapshot_at DESC LIMIT 1",
-        )
-        .fetch_optional(&self.store.pool)
-        .await?;
-
-        match row {
-            Some((snapshot_at, data)) => {
-                let changesets: HashMap<ChangesetId, Changeset> = serde_json::from_slice(&data)
-                    .map_err(|e| EventStoreError::SnapshotCorrupted(e.to_string()))?;
-                Ok(Some(ProjectionSnapshot {
-                    snapshot_at: EventId(snapshot_at as u64),
-                    changesets,
-                }))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Persist a new snapshot.
-    async fn save(
-        &self,
-        snapshot_at: EventId,
-        changesets: &HashMap<ChangesetId, Changeset>,
-    ) -> Result<(), EventStoreError> {
-        let data = serde_json::to_vec(changesets)
-            .map_err(|e| EventStoreError::SnapshotCorrupted(e.to_string()))?;
-        let now = Utc::now().to_rfc3339();
-        sqlx::query(
-            "INSERT INTO projection_snapshots (snapshot_at, data, created_at)
-             VALUES ($1, $2, $3)",
-        )
-        .bind(snapshot_at.0 as i64)
-        .bind(&data)
-        .bind(&now)
-        .execute(&self.store.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Find the highest event ID in the store.
-    async fn latest_event_id(&self) -> Result<EventId, EventStoreError> {
-        let row: (Option<i64>,) = sqlx::query_as("SELECT MAX(id) FROM events WHERE dropped = 0")
-            .fetch_one(&self.store.pool)
-            .await?;
-        Ok(EventId(row.0.unwrap_or(0) as u64))
     }
 }
 
@@ -156,13 +100,13 @@ impl<'a> SnapshotManager<'a> {
 mod tests {
     use super::*;
     use phantom_core::event::{Event, EventKind};
-    use phantom_core::id::{AgentId, ChangesetId, GitOid};
+    use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid};
 
     /// Helper to create a TaskCreated event.
     fn task_event(cs_id: &str, agent_id: &str) -> Event {
         Event {
             id: EventId(0), // Will be assigned by the store.
-            timestamp: Utc::now(),
+            timestamp: chrono::Utc::now(),
             changeset_id: ChangesetId(cs_id.into()),
             agent_id: AgentId(agent_id.into()),
             causal_parent: None,
@@ -226,7 +170,7 @@ mod tests {
         let _proj = mgr.build_projection().await.unwrap();
 
         // Verify a snapshot was written.
-        let snap = mgr.load_latest().await.unwrap();
+        let snap = mgr.repository().load_latest().await.unwrap();
         assert!(snap.is_some(), "snapshot should have been auto-saved");
         let snap = snap.unwrap();
         assert_eq!(snap.snapshot_at.0, 15);
@@ -241,7 +185,7 @@ mod tests {
         append_n_events(&store, 50).await;
         let _proj = mgr.build_projection().await.unwrap();
 
-        let snap = mgr.load_latest().await.unwrap();
+        let snap = mgr.repository().load_latest().await.unwrap();
         assert!(
             snap.is_none(),
             "snapshot should not be saved below interval"
@@ -257,11 +201,11 @@ mod tests {
         let _proj = mgr.build_projection().await.unwrap();
 
         // Snapshot exists.
-        assert!(mgr.load_latest().await.unwrap().is_some());
+        assert!(mgr.repository().load_latest().await.unwrap().is_some());
 
         // Invalidate.
         mgr.invalidate_all().await.unwrap();
-        assert!(mgr.load_latest().await.unwrap().is_none());
+        assert!(mgr.repository().load_latest().await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -294,7 +238,7 @@ mod tests {
 
         append_n_events(&store, 10).await;
         let _proj = mgr.build_projection().await.unwrap();
-        assert!(mgr.load_latest().await.unwrap().is_some());
+        assert!(mgr.repository().load_latest().await.unwrap().is_some());
 
         // Rollback a changeset.
         store
@@ -303,6 +247,6 @@ mod tests {
             .unwrap();
 
         // Snapshot should be gone.
-        assert!(mgr.load_latest().await.unwrap().is_none());
+        assert!(mgr.repository().load_latest().await.unwrap().is_none());
     }
 }

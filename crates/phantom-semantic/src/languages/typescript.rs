@@ -5,7 +5,12 @@ use std::path::Path;
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::{LanguageExtractor, build_scope, child_field_text, node_text, push_symbol};
+use super::{
+    LanguageExtractor, build_scope, for_each_named_child, node_text, push_named_symbol,
+    push_symbol,
+};
+
+const ROOT_SCOPE: &str = "module";
 
 /// Extracts symbols from TypeScript and JavaScript source files.
 pub struct TypeScriptExtractor {
@@ -55,8 +60,7 @@ impl LanguageExtractor for TypeScriptExtractor {
         file_path: &Path,
     ) -> Vec<SymbolEntry> {
         let mut symbols = Vec::new();
-        let root = tree.root_node();
-        extract_ts_node(root, source, file_path, &[], &mut symbols);
+        extract_ts_node(tree.root_node(), source, file_path, &[], &mut symbols);
         symbols
     }
 }
@@ -71,83 +75,58 @@ fn extract_ts_node(
     let kind = node.kind();
     match kind {
         "function_declaration" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "module");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Function,
-                    node,
-                    source,
-                    file_path,
-                );
-            }
-        }
-        "class_declaration" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "module");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Class,
-                    node,
-                    source,
-                    file_path,
-                );
-                // Recurse into class body for methods
-                if let Some(body) = node.child_by_field_name("body") {
-                    let mut new_scope = scope_parts.to_vec();
-                    new_scope.push(name);
-                    let mut cursor = body.walk();
-                    for child in body.named_children(&mut cursor) {
-                        extract_ts_node(child, source, file_path, &new_scope, symbols);
-                    }
-                }
-                return;
-            }
-        }
-        "interface_declaration" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "module");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Interface,
-                    node,
-                    source,
-                    file_path,
-                );
-            }
-        }
-        "method_definition" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "module");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Method,
-                    node,
-                    source,
-                    file_path,
-                );
-            }
-        }
-        "import_statement" => {
-            let text = node_text(node, source);
-            let scope = build_scope(scope_parts, "module");
-            push_symbol(
+            push_named_symbol(
                 symbols,
-                &scope,
-                &text,
-                SymbolKind::Import,
                 node,
                 source,
                 file_path,
+                scope_parts,
+                ROOT_SCOPE,
+                SymbolKind::Function,
             );
+        }
+        "class_declaration" => {
+            let Some(name) = super::child_field_text(node, "name", source) else {
+                return;
+            };
+            let scope = build_scope(scope_parts, ROOT_SCOPE);
+            push_symbol(symbols, &scope, &name, SymbolKind::Class, node, source, file_path);
+            // Recurse into class body for methods
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut new_scope = scope_parts.to_vec();
+                new_scope.push(name);
+                for_each_named_child(body, |child| {
+                    extract_ts_node(child, source, file_path, &new_scope, symbols);
+                });
+            }
+            return;
+        }
+        "interface_declaration" => {
+            push_named_symbol(
+                symbols,
+                node,
+                source,
+                file_path,
+                scope_parts,
+                ROOT_SCOPE,
+                SymbolKind::Interface,
+            );
+        }
+        "method_definition" => {
+            push_named_symbol(
+                symbols,
+                node,
+                source,
+                file_path,
+                scope_parts,
+                ROOT_SCOPE,
+                SymbolKind::Method,
+            );
+        }
+        "import_statement" => {
+            let text = node_text(node, source);
+            let scope = build_scope(scope_parts, ROOT_SCOPE);
+            push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
         }
         "export_statement" => {
             // Check if it has a declaration child — extract that instead
@@ -155,56 +134,41 @@ fn extract_ts_node(
                 extract_ts_node(decl, source, file_path, scope_parts, symbols);
             } else {
                 let text = node_text(node, source);
-                let scope = build_scope(scope_parts, "module");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &text,
-                    SymbolKind::Import,
-                    node,
-                    source,
-                    file_path,
-                );
+                let scope = build_scope(scope_parts, ROOT_SCOPE);
+                push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
             }
             return;
         }
         "type_alias_declaration" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "module");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::TypeAlias,
-                    node,
-                    source,
-                    file_path,
-                );
-            }
+            push_named_symbol(
+                symbols,
+                node,
+                source,
+                file_path,
+                scope_parts,
+                ROOT_SCOPE,
+                SymbolKind::TypeAlias,
+            );
         }
         "enum_declaration" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "module");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Enum,
-                    node,
-                    source,
-                    file_path,
-                );
-            }
+            push_named_symbol(
+                symbols,
+                node,
+                source,
+                file_path,
+                scope_parts,
+                ROOT_SCOPE,
+                SymbolKind::Enum,
+            );
         }
         _ => {}
     }
 
     // Recurse into top-level containers
     if matches!(kind, "program" | "statement_block") {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
+        for_each_named_child(node, |child| {
             extract_ts_node(child, source, file_path, scope_parts, symbols);
-        }
+        });
     }
 }
 

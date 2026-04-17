@@ -8,10 +8,9 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 
 use crate::changeset::SemanticOperation;
-use crate::conflict::ConflictDetail;
+use crate::conflict::MergeResult;
 use crate::error::CoreError;
 use crate::event::Event;
 use crate::id::{AgentId, ChangesetId, EventId};
@@ -94,29 +93,3 @@ pub trait SemanticAnalyzer: Send + Sync {
     }
 }
 
-/// Outcome of a three-way semantic merge.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MergeResult {
-    /// The merge produced clean output.
-    Clean(Vec<u8>),
-    /// The merge found conflicts that require re-tasking.
-    Conflict(Vec<ConflictDetail>),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serde_merge_result_roundtrip() {
-        let clean = MergeResult::Clean(b"merged output".to_vec());
-        let json = serde_json::to_string(&clean).unwrap();
-        let back: MergeResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(clean, back);
-
-        let conflict = MergeResult::Conflict(vec![]);
-        let json = serde_json::to_string(&conflict).unwrap();
-        let back: MergeResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(conflict, back);
-    }
-}

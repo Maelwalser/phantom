@@ -5,7 +5,9 @@ use std::path::Path;
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::{LanguageExtractor, child_field_text, node_text, push_symbol};
+use super::{LanguageExtractor, child_field_text, for_each_named_child, node_text, push_symbol};
+
+const ROOT_SCOPE: &str = "package";
 
 /// Extracts symbols from Go source files.
 pub struct GoExtractor;
@@ -44,7 +46,7 @@ fn extract_go_node(
             if let Some(name) = child_field_text(node, "name", source) {
                 push_symbol(
                     symbols,
-                    "package",
+                    ROOT_SCOPE,
                     &name,
                     SymbolKind::Function,
                     node,
@@ -55,21 +57,7 @@ fn extract_go_node(
         }
         "method_declaration" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                // Extract receiver type for scope
-                let scope = if let Some(params) = node.child_by_field_name("receiver") {
-                    let recv_text = node_text(params, source)
-                        .trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace())
-                        .to_string();
-                    // Extract type name from receiver (e.g. "s *Server" -> "Server")
-                    let type_name = recv_text
-                        .split_whitespace()
-                        .last()
-                        .unwrap_or(&recv_text)
-                        .trim_start_matches('*');
-                    format!("package::{type_name}")
-                } else {
-                    "package".to_string()
-                };
+                let scope = method_receiver_scope(node, source);
                 push_symbol(
                     symbols,
                     &scope,
@@ -83,28 +71,22 @@ fn extract_go_node(
         }
         "type_declaration" => {
             // type_declaration contains type_spec children
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
+            for_each_named_child(node, |child| {
                 if child.kind() == "type_spec"
                     && let Some(name) = child_field_text(child, "name", source)
                 {
-                    let type_node = child.child_by_field_name("type");
-                    let sym_kind = match type_node.map(|n| n.kind()) {
-                        Some("struct_type") => SymbolKind::Struct,
-                        Some("interface_type") => SymbolKind::Interface,
-                        _ => SymbolKind::TypeAlias,
-                    };
+                    let sym_kind = type_spec_kind(child);
                     push_symbol(
-                        symbols, "package", &name, sym_kind, child, source, file_path,
+                        symbols, ROOT_SCOPE, &name, sym_kind, child, source, file_path,
                     );
                 }
-            }
+            });
         }
         "import_declaration" => {
             let text = node_text(node, source);
             push_symbol(
                 symbols,
-                "package",
+                ROOT_SCOPE,
                 &text,
                 SymbolKind::Import,
                 node,
@@ -117,10 +99,33 @@ fn extract_go_node(
 
     // Recurse into top-level
     if matches!(kind, "source_file") {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
+        for_each_named_child(node, |child| {
             extract_go_node(child, source, file_path, symbols);
-        }
+        });
+    }
+}
+
+/// Build the scope for a Go method from its receiver type (e.g. "s *Server" → "package::Server").
+fn method_receiver_scope(method_node: Node<'_>, source: &[u8]) -> String {
+    let Some(params) = method_node.child_by_field_name("receiver") else {
+        return ROOT_SCOPE.to_string();
+    };
+    let recv_text = node_text(params, source);
+    let trimmed = recv_text.trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace());
+    let type_name = trimmed
+        .split_whitespace()
+        .last()
+        .unwrap_or(trimmed)
+        .trim_start_matches('*');
+    format!("{ROOT_SCOPE}::{type_name}")
+}
+
+/// Classify a `type_spec` child of a `type_declaration` as struct, interface, or alias.
+fn type_spec_kind(type_spec: Node<'_>) -> SymbolKind {
+    match type_spec.child_by_field_name("type").map(|n| n.kind()) {
+        Some("struct_type") => SymbolKind::Struct,
+        Some("interface_type") => SymbolKind::Interface,
+        _ => SymbolKind::TypeAlias,
     }
 }
 

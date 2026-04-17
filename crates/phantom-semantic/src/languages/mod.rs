@@ -125,3 +125,47 @@ pub(crate) fn push_symbol(
         content_hash,
     });
 }
+
+/// Push a symbol whose name is the text of the node's `"name"` field, resolving
+/// the scope from `scope_parts` under `root_scope`. No-op if the node has no
+/// `"name"` field. Collapses the common 4-line pattern across every extractor.
+pub(crate) fn push_named_symbol(
+    symbols: &mut Vec<SymbolEntry>,
+    node: Node<'_>,
+    source: &[u8],
+    file_path: &Path,
+    scope_parts: &[String],
+    root_scope: &str,
+    kind: SymbolKind,
+) {
+    if let Some(name) = child_field_text(node, "name", source) {
+        let scope = build_scope(scope_parts, root_scope);
+        push_symbol(symbols, &scope, &name, kind, node, source, file_path);
+    }
+}
+
+/// Iterate the named children of `node`, invoking `visit` for each.
+///
+/// Wraps the tree-sitter cursor boilerplate — every extractor needs this shape
+/// for traversal. Using this helper makes recursion patterns obvious at a glance.
+pub(crate) fn for_each_named_child(node: Node<'_>, mut visit: impl FnMut(Node<'_>)) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        visit(child);
+    }
+}
+
+/// Return the text of the first named child whose kind appears in `kinds`.
+///
+/// Used as a fallback by extractors that cannot rely on tree-sitter field
+/// names (e.g. Bash function names, Makefile targets).
+pub(crate) fn first_child_text_of_kind(
+    node: Node<'_>,
+    source: &[u8],
+    kinds: &[&str],
+) -> Option<String> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find(|c| kinds.contains(&c.kind()))
+        .map(|c| node_text(c, source))
+}

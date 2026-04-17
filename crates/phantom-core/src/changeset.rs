@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::error::CoreError;
 use crate::id::{AgentId, ChangesetId, ContentHash, GitOid, SymbolId};
 use crate::symbol::SymbolEntry;
 
@@ -37,6 +38,40 @@ impl std::fmt::Display for ChangesetStatus {
             Self::Conflicted => write!(f, "conflicted"),
             Self::Resolving => write!(f, "resolving"),
             Self::Dropped => write!(f, "dropped"),
+        }
+    }
+}
+
+impl ChangesetStatus {
+    /// Return `true` if transitioning from `self` to `next` is legal.
+    ///
+    /// The transition table:
+    /// * `InProgress` → `Submitted`, `Conflicted`, `Dropped`
+    /// * `Conflicted` → `Resolving`, `Dropped`
+    /// * `Resolving`  → `Submitted`, `Conflicted`, `Dropped`
+    /// * `Submitted`  → `Dropped` (only via rollback)
+    /// * `Dropped`    → terminal, no outgoing transitions
+    #[must_use]
+    pub fn can_transition_to(self, next: Self) -> bool {
+        use ChangesetStatus::{Conflicted, Dropped, InProgress, Resolving, Submitted};
+        matches!(
+            (self, next),
+            (InProgress | Resolving, Submitted | Conflicted | Dropped)
+                | (Conflicted, Resolving | Dropped)
+                | (Submitted, Dropped)
+        )
+    }
+
+    /// Validate a transition and return `next` on success, or a
+    /// [`CoreError::InvalidStatusTransition`] describing the rejected pair.
+    pub fn try_transition_to(self, next: Self) -> Result<Self, CoreError> {
+        if self.can_transition_to(next) {
+            Ok(next)
+        } else {
+            Err(CoreError::InvalidStatusTransition {
+                from: self,
+                to: next,
+            })
         }
     }
 }
@@ -166,6 +201,43 @@ pub struct Changeset {
     pub agent_exit_code: Option<i32>,
 }
 
+impl Changeset {
+    /// Construct a fresh [`Changeset`] for a newly-created agent overlay.
+    ///
+    /// The returned changeset has:
+    /// * `status = ChangesetStatus::InProgress`
+    /// * empty `files_touched` and `operations`
+    /// * `test_result = None`
+    /// * all four `agent_*` process fields = `None`
+    /// * `created_at = Utc::now()`
+    ///
+    /// Centralizing this default-shell construction means that new fields
+    /// added to [`Changeset`] only need to be handled in one place rather
+    /// than at every struct-literal call site in downstream crates.
+    pub fn new_shell(
+        id: ChangesetId,
+        agent_id: AgentId,
+        task: impl Into<String>,
+        base_commit: GitOid,
+    ) -> Self {
+        Self {
+            id,
+            agent_id,
+            task: task.into(),
+            base_commit,
+            files_touched: Vec::new(),
+            operations: Vec::new(),
+            test_result: None,
+            created_at: Utc::now(),
+            status: ChangesetStatus::InProgress,
+            agent_pid: None,
+            agent_launched_at: None,
+            agent_completed_at: None,
+            agent_exit_code: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +331,98 @@ mod tests {
         let json = serde_json::to_string(&tr).unwrap();
         let back: TestResult = serde_json::from_str(&json).unwrap();
         assert_eq!(tr, back);
+    }
+
+    #[test]
+    fn new_shell_populates_defaults() {
+        let cs = Changeset::new_shell(
+            ChangesetId("cs-shell".into()),
+            AgentId("agent-shell".into()),
+            "seed task",
+            GitOid::zero(),
+        );
+
+        assert_eq!(cs.id, ChangesetId("cs-shell".into()));
+        assert_eq!(cs.agent_id, AgentId("agent-shell".into()));
+        assert_eq!(cs.task, "seed task");
+        assert_eq!(cs.base_commit, GitOid::zero());
+        assert!(cs.files_touched.is_empty());
+        assert!(cs.operations.is_empty());
+        assert!(cs.test_result.is_none());
+        assert_eq!(cs.status, ChangesetStatus::InProgress);
+        assert!(cs.agent_pid.is_none());
+        assert!(cs.agent_launched_at.is_none());
+        assert!(cs.agent_completed_at.is_none());
+        assert!(cs.agent_exit_code.is_none());
+    }
+
+    #[test]
+    fn can_transition_to_full_table() {
+        use ChangesetStatus::{Conflicted, Dropped, InProgress, Resolving, Submitted};
+
+        // Permitted transitions.
+        let allowed = [
+            (InProgress, Submitted),
+            (InProgress, Conflicted),
+            (InProgress, Dropped),
+            (Conflicted, Resolving),
+            (Conflicted, Dropped),
+            (Resolving, Submitted),
+            (Resolving, Conflicted),
+            (Resolving, Dropped),
+            (Submitted, Dropped),
+        ];
+        for (from, to) in allowed {
+            assert!(
+                from.can_transition_to(to),
+                "expected {from:?} → {to:?} to be allowed"
+            );
+        }
+
+        // A representative set of forbidden transitions.
+        let forbidden = [
+            (InProgress, Resolving),
+            (InProgress, InProgress),
+            (Submitted, InProgress),
+            (Submitted, Conflicted),
+            (Submitted, Submitted),
+            (Conflicted, InProgress),
+            (Conflicted, Submitted),
+            (Resolving, InProgress),
+            (Resolving, Resolving),
+            (Dropped, InProgress),
+            (Dropped, Submitted),
+            (Dropped, Conflicted),
+            (Dropped, Resolving),
+            (Dropped, Dropped),
+        ];
+        for (from, to) in forbidden {
+            assert!(
+                !from.can_transition_to(to),
+                "expected {from:?} → {to:?} to be forbidden"
+            );
+        }
+    }
+
+    #[test]
+    fn try_transition_to_returns_next_on_success() {
+        let next = ChangesetStatus::InProgress
+            .try_transition_to(ChangesetStatus::Submitted)
+            .unwrap();
+        assert_eq!(next, ChangesetStatus::Submitted);
+    }
+
+    #[test]
+    fn try_transition_to_reports_invalid() {
+        let err = ChangesetStatus::Dropped
+            .try_transition_to(ChangesetStatus::InProgress)
+            .unwrap_err();
+        match err {
+            CoreError::InvalidStatusTransition { from, to } => {
+                assert_eq!(from, ChangesetStatus::Dropped);
+                assert_eq!(to, ChangesetStatus::InProgress);
+            }
+            other => panic!("expected InvalidStatusTransition, got {other:?}"),
+        }
     }
 }

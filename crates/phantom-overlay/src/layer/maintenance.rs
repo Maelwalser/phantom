@@ -1,0 +1,107 @@
+//! Maintenance and lifecycle operations for [`OverlayLayer`].
+//!
+//! Covers whiteout persistence, trunk pointer updates, querying the set of
+//! modified / deleted files, and upper-layer reset after materialization.
+
+use std::fs;
+use std::path::PathBuf;
+
+use tracing::debug;
+
+use crate::error::OverlayError;
+use crate::trunk_view::walk_files;
+use crate::whiteout::{INTERNAL_FILES, WHITEOUT_FILE, WhiteoutSet};
+
+use super::OverlayLayer;
+use super::io_util::atomic_write;
+
+impl OverlayLayer {
+    /// Return all files that have been written to the upper layer.
+    ///
+    /// Paths are relative to the overlay root. Phantom internal files
+    /// (`.whiteouts.json`, `.phantom-task.md`) are excluded.
+    pub fn modified_files(&self) -> Result<Vec<PathBuf>, OverlayError> {
+        let all = walk_files(&self.upper, &self.upper)?;
+        Ok(all
+            .into_iter()
+            .filter(|p| {
+                let name = p.to_string_lossy();
+                !INTERNAL_FILES.iter().any(|f| name == *f)
+            })
+            .collect())
+    }
+
+    /// Return the set of paths that have been deleted (whiteout'd).
+    #[must_use]
+    pub fn deleted_files(&self) -> Vec<PathBuf> {
+        self.whiteouts.read().unwrap().iter().cloned().collect()
+    }
+
+    /// Update the lower layer pointer (e.g. when trunk advances).
+    pub fn update_lower(&self, new_lower: PathBuf) {
+        debug!(
+            old = %self.lower_path().display(),
+            new = %new_lower.display(),
+            "lower layer updated"
+        );
+        *self.lower.write().unwrap() = new_lower;
+    }
+
+    /// Persist the whiteout set to `upper/.whiteouts.json`.
+    ///
+    /// Acquires a read lock on whiteouts for serialization, releases it
+    /// before the I/O (atomic write).
+    pub fn persist_whiteouts(&self) -> Result<(), OverlayError> {
+        let json = {
+            let whiteouts = self.whiteouts.read().unwrap();
+            let ws = WhiteoutSet {
+                paths: whiteouts
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+            };
+            serde_json::to_string_pretty(&ws)
+                .map_err(|e| OverlayError::Serialization(e.to_string()))?
+        };
+        // I/O happens after the read lock is released.
+        atomic_write(&self.upper.join(WHITEOUT_FILE), json.as_bytes())?;
+        Ok(())
+    }
+
+    /// Remove a path from the whiteout set (used when re-writing a deleted file).
+    pub fn remove_whiteout(&self, rel_path: &std::path::Path) {
+        if self.whiteouts.write().unwrap().remove(rel_path) {
+            // Best-effort persist; errors are non-fatal here.
+            self.persist_whiteouts_or_warn();
+        }
+    }
+
+    /// Clear all files from the upper layer and reset whiteouts.
+    ///
+    /// After a successful materialization, the agent's changes live in trunk.
+    /// Clearing the upper layer ensures subsequent reads fall through to the
+    /// now-updated trunk instead of returning stale overlay copies.
+    pub fn clear_upper(&self) -> Result<(), OverlayError> {
+        // Remove every entry in the upper directory except the directory itself.
+        // I/O happens first, before the whiteout lock.
+        for entry in fs::read_dir(&self.upper)? {
+            let entry = entry?;
+            let path = entry.path();
+            // Use entry.file_type() instead of path.is_dir() to avoid following
+            // symlinks. path.is_dir() traverses symlinks, so a symlink pointing
+            // to an external directory would cause remove_dir_all to delete the
+            // target directory's contents.
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                fs::remove_dir_all(&path)?;
+            } else {
+                fs::remove_file(&path)?;
+            }
+        }
+
+        self.whiteouts.write().unwrap().clear();
+
+        debug!(upper = %self.upper.display(), "upper layer cleared after materialization");
+        Ok(())
+    }
+}

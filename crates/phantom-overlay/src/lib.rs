@@ -6,15 +6,19 @@
 //! writes go to a per-agent upper layer.
 
 pub mod error;
-#[cfg(feature = "fuse")]
-pub mod fuse_fs;
-#[cfg(feature = "fuse")]
-mod inode_table;
 pub mod layer;
 pub mod manager;
 pub mod trunk_view;
 pub mod types;
 mod whiteout;
+
+// FUSE support is Linux-only. Both the `fuse` feature and the `linux` target
+// are required — gate at the module-declaration site so the submodules do
+// not need inner cfg wrappers of their own.
+#[cfg(all(feature = "fuse", target_os = "linux"))]
+pub mod fuse_fs;
+#[cfg(all(feature = "fuse", target_os = "linux"))]
+mod inode_table;
 
 pub use error::OverlayError;
 pub use layer::OverlayLayer;
@@ -22,5 +26,5 @@ pub use manager::{MountHandle, OverlayManager};
 pub use trunk_view::TrunkView;
 pub use types::{DirEntry, FileType};
 
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 pub use fuse_fs::{FsConfig, PhantomFs};

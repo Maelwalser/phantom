@@ -5,6 +5,11 @@
 //! agent's system prompt. This gives agents immediate structural awareness
 //! of the parallel work environment without consuming tool-call tokens.
 
+mod strip;
+
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -12,6 +17,8 @@ use phantom_core::plan::{Plan, PlanDomain};
 use phantom_core::symbol::SymbolKind;
 use phantom_semantic::Parser;
 use tracing::debug;
+
+use strip::strip_body;
 
 /// Maximum file size to process (256 KB). Larger files are likely generated.
 const MAX_FILE_SIZE: usize = 256 * 1024;
@@ -174,60 +181,6 @@ fn extract_signature_text(source: &str, kind: SymbolKind, file_ext: &str) -> Str
     }
 }
 
-/// Strip the body from a function/method, keeping only the signature.
-fn strip_body(source: &str, file_ext: &str) -> String {
-    if file_ext == "py" {
-        strip_python_body(source)
-    } else {
-        strip_brace_body(source)
-    }
-}
-
-/// Strip a brace-delimited body (Rust, TypeScript, Go).
-///
-/// Finds the first `{` at bracket-depth 0, which starts the function body,
-/// and replaces everything from there with `{ ... }`.
-fn strip_brace_body(source: &str) -> String {
-    let mut depth: i32 = 0;
-    for (i, ch) in source.char_indices() {
-        match ch {
-            '(' | '[' | '<' => depth += 1,
-            ')' | ']' => depth = (depth - 1).max(0),
-            '>' if depth > 0 => depth -= 1,
-            '{' if depth == 0 => {
-                let sig = source[..i].trim_end();
-                return format!("{sig} {{ ... }}");
-            }
-            _ => {}
-        }
-    }
-    // No body found — return as-is (e.g. abstract method declaration).
-    source.to_string()
-}
-
-/// Strip a Python function body (everything after the signature colon).
-fn strip_python_body(source: &str) -> String {
-    let mut depth: i32 = 0;
-    let mut past_params = false;
-    for (i, ch) in source.char_indices() {
-        match ch {
-            '(' | '[' => depth += 1,
-            ')' | ']' => {
-                depth = (depth - 1).max(0);
-                if depth == 0 {
-                    past_params = true;
-                }
-            }
-            ':' if depth == 0 && past_params => {
-                return source[..=i].trim_end().to_string();
-            }
-            _ => {}
-        }
-    }
-    // Fallback: take first line.
-    source.lines().next().unwrap_or(source).to_string()
-}
-
 /// Check if a file path looks like a test file.
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn is_test_file(path: &Path) -> bool {
@@ -255,95 +208,5 @@ fn truncate_to_budget(section: &str, budget: usize) -> String {
         format!("{}\n```\n", &section[..last_newline])
     } else {
         String::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn strip_brace_body_rust_function() {
-        let src = "pub fn validate(token: &str) -> Result<Claims, Error> {\n    todo!()\n}";
-        let sig = strip_brace_body(src);
-        assert_eq!(
-            sig,
-            "pub fn validate(token: &str) -> Result<Claims, Error> { ... }"
-        );
-    }
-
-    #[test]
-    fn strip_brace_body_with_generics() {
-        let src =
-            "fn process<T: Into<String>>(items: Vec<T>) -> HashMap<String, T> {\n    todo!()\n}";
-        let sig = strip_brace_body(src);
-        assert_eq!(
-            sig,
-            "fn process<T: Into<String>>(items: Vec<T>) -> HashMap<String, T> { ... }"
-        );
-    }
-
-    #[test]
-    fn strip_brace_body_typescript() {
-        let src = "function greet(name: string): string {\n    return `Hello, ${name}`;\n}";
-        let sig = strip_brace_body(src);
-        assert_eq!(sig, "function greet(name: string): string { ... }");
-    }
-
-    #[test]
-    fn strip_brace_body_go() {
-        let src = "func (s *Server) Start() error {\n\treturn nil\n}";
-        let sig = strip_brace_body(src);
-        assert_eq!(sig, "func (s *Server) Start() error { ... }");
-    }
-
-    #[test]
-    fn strip_brace_body_no_body() {
-        let src = "fn abstract_method(&self) -> bool;";
-        let sig = strip_brace_body(src);
-        assert_eq!(sig, "fn abstract_method(&self) -> bool;");
-    }
-
-    #[test]
-    fn strip_python_body_simple() {
-        let src = "def greet(name: str) -> str:\n    return f\"Hello, {name}\"";
-        let sig = strip_python_body(src);
-        assert_eq!(sig, "def greet(name: str) -> str:");
-    }
-
-    #[test]
-    fn strip_python_body_no_return_type() {
-        let src = "def __init__(self, name):\n    self.name = name";
-        let sig = strip_python_body(src);
-        assert_eq!(sig, "def __init__(self, name):");
-    }
-
-    #[test]
-    fn struct_kept_as_is() {
-        let src = "pub struct Config {\n    pub host: String,\n    pub port: u16,\n}";
-        let sig = extract_signature_text(src, SymbolKind::Struct, "rs");
-        assert_eq!(sig, src);
-    }
-
-    #[test]
-    fn impl_returns_empty() {
-        let sig = extract_signature_text("impl Foo { fn bar() {} }", SymbolKind::Impl, "rs");
-        assert!(sig.is_empty());
-    }
-
-    #[test]
-    fn import_returns_empty() {
-        let sig =
-            extract_signature_text("use std::collections::HashMap;", SymbolKind::Import, "rs");
-        assert!(sig.is_empty());
-    }
-
-    #[test]
-    fn is_test_file_detects_patterns() {
-        assert!(is_test_file(Path::new("src/auth_test.rs")));
-        assert!(is_test_file(Path::new("tests/test_utils.py")));
-        assert!(is_test_file(Path::new("src/auth.spec.ts")));
-        assert!(!is_test_file(Path::new("src/auth.rs")));
-        assert!(!is_test_file(Path::new("src/testing.rs")));
     }
 }

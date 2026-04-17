@@ -8,7 +8,9 @@ use std::path::Path;
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::{LanguageExtractor, node_text, push_symbol};
+use super::{LanguageExtractor, for_each_named_child, node_text, push_symbol};
+
+const ROOT_SCOPE: &str = "root";
 
 /// Extracts symbols from JSON files.
 pub struct JsonExtractor;
@@ -42,35 +44,29 @@ fn extract_json_top_level(
     file_path: &Path,
     symbols: &mut Vec<SymbolEntry>,
 ) {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            "pair" => {
-                // Extract the key string as the symbol name.
-                if let Some(key_node) = child.child_by_field_name("key") {
-                    let raw = node_text(key_node, source);
-                    // Strip surrounding quotes from the key.
-                    let key = raw.trim().trim_matches('"');
-                    if !key.is_empty() {
-                        push_symbol(
-                            symbols,
-                            "root",
-                            key,
-                            SymbolKind::Section,
-                            child,
-                            source,
-                            file_path,
-                        );
-                    }
+    for_each_named_child(node, |child| match child.kind() {
+        "pair" => {
+            if let Some(key_node) = child.child_by_field_name("key") {
+                let raw = node_text(key_node, source);
+                // Strip surrounding quotes from the key.
+                let key = raw.trim().trim_matches('"');
+                if !key.is_empty() {
+                    push_symbol(
+                        symbols,
+                        ROOT_SCOPE,
+                        key,
+                        SymbolKind::Section,
+                        child,
+                        source,
+                        file_path,
+                    );
                 }
             }
-            // Recurse into the root object.
-            "object" => {
-                extract_json_top_level(child, source, file_path, symbols);
-            }
-            _ => {}
         }
-    }
+        // Recurse into the root object.
+        "object" => extract_json_top_level(child, source, file_path, symbols),
+        _ => {}
+    });
 }
 
 #[cfg(test)]

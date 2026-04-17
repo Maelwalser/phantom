@@ -1,0 +1,718 @@
+//! [`PhantomFs`] — `fuser::Filesystem` implementation that bridges the
+//! kernel's FUSE protocol to the overlay layer.
+
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fs::OpenOptions;
+use std::os::unix::fs::FileExt;
+use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use fuser::{
+    BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
+    INodeNo, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, WriteFlags,
+};
+use phantom_core::AgentId;
+use tracing::{debug, warn};
+
+use crate::inode_table::InodeTable;
+use crate::layer::OverlayLayer;
+
+use super::attr::{TTL, default_dir_attr, metadata_to_attr};
+use super::config::FsConfig;
+use super::handles::{DirSnapshot, OpenFile};
+
+/// FUSE filesystem backed by an [`OverlayLayer`].
+///
+/// `OverlayLayer` uses interior mutability (fine-grained `RwLock`s on
+/// whiteouts and the lower-path), so no external lock is needed here.
+/// This allows concurrent FUSE operations on different files without
+/// global serialization.
+pub struct PhantomFs {
+    layer: OverlayLayer,
+    agent_id: AgentId,
+    inodes: InodeTable,
+    /// Counter for allocating unique file handles (shared for files and dirs).
+    next_fh: AtomicU64,
+    /// Open file descriptor table. Keyed by the file handle returned to
+    /// the kernel via `open()` / `create()`.
+    open_files: RwLock<HashMap<u64, OpenFile>>,
+    /// Open directory handles. Keyed by the file handle returned via
+    /// `opendir()`.  Each entry holds a snapshotted listing so that
+    /// paginated `readdir` calls use collision-free sequential offsets.
+    open_dirs: RwLock<HashMap<u64, DirSnapshot>>,
+    /// Projected filesystem identity and permission configuration.
+    config: FsConfig,
+}
+
+impl PhantomFs {
+    /// Create a new FUSE filesystem for the given agent.
+    pub fn new(layer: OverlayLayer, agent_id: AgentId, config: FsConfig) -> Self {
+        Self {
+            layer,
+            agent_id,
+            inodes: InodeTable::new(),
+            next_fh: AtomicU64::new(1),
+            open_files: RwLock::new(HashMap::new()),
+            open_dirs: RwLock::new(HashMap::new()),
+            config,
+        }
+    }
+
+    /// Return the agent ID this filesystem belongs to.
+    #[must_use]
+    pub fn agent_id(&self) -> &AgentId {
+        &self.agent_id
+    }
+
+    /// Purge stale unlinked inodes whose `forget` was never dispatched.
+    ///
+    /// Returns the number of inodes purged. Call this during overlay
+    /// teardown to prevent memory leaks from unclean unmounts or agent
+    /// crashes.
+    pub fn purge_stale_inodes(&self) -> usize {
+        let purged = self.inodes.purge_unlinked();
+        if purged > 0 {
+            debug!(purged, agent = %self.agent_id, "purged stale unlinked inodes");
+        }
+        purged
+    }
+}
+
+impl Filesystem for PhantomFs {
+    fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
+        debug!(ino = ino.0, nlookup, "forget");
+        self.inodes.forget(ino.0, nlookup);
+    }
+
+    fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        let Some(parent_path) = self.inodes.get_path(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let child_path = parent_path.join(name);
+
+        match self.layer.getattr(&child_path) {
+            Ok(meta) => {
+                let ino = self.inodes.get_or_create_inode(&child_path);
+                let attr = metadata_to_attr(ino, &meta, &self.config);
+                reply.entry(&TTL, &attr, Generation(0));
+            }
+            Err(_) => {
+                reply.error(Errno::ENOENT);
+            }
+        }
+    }
+
+    fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+        let Some(path) = self.inodes.get_path(ino.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        // Root directory special case.
+        if ino.0 == 1 {
+            match self.layer.getattr(&path) {
+                Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta, &self.config)),
+                Err(_) => reply.attr(&TTL, &default_dir_attr(ino.0, &self.config)),
+            }
+            return;
+        }
+
+        match self.layer.getattr(&path) {
+            Ok(meta) => {
+                let mut attr = metadata_to_attr(ino.0, &meta, &self.config);
+                if self.inodes.is_unlinked(ino.0) {
+                    attr.nlink = 0;
+                }
+                reply.attr(&TTL, &attr);
+            }
+            Err(_) => reply.error(Errno::ENOENT),
+        }
+    }
+
+    fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+        let Some(path) = self.inodes.get_path(ino.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        // Snapshot the directory listing at open time so paginated readdir
+        // calls use collision-free sequential offsets.
+        let Ok(entries) = self.layer.read_dir(&path) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let parent_ino = if ino.0 == 1 {
+            1
+        } else {
+            path.parent()
+                .map_or(1, |p| self.inodes.get_or_create_inode(&p.to_path_buf()))
+        };
+
+        let mut all_entries: Vec<(u64, FileType, String)> = vec![
+            (ino.0, FileType::Directory, ".".to_string()),
+            (parent_ino, FileType::Directory, "..".to_string()),
+        ];
+
+        for entry in &entries {
+            let child_path = path.join(&entry.name);
+            let child_ino = self.inodes.get_or_create_inode(&child_path);
+            let ft = match entry.file_type {
+                crate::types::FileType::File => FileType::RegularFile,
+                crate::types::FileType::Directory => FileType::Directory,
+                crate::types::FileType::Symlink => FileType::Symlink,
+            };
+            all_entries.push((child_ino, ft, entry.name.to_string_lossy().into_owned()));
+        }
+
+        // Sort by name for deterministic order.
+        all_entries.sort_by(|a, b| a.2.cmp(&b.2));
+
+        let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+        self.open_dirs.write().unwrap().insert(
+            fh,
+            DirSnapshot {
+                entries: all_entries,
+            },
+        );
+        reply.opened(FileHandle(fh), FopenFlags::empty());
+    }
+
+    fn readdir(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectory,
+    ) {
+        let dirs = self.open_dirs.read().unwrap();
+        let Some(snapshot) = dirs.get(&fh.0) else {
+            reply.error(Errno::EBADF);
+            return;
+        };
+
+        // offset is the sequential 1-based cookie of the last entry
+        // returned.  Entries are numbered 1..=len, so offset==0 means
+        // "start from the beginning" and offset==N means "resume after
+        // the Nth entry".
+        let start = offset as usize;
+        for (idx, (child_ino, ft, name)) in snapshot.entries.iter().enumerate().skip(start) {
+            // Cookie for this entry: 1-based index.
+            let cookie = (idx as u64) + 1;
+            if reply.add(INodeNo(*child_ino), cookie, *ft, name) {
+                break;
+            }
+        }
+        reply.ok();
+    }
+
+    fn releasedir(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        _flags: OpenFlags,
+        reply: ReplyEmpty,
+    ) {
+        self.open_dirs.write().unwrap().remove(&fh.0);
+        reply.ok();
+    }
+
+    fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+        let Some(path) = self.inodes.get_path(ino.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let raw = flags.0;
+        let writable = (raw & libc::O_WRONLY != 0) || (raw & libc::O_RDWR != 0);
+        let truncate = raw & libc::O_TRUNC != 0;
+
+        let real_path = if writable {
+            if let Ok(p) = self.layer.ensure_upper_copy(&path) {
+                p
+            } else {
+                reply.error(Errno::ENOENT);
+                return;
+            }
+        } else if let Ok(p) = self.layer.resolve_path(&path) {
+            p
+        } else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let file = if writable {
+            OpenOptions::new().read(true).write(true).open(&real_path)
+        } else {
+            OpenOptions::new().read(true).open(&real_path)
+        };
+
+        let file = match file {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(error = %e, "open: failed to open backing file");
+                reply.error(Errno::EIO);
+                return;
+            }
+        };
+
+        if truncate && let Err(e) = file.set_len(0) {
+            warn!(error = %e, "open: truncate failed");
+            reply.error(Errno::EIO);
+            return;
+        }
+
+        let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+        self.open_files
+            .write()
+            .unwrap()
+            .insert(fh, OpenFile { file, writable });
+        reply.opened(FileHandle(fh), FopenFlags::empty());
+    }
+
+    fn read(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        size: u32,
+        _flags: OpenFlags,
+        _lock_owner: Option<LockOwner>,
+        reply: ReplyData,
+    ) {
+        let open_files = self.open_files.read().unwrap();
+        let Some(open_file) = open_files.get(&fh.0) else {
+            reply.error(Errno::EBADF);
+            return;
+        };
+
+        let mut buf = vec![0u8; size as usize];
+        match open_file.file.read_at(&mut buf, offset) {
+            Ok(0) => reply.data(&[]),
+            Ok(n) => reply.data(&buf[..n]),
+            Err(e) => {
+                warn!(error = %e, "read: pread failed");
+                reply.error(Errno::EIO);
+            }
+        }
+    }
+
+    fn write(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        data: &[u8],
+        _write_flags: WriteFlags,
+        _flags: OpenFlags,
+        _lock_owner: Option<LockOwner>,
+        reply: ReplyWrite,
+    ) {
+        let open_files = self.open_files.read().unwrap();
+        let Some(open_file) = open_files.get(&fh.0) else {
+            reply.error(Errno::EBADF);
+            return;
+        };
+
+        if !open_file.writable {
+            reply.error(Errno::EBADF);
+            return;
+        }
+
+        // Extend file if writing past current end (creates a sparse hole).
+        let write_end = offset + data.len() as u64;
+        if let Ok(meta) = open_file.file.metadata()
+            && write_end > meta.len()
+            && let Err(e) = open_file.file.set_len(write_end)
+        {
+            warn!(error = %e, "write: set_len failed");
+            reply.error(Errno::EIO);
+            return;
+        }
+
+        match open_file.file.write_at(data, offset) {
+            Ok(n) => reply.written(n as u32),
+            Err(e) => {
+                warn!(error = %e, "write: pwrite failed");
+                reply.error(Errno::EIO);
+            }
+        }
+    }
+
+    fn create(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        mode: u32,
+        _umask: u32,
+        _flags: i32,
+        reply: ReplyCreate,
+    ) {
+        let Some(parent_path) = self.inodes.get_path(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let child_path = parent_path.join(name);
+
+        match self.layer.write_file(&child_path, &[]) {
+            Ok(()) => {
+                self.layer.remove_whiteout(&child_path);
+
+                // Apply the requested mode so executables retain +x.
+                if let Err(e) = self.layer.set_permissions(&child_path, mode) {
+                    warn!(error = %e, "create: set_permissions failed");
+                    // Non-fatal — file was created, just with default perms.
+                }
+
+                // Open a real file handle so subsequent writes use pwrite.
+                let real_path = match self.layer.resolve_path(&child_path) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!(error = %e, "create: resolve after write failed");
+                        reply.error(Errno::EIO);
+                        return;
+                    }
+                };
+                let ino = self.inodes.get_or_create_inode(&child_path);
+
+                let file = match OpenOptions::new().read(true).write(true).open(&real_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        warn!(error = %e, "create: open backing file failed");
+                        reply.error(Errno::EIO);
+                        return;
+                    }
+                };
+
+                let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+                self.open_files.write().unwrap().insert(
+                    fh,
+                    OpenFile {
+                        file,
+                        writable: true,
+                    },
+                );
+                let now = SystemTime::now();
+                let perm = (mode & 0o7777) as u16;
+                let attr = FileAttr {
+                    ino: INodeNo(ino),
+                    size: 0,
+                    blocks: 0,
+                    atime: now,
+                    mtime: now,
+                    ctime: now,
+                    crtime: UNIX_EPOCH,
+                    kind: FileType::RegularFile,
+                    perm,
+                    nlink: 1,
+                    uid: self.config.uid,
+                    gid: self.config.gid,
+                    rdev: 0,
+                    blksize: 4096,
+                    flags: 0,
+                };
+                reply.created(
+                    &TTL,
+                    &attr,
+                    Generation(0),
+                    FileHandle(fh),
+                    FopenFlags::empty(),
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "create failed");
+                reply.error(Errno::EIO);
+            }
+        }
+    }
+
+    fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let Some(parent_path) = self.inodes.get_path(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let child_path = parent_path.join(name);
+
+        match self.layer.delete_file(&child_path) {
+            Ok(()) => {
+                self.inodes.unlink(&child_path);
+                reply.ok();
+            }
+            Err(e) => {
+                warn!(error = %e, "unlink failed");
+                reply.error(Errno::EIO);
+            }
+        }
+    }
+
+    fn setattr(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
+        size: Option<u64>,
+        _atime: Option<fuser::TimeOrNow>,
+        _mtime: Option<fuser::TimeOrNow>,
+        _ctime: Option<SystemTime>,
+        _fh: Option<FileHandle>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        _flags: Option<BsdFileFlags>,
+        reply: ReplyAttr,
+    ) {
+        let Some(path) = self.inodes.get_path(ino.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let needs_write = mode.is_some() || size.is_some();
+
+        if needs_write {
+            if let Some(new_mode) = mode
+                && let Err(e) = self.layer.set_permissions(&path, new_mode)
+            {
+                warn!(error = %e, "setattr chmod failed");
+                reply.error(Errno::EIO);
+                return;
+            }
+
+            if let Some(new_size) = size
+                && let Err(e) = self.layer.truncate_file(&path, new_size)
+            {
+                warn!(error = %e, "setattr truncate failed");
+                reply.error(Errno::EIO);
+                return;
+            }
+        }
+
+        match self.layer.getattr(&path) {
+            Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino.0, &meta, &self.config)),
+            Err(_) => reply.error(Errno::ENOENT),
+        }
+    }
+
+    fn mkdir(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        reply: ReplyEntry,
+    ) {
+        let Some(parent_path) = self.inodes.get_path(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let child_path = parent_path.join(name);
+
+        // Passthrough paths create directories directly in the lower layer.
+        let target_path = if self.layer.is_passthrough(&child_path) {
+            self.layer.lower_dir().join(&child_path)
+        } else {
+            self.layer.upper_dir().join(&child_path)
+        };
+
+        match std::fs::create_dir_all(&target_path) {
+            Ok(()) => {
+                if !self.layer.is_passthrough(&child_path) {
+                    // Clear whiteout if this dir was previously deleted.
+                    self.layer.remove_whiteout(&child_path);
+                }
+                let ino = self.inodes.get_or_create_inode(&child_path);
+                reply.entry(&TTL, &default_dir_attr(ino, &self.config), Generation(0));
+                debug!(path = %child_path.display(), "mkdir");
+            }
+            Err(e) => {
+                warn!(error = %e, "mkdir failed");
+                reply.error(Errno::EIO);
+            }
+        }
+    }
+
+    fn rename(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        newparent: INodeNo,
+        newname: &OsStr,
+        flags: RenameFlags,
+        reply: ReplyEmpty,
+    ) {
+        // Atomic exchange is not supported.
+        if flags.contains(RenameFlags::RENAME_EXCHANGE) {
+            reply.error(Errno::ENOSYS);
+            return;
+        }
+
+        let Some(old_parent_path) = self.inodes.get_path(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+        let Some(new_parent_path) = self.inodes.get_path(newparent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let old_path = old_parent_path.join(name);
+        let new_path = new_parent_path.join(newname);
+
+        // RENAME_NOREPLACE: fail if destination already exists.
+        if flags.contains(RenameFlags::RENAME_NOREPLACE) && self.layer.exists(&new_path) {
+            reply.error(Errno::EEXIST);
+            return;
+        }
+
+        match self.layer.rename_file(&old_path, &new_path) {
+            Ok(()) => {
+                self.inodes.rename(&old_path, &new_path);
+                reply.ok();
+            }
+            Err(crate::error::OverlayError::PathNotFound(_)) => {
+                reply.error(Errno::ENOENT);
+            }
+            Err(crate::error::OverlayError::Io(ref e))
+                if e.raw_os_error() == Some(libc::ENOTEMPTY) =>
+            {
+                reply.error(Errno::ENOTEMPTY);
+            }
+            Err(e) => {
+                warn!(error = %e, "rename failed");
+                reply.error(Errno::EIO);
+            }
+        }
+    }
+
+    fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let Some(parent_path) = self.inodes.get_path(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let child_path = parent_path.join(name);
+
+        // Passthrough directories (e.g. .git) must not be removed via the overlay.
+        if self.layer.is_passthrough(&child_path) {
+            reply.error(Errno::EPERM);
+            return;
+        }
+
+        // Check the merged view — the directory must exist in the overlay.
+        if !self.layer.exists(&child_path) {
+            reply.error(Errno::ENOENT);
+            return;
+        }
+
+        // POSIX: rmdir must fail with ENOTEMPTY if the directory is non-empty.
+        // Evaluate the merged view (upper + lower minus whiteouts).
+        match self.layer.read_dir(&child_path) {
+            Ok(entries) if !entries.is_empty() => {
+                reply.error(Errno::ENOTEMPTY);
+                return;
+            }
+            Err(_) => {
+                reply.error(Errno::EIO);
+                return;
+            }
+            Ok(_) => {} // empty — proceed
+        }
+
+        // Remove the upper-layer copy if it exists.
+        let upper_path = self.layer.upper_dir().join(&child_path);
+        if upper_path.is_dir()
+            && let Err(e) = std::fs::remove_dir(&upper_path)
+        {
+            warn!(error = %e, "rmdir: failed to remove upper directory");
+            reply.error(Errno::EIO);
+            return;
+        }
+
+        // Write whiteout to hide any lower-layer copy.
+        let _ = self.layer.delete_file(&child_path);
+        self.inodes.unlink(&child_path);
+        reply.ok();
+    }
+
+    fn release(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        _flags: OpenFlags,
+        _lock_owner: Option<LockOwner>,
+        _flush: bool,
+        reply: ReplyEmpty,
+    ) {
+        self.open_files.write().unwrap().remove(&fh.0);
+        reply.ok();
+    }
+
+    fn symlink(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        link_name: &OsStr,
+        target: &std::path::Path,
+        reply: ReplyEntry,
+    ) {
+        let Some(parent_path) = self.inodes.get_path(parent.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        let child_path = parent_path.join(link_name);
+
+        match self.layer.create_symlink(&child_path, target) {
+            Ok(()) => {
+                let ino = self.inodes.get_or_create_inode(&child_path);
+                match self.layer.getattr(&child_path) {
+                    Ok(meta) => {
+                        let attr = metadata_to_attr(ino, &meta, &self.config);
+                        reply.entry(&TTL, &attr, Generation(0));
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "symlink: getattr after create failed");
+                        reply.error(Errno::EIO);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "symlink failed");
+                reply.error(Errno::EIO);
+            }
+        }
+    }
+
+    fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+        let Some(path) = self.inodes.get_path(ino.0) else {
+            reply.error(Errno::ENOENT);
+            return;
+        };
+
+        match self.layer.read_symlink(&path) {
+            Ok(target) => {
+                reply.data(target.as_os_str().as_encoded_bytes());
+            }
+            Err(_) => {
+                reply.error(Errno::ENOENT);
+            }
+        }
+    }
+}

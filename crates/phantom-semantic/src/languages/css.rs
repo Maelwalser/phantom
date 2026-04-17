@@ -8,7 +8,11 @@ use std::path::Path;
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::{LanguageExtractor, node_text, push_symbol};
+use super::{
+    LanguageExtractor, first_child_text_of_kind, for_each_named_child, node_text, push_symbol,
+};
+
+const ROOT_SCOPE: &str = "stylesheet";
 
 /// Extracts symbols from CSS files.
 pub struct CssExtractor;
@@ -41,71 +45,62 @@ fn extract_css_top_level(
     file_path: &Path,
     symbols: &mut Vec<SymbolEntry>,
 ) {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            "rule_set" => {
-                // Use the selector text as the symbol name.
-                let selector = extract_selector(child, source);
-                if !selector.is_empty() {
-                    push_symbol(
-                        symbols,
-                        "stylesheet",
-                        &selector,
-                        SymbolKind::Section,
-                        child,
-                        source,
-                        file_path,
-                    );
-                }
-            }
-            "import_statement" | "charset_statement" | "namespace_statement" => {
-                let text = node_text(child, source).trim().to_string();
-                let name = text
-                    .lines()
-                    .next()
-                    .unwrap_or(&text)
-                    .trim_end_matches(';')
-                    .trim()
-                    .to_string();
+    for_each_named_child(node, |child| match child.kind() {
+        "rule_set" => {
+            let selector = extract_selector(child, source);
+            if !selector.is_empty() {
                 push_symbol(
                     symbols,
-                    "stylesheet",
-                    &name,
-                    SymbolKind::Directive,
-                    child,
-                    source,
-                    file_path,
-                );
-            }
-            "media_statement" | "supports_statement" | "keyframes_statement" | "at_rule" => {
-                let name = extract_at_rule_name(child, source);
-                push_symbol(
-                    symbols,
-                    "stylesheet",
-                    &name,
+                    ROOT_SCOPE,
+                    &selector,
                     SymbolKind::Section,
                     child,
                     source,
                     file_path,
                 );
             }
-            // Recurse into stylesheet root.
-            "stylesheet" => {
-                extract_css_top_level(child, source, file_path, symbols);
-            }
-            _ => {}
         }
-    }
+        "import_statement" | "charset_statement" | "namespace_statement" => {
+            let text = node_text(child, source).trim().to_string();
+            let name = text
+                .lines()
+                .next()
+                .unwrap_or(&text)
+                .trim_end_matches(';')
+                .trim()
+                .to_string();
+            push_symbol(
+                symbols,
+                ROOT_SCOPE,
+                &name,
+                SymbolKind::Directive,
+                child,
+                source,
+                file_path,
+            );
+        }
+        "media_statement" | "supports_statement" | "keyframes_statement" | "at_rule" => {
+            let name = extract_at_rule_name(child, source);
+            push_symbol(
+                symbols,
+                ROOT_SCOPE,
+                &name,
+                SymbolKind::Section,
+                child,
+                source,
+                file_path,
+            );
+        }
+        // Recurse into stylesheet root.
+        "stylesheet" => extract_css_top_level(child, source, file_path, symbols),
+        _ => {}
+    });
 }
 
 /// Extract the selector text from a rule_set node.
 fn extract_selector(rule_node: Node<'_>, source: &[u8]) -> String {
-    let mut cursor = rule_node.walk();
-    for child in rule_node.named_children(&mut cursor) {
-        if child.kind() == "selectors" {
-            return node_text(child, source).trim().to_string();
-        }
+    if let Some(text) = first_child_text_of_kind(rule_node, source, &["selectors"]) {
+        return text.trim().to_string();
     }
     // Fallback: take text before the first '{'.
     let text = node_text(rule_node, source);

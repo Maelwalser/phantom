@@ -8,11 +8,8 @@ use phantom_core::id::ChangesetId;
 use sqlx::Row;
 
 use crate::error::EventStoreError;
+use crate::kind_pattern;
 use crate::store::SqliteEventStore;
-
-/// JSON pattern that identifies `ChangesetMaterialized` events in the `kind`
-/// column. The serialized form always starts with `{"ChangesetMaterialized"`.
-const MATERIALIZED_KIND_PREFIX: &str = r#"{"ChangesetMaterialized"%"#;
 
 /// Replay engine for querying materialization history.
 pub struct ReplayEngine<'a> {
@@ -32,7 +29,7 @@ impl<'a> ReplayEngine<'a> {
              WHERE dropped = 0 AND kind LIKE $1
              ORDER BY id ASC",
         )
-        .bind(MATERIALIZED_KIND_PREFIX)
+        .bind(kind_pattern::materialized_prefix())
         .fetch_all(&self.store.pool)
         .await?;
 
@@ -55,7 +52,7 @@ impl<'a> ReplayEngine<'a> {
              LIMIT 1",
         )
         .bind(&id.0)
-        .bind(MATERIALIZED_KIND_PREFIX)
+        .bind(kind_pattern::materialized_prefix())
         .fetch_optional(&self.store.pool)
         .await?;
 
@@ -71,7 +68,7 @@ impl<'a> ReplayEngine<'a> {
              ORDER BY id ASC",
         )
         .bind(target_id)
-        .bind(MATERIALIZED_KIND_PREFIX)
+        .bind(kind_pattern::materialized_prefix())
         .fetch_all(&self.store.pool)
         .await?;
 
@@ -79,25 +76,5 @@ impl<'a> ReplayEngine<'a> {
             .iter()
             .map(|r| ChangesetId(r.get("changeset_id")))
             .collect())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use phantom_core::event::EventKind;
-    use phantom_core::id::GitOid;
-
-    #[test]
-    fn materialized_prefix_matches_serialized_format() {
-        let kind = EventKind::ChangesetMaterialized {
-            new_commit: GitOid::zero(),
-        };
-        let json = serde_json::to_string(&kind).unwrap();
-        let prefix = MATERIALIZED_KIND_PREFIX.trim_end_matches('%');
-        assert!(
-            json.starts_with(prefix),
-            "MATERIALIZED_KIND_PREFIX is stale: got {json}"
-        );
     }
 }

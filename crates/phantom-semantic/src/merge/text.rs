@@ -2,10 +2,9 @@
 
 use std::path::Path;
 
-use phantom_core::conflict::{ConflictDetail, ConflictKind};
+use phantom_core::conflict::{ConflictDetail, ConflictKind, MergeResult};
 use phantom_core::id::ChangesetId;
 use phantom_core::is_binary_or_non_utf8;
-use phantom_core::traits::MergeResult;
 
 /// LCS-based three-way text merge fallback.
 ///

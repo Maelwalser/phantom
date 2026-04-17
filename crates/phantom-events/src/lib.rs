@@ -5,6 +5,7 @@
 //! rollback support, and projection to derive current state from the event log.
 
 pub mod error;
+mod kind_pattern;
 pub mod projection;
 pub mod query;
 pub mod replay;

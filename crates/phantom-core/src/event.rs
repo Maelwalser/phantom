@@ -11,17 +11,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::changeset::{SemanticOperation, TestResult};
-use crate::conflict::ConflictDetail;
+use crate::conflict::{ConflictDetail, MergeCheckResult};
 use crate::id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, PlanId, SymbolId};
-
-/// Result of a semantic merge check.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MergeCheckResult {
-    /// The changeset merges cleanly with trunk.
-    Clean,
-    /// The changeset has symbol-level conflicts.
-    Conflicted(Vec<ConflictDetail>),
-}
 
 /// The payload of an event — what happened.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,29 +198,6 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(event, back);
-    }
-
-    #[test]
-    fn serde_merge_check_result_roundtrip() {
-        let clean = MergeCheckResult::Clean;
-        let json = serde_json::to_string(&clean).unwrap();
-        let back: MergeCheckResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(clean, back);
-
-        let conflicted = MergeCheckResult::Conflicted(vec![ConflictDetail {
-            kind: crate::conflict::ConflictKind::BothModifiedSymbol,
-            file: PathBuf::from("src/lib.rs"),
-            symbol_id: None,
-            ours_changeset: ChangesetId("cs-1".into()),
-            theirs_changeset: ChangesetId("cs-2".into()),
-            description: "test conflict".into(),
-            ours_span: None,
-            theirs_span: None,
-            base_span: None,
-        }]);
-        let json = serde_json::to_string(&conflicted).unwrap();
-        let back: MergeCheckResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(conflicted, back);
     }
 
     #[test]

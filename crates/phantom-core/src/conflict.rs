@@ -83,6 +83,29 @@ impl ConflictSpan {
     }
 }
 
+/// Result of a semantic merge check between a changeset and trunk.
+///
+/// Emitted by the merge-check step of the submit pipeline and embedded
+/// in [`EventKind::ChangesetMergeChecked`](crate::event::EventKind::ChangesetMergeChecked).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeCheckResult {
+    /// The changeset merges cleanly with trunk.
+    Clean,
+    /// The changeset has symbol-level conflicts.
+    Conflicted(Vec<ConflictDetail>),
+}
+
+/// Outcome of a three-way semantic merge.
+///
+/// Returned by [`SemanticAnalyzer::three_way_merge`](crate::traits::SemanticAnalyzer::three_way_merge).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeResult {
+    /// The merge produced clean output.
+    Clean(Vec<u8>),
+    /// The merge found conflicts that require re-tasking.
+    Conflict(Vec<ConflictDetail>),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +195,41 @@ mod tests {
         let json = serde_json::to_string(&detail).unwrap();
         let back: ConflictDetail = serde_json::from_str(&json).unwrap();
         assert_eq!(detail, back);
+    }
+
+    #[test]
+    fn serde_merge_check_result_roundtrip() {
+        let clean = MergeCheckResult::Clean;
+        let json = serde_json::to_string(&clean).unwrap();
+        let back: MergeCheckResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(clean, back);
+
+        let conflicted = MergeCheckResult::Conflicted(vec![ConflictDetail {
+            kind: ConflictKind::BothModifiedSymbol,
+            file: PathBuf::from("src/lib.rs"),
+            symbol_id: None,
+            ours_changeset: ChangesetId("cs-1".into()),
+            theirs_changeset: ChangesetId("cs-2".into()),
+            description: "test conflict".into(),
+            ours_span: None,
+            theirs_span: None,
+            base_span: None,
+        }]);
+        let json = serde_json::to_string(&conflicted).unwrap();
+        let back: MergeCheckResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(conflicted, back);
+    }
+
+    #[test]
+    fn serde_merge_result_roundtrip() {
+        let clean = MergeResult::Clean(b"merged output".to_vec());
+        let json = serde_json::to_string(&clean).unwrap();
+        let back: MergeResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(clean, back);
+
+        let conflict = MergeResult::Conflict(vec![]);
+        let json = serde_json::to_string(&conflict).unwrap();
+        let back: MergeResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(conflict, back);
     }
 }

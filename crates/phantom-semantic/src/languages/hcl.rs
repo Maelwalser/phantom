@@ -8,7 +8,9 @@ use std::path::Path;
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::{LanguageExtractor, node_text, push_symbol};
+use super::{LanguageExtractor, for_each_named_child, node_text, push_symbol};
+
+const ROOT_SCOPE: &str = "root";
 
 /// Extracts symbols from HCL/Terraform files.
 pub struct HclExtractor;
@@ -41,16 +43,29 @@ fn extract_hcl_top_level(
     file_path: &Path,
     symbols: &mut Vec<SymbolEntry>,
 ) {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            "block" => {
-                let name = extract_block_identifier(child, source);
-                if !name.is_empty() {
+    for_each_named_child(node, |child| match child.kind() {
+        "block" => {
+            let name = extract_block_identifier(child, source);
+            if !name.is_empty() {
+                push_symbol(
+                    symbols,
+                    ROOT_SCOPE,
+                    &name,
+                    SymbolKind::Section,
+                    child,
+                    source,
+                    file_path,
+                );
+            }
+        }
+        "attribute" => {
+            if let Some(key_node) = child.child_by_field_name("key") {
+                let key = node_text(key_node, source).trim().to_string();
+                if !key.is_empty() {
                     push_symbol(
                         symbols,
-                        "root",
-                        &name,
+                        ROOT_SCOPE,
+                        &key,
                         SymbolKind::Section,
                         child,
                         source,
@@ -58,29 +73,11 @@ fn extract_hcl_top_level(
                     );
                 }
             }
-            "attribute" => {
-                if let Some(key_node) = child.child_by_field_name("key") {
-                    let key = node_text(key_node, source).trim().to_string();
-                    if !key.is_empty() {
-                        push_symbol(
-                            symbols,
-                            "root",
-                            &key,
-                            SymbolKind::Section,
-                            child,
-                            source,
-                            file_path,
-                        );
-                    }
-                }
-            }
-            // Recurse into config_file or body nodes.
-            "config_file" | "body" => {
-                extract_hcl_top_level(child, source, file_path, symbols);
-            }
-            _ => {}
         }
-    }
+        // Recurse into config_file or body nodes.
+        "config_file" | "body" => extract_hcl_top_level(child, source, file_path, symbols),
+        _ => {}
+    });
 }
 
 /// Build a block identifier from block type + labels.

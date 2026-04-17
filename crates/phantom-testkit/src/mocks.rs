@@ -9,10 +9,11 @@ use std::sync::RwLock;
 use chrono::{DateTime, Utc};
 use phantom_core::changeset::SemanticOperation;
 use phantom_core::error::CoreError;
+use phantom_core::conflict::MergeResult;
 use phantom_core::event::Event;
 use phantom_core::id::{AgentId, ChangesetId, EventId};
 use phantom_core::symbol::SymbolEntry;
-use phantom_core::traits::{EventStore, MergeResult, SemanticAnalyzer};
+use phantom_core::traits::{EventStore, SemanticAnalyzer};
 
 /// In-memory EventStore for tests.
 pub struct MockEventStore {

@@ -18,10 +18,10 @@ use chrono::Utc;
 use tracing::debug;
 
 use phantom_core::changeset::Changeset;
-use phantom_core::conflict::ConflictDetail;
+use phantom_core::conflict::{ConflictDetail, MergeResult};
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{EventId, GitOid};
-use phantom_core::traits::{EventStore, MergeResult, SemanticAnalyzer};
+use phantom_core::traits::{EventStore, SemanticAnalyzer};
 
 use crate::error::OrchestratorError;
 use crate::git::{self, GitError, GitOps};
@@ -637,7 +637,7 @@ mod tests {
     use phantom_core::error::CoreError;
     use phantom_core::id::ChangesetId;
     use phantom_core::symbol::SymbolEntry;
-    use phantom_core::traits::MergeResult;
+    use phantom_core::conflict::MergeResult;
 
     use crate::test_support::{
         MockEventStore, advance_trunk, init_repo, make_changeset, make_upper,

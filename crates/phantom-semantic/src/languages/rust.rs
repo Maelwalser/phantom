@@ -5,7 +5,12 @@ use std::path::Path;
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::{LanguageExtractor, build_scope, child_field_text, node_text, push_symbol};
+use super::{
+    LanguageExtractor, build_scope, child_field_text, for_each_named_child, node_text,
+    push_named_symbol, push_symbol,
+};
+
+const ROOT_SCOPE: &str = "crate";
 
 /// Extracts symbols from Rust source files.
 pub struct RustExtractor;
@@ -43,178 +48,76 @@ fn extract_from_node(
     let kind = node.kind();
     match kind {
         "function_item" => {
-            if is_test_function(node, source) {
-                if let Some(name) = child_field_text(node, "name", source) {
-                    let scope = build_scope(scope_parts, "crate");
-                    push_symbol(
-                        symbols,
-                        &scope,
-                        &name,
-                        SymbolKind::Test,
-                        node,
-                        source,
-                        file_path,
-                    );
-                }
-            } else if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "crate");
-                let kind = resolve_kind(SymbolKind::Function, node);
-                push_symbol(symbols, &scope, &name, kind, node, source, file_path);
-            }
-        }
-        "struct_item" => {
             if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "crate");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Struct,
-                    node,
-                    source,
-                    file_path,
-                );
+                let scope = build_scope(scope_parts, ROOT_SCOPE);
+                let sym_kind = if is_test_function(node, source) {
+                    SymbolKind::Test
+                } else {
+                    resolve_kind(SymbolKind::Function, node)
+                };
+                push_symbol(symbols, &scope, &name, sym_kind, node, source, file_path);
             }
         }
-        "enum_item" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "crate");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Enum,
-                    node,
-                    source,
-                    file_path,
-                );
-            }
-        }
-        "trait_item" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "crate");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Trait,
-                    node,
-                    source,
-                    file_path,
-                );
-            }
-        }
+        "struct_item" => push_named_symbol(
+            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::Struct,
+        ),
+        "enum_item" => push_named_symbol(
+            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::Enum,
+        ),
+        "trait_item" => push_named_symbol(
+            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::Trait,
+        ),
         "impl_item" => {
             let impl_name = extract_impl_name(node, source);
-            let scope = build_scope(scope_parts, "crate");
-            push_symbol(
-                symbols,
-                &scope,
-                &impl_name,
-                SymbolKind::Impl,
-                node,
-                source,
-                file_path,
-            );
+            let scope = build_scope(scope_parts, ROOT_SCOPE);
+            push_symbol(symbols, &scope, &impl_name, SymbolKind::Impl, node, source, file_path);
             // Recurse into impl body for methods
             if let Some(body) = node.child_by_field_name("body") {
                 let mut new_scope = scope_parts.to_vec();
                 new_scope.push(impl_name);
-                let mut cursor = body.walk();
-                for child in body.named_children(&mut cursor) {
+                for_each_named_child(body, |child| {
                     extract_from_node(child, source, file_path, &new_scope, symbols);
-                }
+                });
             }
             return; // Already handled children
         }
         "use_declaration" => {
             let text = node_text(node, source);
-            let scope = build_scope(scope_parts, "crate");
-            push_symbol(
-                symbols,
-                &scope,
-                &text,
-                SymbolKind::Import,
-                node,
-                source,
-                file_path,
-            );
+            let scope = build_scope(scope_parts, ROOT_SCOPE);
+            push_symbol(symbols, &scope, &text, SymbolKind::Import, node, source, file_path);
         }
-        "const_item" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "crate");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Const,
-                    node,
-                    source,
-                    file_path,
-                );
-            }
-        }
-        "type_item" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "crate");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::TypeAlias,
-                    node,
-                    source,
-                    file_path,
-                );
-            }
-        }
+        "const_item" => push_named_symbol(
+            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::Const,
+        ),
+        "type_item" => push_named_symbol(
+            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::TypeAlias,
+        ),
         "mod_item" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "crate");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Module,
-                    node,
-                    source,
-                    file_path,
-                );
-                // Recurse into module body
-                if let Some(body) = node.child_by_field_name("body") {
-                    let mut new_scope = scope_parts.to_vec();
-                    new_scope.push(name);
-                    let mut cursor = body.walk();
-                    for child in body.named_children(&mut cursor) {
-                        extract_from_node(child, source, file_path, &new_scope, symbols);
-                    }
-                }
+            let Some(name) = child_field_text(node, "name", source) else {
+                return;
+            };
+            let scope = build_scope(scope_parts, ROOT_SCOPE);
+            push_symbol(symbols, &scope, &name, SymbolKind::Module, node, source, file_path);
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut new_scope = scope_parts.to_vec();
+                new_scope.push(name);
+                for_each_named_child(body, |child| {
+                    extract_from_node(child, source, file_path, &new_scope, symbols);
+                });
             }
             return;
         }
-        "macro_definition" => {
-            if let Some(name) = child_field_text(node, "name", source) {
-                let scope = build_scope(scope_parts, "crate");
-                push_symbol(
-                    symbols,
-                    &scope,
-                    &name,
-                    SymbolKind::Function,
-                    node,
-                    source,
-                    file_path,
-                );
-            }
-        }
+        "macro_definition" => push_named_symbol(
+            symbols, node, source, file_path, scope_parts, ROOT_SCOPE, SymbolKind::Function,
+        ),
         _ => {}
     }
 
     // Recurse into top-level containers and error-recovery nodes
     if matches!(kind, "source_file" | "declaration_list" | "ERROR") {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
+        for_each_named_child(node, |child| {
             extract_from_node(child, source, file_path, scope_parts, symbols);
-        }
+        });
     }
 }
 

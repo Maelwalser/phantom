@@ -8,7 +8,9 @@ use std::path::Path;
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::{LanguageExtractor, node_text, push_symbol};
+use super::{LanguageExtractor, for_each_named_child, node_text, push_symbol};
+
+const ROOT_SCOPE: &str = "root";
 
 /// Extracts symbols from TOML files.
 pub struct TomlExtractor;
@@ -41,59 +43,45 @@ fn extract_toml_root(
     file_path: &Path,
     symbols: &mut Vec<SymbolEntry>,
 ) {
+    for_each_named_child(node, |child| match child.kind() {
+        "table" | "table_array_element" => {
+            let name = first_key_text(child, source)
+                .unwrap_or_else(|| node_text(child, source).trim().to_string());
+            if !name.is_empty() {
+                push_symbol(
+                    symbols,
+                    ROOT_SCOPE,
+                    &name,
+                    SymbolKind::Section,
+                    child,
+                    source,
+                    file_path,
+                );
+            }
+        }
+        "pair" => {
+            if let Some(key) = first_key_text(child, source) {
+                push_symbol(
+                    symbols,
+                    ROOT_SCOPE,
+                    &key,
+                    SymbolKind::Section,
+                    child,
+                    source,
+                    file_path,
+                );
+            }
+        }
+        _ => {}
+    });
+}
+
+/// Extract the first named child whose kind contains `"key"` (e.g. `bare_key`,
+/// `dotted_key`, `quoted_key`). Returns `None` if no such child exists or if
+/// its text is empty.
+fn first_key_text(node: Node<'_>, source: &[u8]) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            "table" | "table_array_element" => {
-                // Extract the table header as the symbol name (e.g. "[dependencies]").
-                let name = table_header_text(child, source)
-                    .unwrap_or_else(|| node_text(child, source).trim().to_string());
-                if !name.is_empty() {
-                    push_symbol(
-                        symbols,
-                        "root",
-                        &name,
-                        SymbolKind::Section,
-                        child,
-                        source,
-                        file_path,
-                    );
-                }
-            }
-            "pair" => {
-                if let Some(key) = pair_key_text(child, source) {
-                    push_symbol(
-                        symbols,
-                        "root",
-                        &key,
-                        SymbolKind::Section,
-                        child,
-                        source,
-                        file_path,
-                    );
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Extract the dotted key text from a table header.
-fn table_header_text(table_node: Node<'_>, source: &[u8]) -> Option<String> {
-    let mut cursor = table_node.walk();
-    for child in table_node.named_children(&mut cursor) {
-        // tree-sitter-toml-ng uses "bare_key", "dotted_key", or "quoted_key" inside headers
-        if child.kind().contains("key") {
-            return Some(node_text(child, source).trim().to_string());
-        }
-    }
-    None
-}
-
-/// Extract the key text from a key-value pair.
-fn pair_key_text(pair_node: Node<'_>, source: &[u8]) -> Option<String> {
-    let mut cursor = pair_node.walk();
-    for child in pair_node.named_children(&mut cursor) {
         if child.kind().contains("key") {
             let text = node_text(child, source).trim().to_string();
             if !text.is_empty() {

@@ -8,7 +8,9 @@ use std::path::Path;
 use phantom_core::symbol::{SymbolEntry, SymbolKind};
 use tree_sitter::Node;
 
-use super::{LanguageExtractor, node_text, push_symbol};
+use super::{LanguageExtractor, for_each_named_child, node_text, push_symbol};
+
+const ROOT_SCOPE: &str = "document";
 
 /// Extracts symbols from YAML files.
 pub struct YamlExtractor;
@@ -60,7 +62,7 @@ fn extract_yaml_recursive(
                 if !key.is_empty() {
                     push_symbol(
                         symbols,
-                        "document",
+                        ROOT_SCOPE,
                         &key,
                         SymbolKind::Section,
                         node,
@@ -76,10 +78,9 @@ fn extract_yaml_recursive(
     }
 
     // Recurse into all children.
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
+    for_each_named_child(node, |child| {
         extract_yaml_recursive(child, source, file_path, symbols);
-    }
+    });
 }
 
 /// Check whether a `block_mapping_pair` is at the document's top level by

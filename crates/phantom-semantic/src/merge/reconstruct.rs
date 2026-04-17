@@ -29,59 +29,44 @@ struct Insertion {
     original_index: usize,
 }
 
-/// Find the nearest preceding sibling of `new_sym` that also exists in `base_map`,
-/// returning its entity key.  Symbols are ordered by byte offset in `source_symbols`.
-fn find_preceding_base_sibling(
-    new_sym: &SymbolEntry,
-    source_symbols: &[SymbolEntry],
-    base_map: &HashMap<EntityKey, &SymbolEntry>,
-) -> Option<EntityKey> {
-    // Symbols in the same source file, sorted by byte offset, that appear
-    // before `new_sym` and also exist in base.
-    let mut best: Option<(&SymbolEntry, EntityKey)> = None;
-    for sym in source_symbols {
-        if sym.byte_range.start >= new_sym.byte_range.start {
-            continue;
-        }
-        let key = entity_key(sym);
-        if base_map.contains_key(&key) {
-            match &best {
-                Some((prev, _)) if sym.byte_range.start > prev.byte_range.start => {
-                    best = Some((sym, key));
-                }
-                None => {
-                    best = Some((sym, key));
-                }
-                _ => {}
-            }
-        }
-    }
-    best.map(|(_, key)| key)
+/// Search direction relative to `new_sym` when looking for an anchor symbol in base.
+#[derive(Clone, Copy)]
+enum Direction {
+    Preceding,
+    Following,
 }
 
-/// Find the nearest following sibling of `new_sym` that also exists in `base_map`,
-/// returning its entity key.
-fn find_following_base_sibling(
+/// Find the nearest sibling of `new_sym` in the given direction that also exists
+/// in `base_map`, returning its entity key. Symbols are scanned in `source_symbols`
+/// (an unsorted slice); the closest one by byte offset wins.
+fn find_base_sibling(
     new_sym: &SymbolEntry,
     source_symbols: &[SymbolEntry],
     base_map: &HashMap<EntityKey, &SymbolEntry>,
+    dir: Direction,
 ) -> Option<EntityKey> {
+    let anchor = new_sym.byte_range.start;
     let mut best: Option<(&SymbolEntry, EntityKey)> = None;
     for sym in source_symbols {
-        if sym.byte_range.start <= new_sym.byte_range.start {
+        let pos = sym.byte_range.start;
+        let on_right_side = match dir {
+            Direction::Preceding => pos < anchor,
+            Direction::Following => pos > anchor,
+        };
+        if !on_right_side {
             continue;
         }
         let key = entity_key(sym);
-        if base_map.contains_key(&key) {
-            match &best {
-                Some((next, _)) if sym.byte_range.start < next.byte_range.start => {
-                    best = Some((sym, key));
-                }
-                None => {
-                    best = Some((sym, key));
-                }
-                _ => {}
-            }
+        if !base_map.contains_key(&key) {
+            continue;
+        }
+        let is_closer = match (&best, dir) {
+            (None, _) => true,
+            (Some((prev, _)), Direction::Preceding) => pos > prev.byte_range.start,
+            (Some((next, _)), Direction::Following) => pos < next.byte_range.start,
+        };
+        if is_closer {
+            best = Some((sym, key));
         }
     }
     best.map(|(_, key)| key)
@@ -207,7 +192,8 @@ pub(super) fn reconstruct_merged_file(
         content.extend_from_slice(&ours[ours_sym.byte_range.clone()]);
 
         // Find position hint via neighboring base symbols
-        if let Some(prev_key) = find_preceding_base_sibling(ours_sym, ours_symbols, &base_map)
+        if let Some(prev_key) =
+            find_base_sibling(ours_sym, ours_symbols, &base_map, Direction::Preceding)
             && let Some(&pos) = base_output_end.get(&prev_key)
         {
             insertions.push(Insertion {
@@ -219,7 +205,8 @@ pub(super) fn reconstruct_merged_file(
             continue;
         }
 
-        if let Some(next_key) = find_following_base_sibling(ours_sym, ours_symbols, &base_map)
+        if let Some(next_key) =
+            find_base_sibling(ours_sym, ours_symbols, &base_map, Direction::Following)
             && let Some(&pos) = base_output_start.get(&next_key)
         {
             insertions.push(Insertion {
@@ -251,7 +238,8 @@ pub(super) fn reconstruct_merged_file(
         ensure_newline(&mut content);
         content.extend_from_slice(&theirs[theirs_sym.byte_range.clone()]);
 
-        if let Some(prev_key) = find_preceding_base_sibling(theirs_sym, theirs_symbols, &base_map)
+        if let Some(prev_key) =
+            find_base_sibling(theirs_sym, theirs_symbols, &base_map, Direction::Preceding)
             && let Some(&pos) = base_output_end.get(&prev_key)
         {
             insertions.push(Insertion {
@@ -263,7 +251,8 @@ pub(super) fn reconstruct_merged_file(
             continue;
         }
 
-        if let Some(next_key) = find_following_base_sibling(theirs_sym, theirs_symbols, &base_map)
+        if let Some(next_key) =
+            find_base_sibling(theirs_sym, theirs_symbols, &base_map, Direction::Following)
             && let Some(&pos) = base_output_start.get(&next_key)
         {
             insertions.push(Insertion {
@@ -306,4 +295,70 @@ pub(super) fn reconstruct_merged_file(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Parser;
+    use std::path::Path;
+
+    fn reconstruct(base: &str, ours: &str, theirs: &str) -> String {
+        let parser = Parser::new();
+        let path = Path::new("test.rs");
+        let base_syms = parser.parse_file(path, base.as_bytes()).unwrap();
+        let ours_syms = parser.parse_file(path, ours.as_bytes()).unwrap();
+        let theirs_syms = parser.parse_file(path, theirs.as_bytes()).unwrap();
+        let merged = reconstruct_merged_file(
+            base.as_bytes(),
+            ours.as_bytes(),
+            theirs.as_bytes(),
+            &base_syms,
+            &ours_syms,
+            &theirs_syms,
+        );
+        String::from_utf8(merged).unwrap()
+    }
+
+    #[test]
+    fn appends_new_symbol_to_eof_when_no_anchor_exists() {
+        // Empty base means no sibling anchor — should append at end.
+        let base = "";
+        let ours = "fn new_fn() {}\n";
+        let theirs = "";
+        let merged = reconstruct(base, ours, theirs);
+        assert!(merged.contains("fn new_fn"));
+    }
+
+    #[test]
+    fn prepends_via_following_sibling_when_no_preceding_anchor() {
+        // New symbol in `ours` has no preceding base sibling, but the following
+        // base sibling (`anchor`) is present → insertion is anchored to its start.
+        let base = "fn anchor() {}\n";
+        let ours = "fn before() {}\nfn anchor() {}\n";
+        let theirs = "fn anchor() {}\n";
+        let merged = reconstruct(base, ours, theirs);
+        let before_pos = merged.find("fn before").expect("fn before present");
+        let anchor_pos = merged.find("fn anchor").expect("fn anchor present");
+        assert!(
+            before_pos < anchor_pos,
+            "new symbol must appear before the anchor: {merged:?}"
+        );
+    }
+
+    #[test]
+    fn multiple_insertions_after_same_anchor_preserve_source_order() {
+        // Both sides add new symbols after `a`: ours adds `b`, theirs adds `c`.
+        // Both land at the same output position (right after `a`); the sort
+        // invariant must preserve the order they were collected (ours first,
+        // then theirs) so the output is a → b → c.
+        let base = "fn a() {}\n";
+        let ours = "fn a() {}\nfn b() {}\n";
+        let theirs = "fn a() {}\nfn c() {}\n";
+        let merged = reconstruct(base, ours, theirs);
+        let a = merged.find("fn a").unwrap();
+        let b = merged.find("fn b").unwrap();
+        let c = merged.find("fn c").unwrap();
+        assert!(a < b && b < c, "expected a < b < c, got {merged:?}");
+    }
 }

@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, info, warn};
 
-use phantom_core::conflict::{ConflictDetail, ConflictKind};
+use phantom_core::conflict::{ConflictDetail, ConflictKind, MergeResult};
 use phantom_core::id::{AgentId, ChangesetId, GitOid};
-use phantom_core::traits::{MergeResult, SemanticAnalyzer};
+use phantom_core::traits::SemanticAnalyzer;
 
 use crate::error::OrchestratorError;
 use crate::git::{GitError, GitOps};
@@ -257,8 +257,7 @@ fn hex_nibble(b: u8) -> Option<u8> {
 mod tests {
     use super::*;
 
-    use phantom_core::conflict::ConflictKind;
-    use phantom_core::traits::MergeResult;
+    use phantom_core::conflict::{ConflictKind, MergeResult};
     use std::path::PathBuf;
     use tempfile::TempDir;
 
