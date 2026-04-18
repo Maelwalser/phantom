@@ -34,7 +34,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev fuse3 pkg-config
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
@@ -45,7 +45,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev fuse3 pkg-config
       - run: cargo test --workspace --all-features
 
   doc:
@@ -58,7 +58,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev fuse3 pkg-config
       - run: cargo doc --workspace --no-deps --all-features
 
   security-audit:
@@ -92,7 +92,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev fuse3 pkg-config
       - run: cargo check --workspace
 
   coverage:
@@ -105,7 +105,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev fuse3 pkg-config
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage

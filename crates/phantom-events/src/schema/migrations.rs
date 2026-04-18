@@ -151,14 +151,12 @@ mod tests {
     #[test]
     fn migrations_are_monotonic_and_reach_current_version() {
         // Versions strictly increasing, contiguous, starting at 2.
-        let mut expected = 2;
-        for m in MIGRATIONS {
+        for (expected, m) in (2..).zip(MIGRATIONS.iter()) {
             assert_eq!(
                 m.version, expected,
                 "migration {:?} breaks the contiguous version sequence",
                 m.name
             );
-            expected += 1;
         }
 
         let last = MIGRATIONS
