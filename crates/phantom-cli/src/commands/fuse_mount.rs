@@ -2,7 +2,7 @@
 //!
 //! This is NOT meant for direct user invocation. It is spawned by
 //! `phantom <agent>` as a background process. The process detaches from
-//! the parent session, mounts a [`PhantomFs`] at the given mount point,
+//! the parent session, mounts a `PhantomFs` at the given mount point,
 //! and blocks until the filesystem is unmounted (via `fusermount3 -u` or
 //! SIGTERM).
 

@@ -8,6 +8,11 @@ use crate::fs_walk::collect_files_recursive;
 /// Read overlay files one at a time, create blobs immediately, and return
 /// `(path, blob_oid)` pairs. Peak memory is one file's content at a time,
 /// rather than all files simultaneously.
+///
+/// Uses `fs::read` + `repo.blob(bytes)` instead of `repo.blob_path(path)`
+/// so we don't stream bytes through libgit2 while an agent may still be
+/// writing the file. An `InvalidData` / `Interrupted` short read from a
+/// concurrent rewrite is retried once before propagating.
 pub fn create_blobs_from_overlay(
     repo: &git2::Repository,
     upper_dir: &Path,
@@ -15,10 +20,27 @@ pub fn create_blobs_from_overlay(
     let paths = collect_files_recursive(upper_dir)?;
     let mut file_oids = Vec::with_capacity(paths.len());
     for rel_path in paths {
-        let blob_oid = repo.blob_path(&upper_dir.join(&rel_path))?;
+        let abs = upper_dir.join(&rel_path);
+        let content = read_with_retry(&abs)?;
+        let blob_oid = repo.blob(&content)?;
         file_oids.push((rel_path, blob_oid));
     }
     Ok(file_oids)
+}
+
+fn read_with_retry(path: &Path) -> Result<Vec<u8>, GitError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(bytes),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::Interrupted | std::io::ErrorKind::InvalidData
+            ) =>
+        {
+            Ok(std::fs::read(path)?)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Convert in-memory `(path, content)` pairs into `(path, blob_oid)` pairs

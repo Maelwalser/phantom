@@ -2,9 +2,9 @@
 //! commit them to trunk via semantic merge, and ripple changes to other agents.
 //!
 //! The public entry point [`submit_and_materialize`] is a thin wrapper that
-//! delegates to [`pipeline::run`]; the actual pipeline is broken up across
-//! submodules (discovery, overlay scan, operation extraction, commit message,
-//! changeset builder, events).
+//! delegates to the internal `pipeline::run`; the actual pipeline is broken
+//! up across submodules (discovery, overlay scan, operation extraction,
+//! commit message, changeset builder, events).
 
 use std::path::{Path, PathBuf};
 

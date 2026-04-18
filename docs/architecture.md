@@ -48,7 +48,7 @@ agent CLI (Claude Code, etc.)
 ## Workspace layout
 
 Nine production crates plus one integration-test crate, all in a single
-Cargo workspace (`edition = "2024"`, `rust-version = "1.85"`).
+Cargo workspace (`edition = "2024"`, `rust-version = "1.88"`).
 
 ```
 crates/

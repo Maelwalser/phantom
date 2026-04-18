@@ -4,8 +4,9 @@
 //! to auto-submit changesets after an agent finishes work. Submit now includes
 //! materialization (merge to trunk + ripple to other agents).
 //!
-//! Orchestration lives in [`submit`]; terminal output lives in [`display`].
-//! This module only wires the public API and context structs.
+//! Orchestration lives in the `submit` submodule; terminal output lives in
+//! the `display` submodule. This module only wires the public API and context
+//! structs.
 
 mod display;
 mod submit;

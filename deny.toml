@@ -2,6 +2,11 @@
 # https://embarkstudios.github.io/cargo-deny/
 
 [advisories]
+# rsa 0.9.x is reachable only through sqlx-mysql, which is pulled in by
+# sqlx's macro crate even when only the sqlite backend is enabled. Phantom
+# never runs MySQL queries, so the Marvin timing sidechannel is not
+# exploitable in our binary.
+ignore = ["RUSTSEC-2023-0071"]
 
 [licenses]
 confidence-threshold = 0.8

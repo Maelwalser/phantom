@@ -48,9 +48,7 @@ async fn check_upstream_status(
                 materialized,
             } => {
                 if *exit_code != Some(0) {
-                    let code = exit_code
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "signal".into());
+                    let code = exit_code.map_or_else(|| "signal".into(), |c| c.to_string());
                     return Ok(DepStatus::Failed(format!(
                         "upstream '{upstream}' failed with exit code {code}"
                     )));
@@ -110,7 +108,9 @@ pub(super) async fn wait_for_dependencies(
 
     const INITIAL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
     const MAX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(7200); // 2 hours
+    // 2 hours. Duration::from_hours is stable in 1.89 but our MSRV is 1.88.
+    #[allow(clippy::duration_suboptimal_units)]
+    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
 
     let start = std::time::Instant::now();
     let mut poll_interval = INITIAL_POLL_INTERVAL;

@@ -209,7 +209,7 @@ async fn run_interactive_for_agent(
         .filter(|cs| matches!(cs.status, ChangesetStatus::Submitted))
         .collect();
     // Newest first (changesets_for_agent already sorts this way, but be explicit).
-    eligible.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    eligible.sort_by_key(|cs| std::cmp::Reverse(cs.created_at));
 
     if eligible.is_empty() {
         ui::empty_state(

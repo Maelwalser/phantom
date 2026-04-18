@@ -65,7 +65,7 @@ ph resolve agent-a
 
 ### Prerequisites
 
-- Rust toolchain (edition 2024, 1.85+)
+- Rust toolchain (edition 2024, 1.88+)
 - Git
 - Linux: `libfuse3-dev` and `pkg-config`
 

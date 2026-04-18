@@ -45,7 +45,7 @@ fn init_repo_with_source() -> TempDir {
 
 /// Build a `Command` for the `phantom` binary with working dir set.
 fn phantom(dir: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("phantom").unwrap();
+    let mut cmd = Command::cargo_bin("ph").unwrap();
     cmd.current_dir(dir).env("RUST_LOG", "");
     cmd
 }
@@ -59,12 +59,12 @@ fn conflict_and_resolve_workflow() {
 
     // 2. Create two agents using --command echo (exits immediately, no changes)
     phantom(dir.path())
-        .args(["agent-a", "--command", "echo"])
+        .args(["agent-a", "--no-fuse", "--command", "echo"])
         .assert()
         .success();
 
     phantom(dir.path())
-        .args(["agent-b", "--command", "echo"])
+        .args(["agent-b", "--no-fuse", "--command", "echo"])
         .assert()
         .success();
 
@@ -159,11 +159,11 @@ fn resolve_updates_base_and_materialize_succeeds() {
 
     // 2. Create two agents
     phantom(dir.path())
-        .args(["agent-a", "--command", "echo"])
+        .args(["agent-a", "--no-fuse", "--command", "echo"])
         .assert()
         .success();
     phantom(dir.path())
-        .args(["agent-b", "--command", "echo"])
+        .args(["agent-b", "--no-fuse", "--command", "echo"])
         .assert()
         .success();
 

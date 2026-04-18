@@ -272,9 +272,7 @@ pub async fn run(args: ResolveArgs) -> anyhow::Result<()> {
 
         if !failed.is_empty() {
             for (i, code) in &failed {
-                let code_str = code
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".into());
+                let code_str = code.map_or_else(|| "signal".into(), |c| c.to_string());
                 eprintln!(
                     "  {} Resolve agent {} exited with code {}",
                     console::style("!").red(),

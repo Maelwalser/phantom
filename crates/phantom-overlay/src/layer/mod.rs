@@ -7,12 +7,12 @@
 //!
 //! The implementation is split across submodules by responsibility:
 //!
-//! - [`classify`] — path routing (hidden / passthrough / whiteout / upper / lower)
-//! - [`read`] — read-side operations (read_file, read_dir, getattr, …)
-//! - [`write`] — write-side operations (write_file, truncate_file, delete_file, …)
-//! - [`rename`] — rename coordination (3-phase whiteout reconciliation)
-//! - [`maintenance`] — lifecycle utilities (clear_upper, update_lower, whiteout persistence)
-//! - [`io_util`] — shared low-level filesystem helpers
+//! - `classify` — path routing (hidden / passthrough / whiteout / upper / lower)
+//! - `read` — read-side operations (read_file, read_dir, getattr, …)
+//! - `write` — write-side operations (write_file, truncate_file, delete_file, …)
+//! - `rename` — rename coordination (3-phase whiteout reconciliation)
+//! - `maintenance` — lifecycle utilities (clear_upper, update_lower, whiteout persistence)
+//! - `io_util` — shared low-level filesystem helpers
 
 use std::collections::HashSet;
 use std::fs;

@@ -7,10 +7,10 @@
 //!
 //! The implementation is split across submodules by responsibility:
 //!
-//! - [`config`] — [`FsConfig`]: UID/GID/permission projection
-//! - [`attr`] — metadata → `fuser::FileAttr` conversion
-//! - [`handles`] — open file / directory handle types
-//! - [`filesystem`] — [`PhantomFs`] struct and `fuser::Filesystem` trait impl
+//! - `config` — [`FsConfig`]: UID/GID/permission projection
+//! - `attr` — metadata → `fuser::FileAttr` conversion
+//! - `handles` — open file / directory handle types
+//! - `filesystem` — [`PhantomFs`] struct and `fuser::Filesystem` trait impl
 
 mod attr;
 mod config;
