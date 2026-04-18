@@ -229,6 +229,8 @@ Environment variables in the session: `PHANTOM_AGENT_ID`, `PHANTOM_CHANGESET_ID`
 
 ## How It Works
 
+### Pipeline
+
 ```
    ┌──────────┐   ┌──────────┐   ┌──────────┐
    │ Agent A  │   │ Agent B  │   │ Agent C  │    ← Claude / Aider / any CLI
@@ -241,16 +243,65 @@ Environment variables in the session: `PHANTOM_AGENT_ID`, `PHANTOM_CHANGESET_ID`
         │ ph sub       │              │
         ▼              ▼              ▼
    ╔══════════════════════════════════════╗
-   ║        Submit + Materialize          ║
+   ║               Submit                 ║
    ║  parse → symbols → 3-way semantic    ║
-   ║  merge → git commit → ripple         ║
+   ║  merge → git commit → ripple ▼       ║
    ╚════════════════╦═════════════════════╝
                     ▼
-         ┌────────────────────┐
-         │  Trunk (git main)  │ ─append→  ┌────────────────────┐
-         └────────────────────┘           │ Event Log (SQLite) │
-                                          └────────────────────┘
+         ┌────────────────────┐          ┌────────────────────┐
+         │  Trunk (git main)  │ ─append→ │ Event Log (SQLite) │
+         └────────────────────┘          └────────────────────┘
 ```
+
+### Ripple — trunk updates propagate to every active agent
+
+When `agent-a` lands a changeset on trunk, Phantom walks every other live overlay and
+refreshes it in place. Agents whose upper layer has touched the same file get a
+live rebase and a notification file dropped next to their work.
+
+```
+                     ph sub agent-a ──▶ trunk: commit X ──▶ commit Y
+                                                │
+                                                │ ripple
+             ┌──────────────────────────────────┼──────────────────────────────────┐
+             ▼                                  ▼                                  ▼
+       ┌───────────┐                      ┌───────────┐                      ┌───────────┐
+       │  agent-b  │                      │  agent-c  │                      │  agent-d  │
+       │           │                      │           │                      │           │
+       │ upper: ∅  │                      │ upper:    │                      │ upper:    │
+       │           │                      │  src/a.rs │                      │  src/z.rs │
+       │ lower: X  │                      │ lower: X  │                      │ lower: X  │
+       └─────┬─────┘                      └─────┬─────┘                      └─────┬─────┘
+             │                                  │                                  │
+             │ no overlap                       │ overlap on src/a.rs              │ no overlap
+             ▼                                  ▼                                  ▼
+       ┌───────────┐                      ┌──────────────────┐                ┌───────────┐
+       │ upper: ∅  │                      │ 3-way live rebase│                │ upper:    │
+       │ lower: Y ✓│                      │  base   = X:a.rs │                │  src/z.rs │
+       │           │                      │  ours   = upper  │                │ lower: Y ✓│
+       │ silent    │                      │  theirs = Y:a.rs │                │           │
+       │ refresh   │                      │      ↓           │                │ silent    │
+       │           │                      │ upper: a.rs ✎    │                │ refresh   │
+       │           │                      │ lower: Y ✓       │                │           │
+       │           │                      │                  │                │           │
+       │           │                      │ ⚠ .phantom-      │                │           │
+       │           │                      │   trunk.md drop  │                │           │
+       └───────────┘                      └──────────────────┘                └───────────┘
+             ▲                                  ▲                                  ▲
+             │                                  │                                  │
+        TrunkVisible                     RebaseMerged                        TrunkVisible
+                                          (or RebaseConflict
+                                           if merge fails)
+```
+
+Per-file outcomes recorded in each agent's `.phantom-trunk.md`:
+
+| Scenario in the agent's upper layer         | Result                                  | Status              |
+|---------------------------------------------|-----------------------------------------|---------------------|
+| File not touched locally                    | Lower refreshes silently                | `TrunkVisible`      |
+| File edited, clean 3-way merge against trunk | Upper rewritten with merged bytes       | `RebaseMerged`      |
+| File edited, trunk change is non-overlapping | Upper kept, both changes reconcilable   | `Shadowed`          |
+| File edited, merge can't auto-resolve        | Upper kept, agent notified to resolve   | `RebaseConflict`    |
 
 ### Conflict resolution
 
