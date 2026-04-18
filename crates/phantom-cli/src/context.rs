@@ -177,9 +177,21 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
     };
 
     if !crate::pid_guard::is_process_alive(&record) {
+        // The CLI child exited. Don't declare failure while the monitor is
+        // still orchestrating the post-session flow (submit + materialize),
+        // which runs for tens of seconds on large first commits. Only the
+        // monitor writes `agent.status`; racing it here would plant a
+        // "died unexpectedly" marker on a healthy submit.
+        let monitor_pid_file = overlay_dir.join("monitor.pid");
+        let monitor_alive = crate::pid_guard::read_pid_file(&monitor_pid_file)
+            .is_some_and(|r| crate::pid_guard::is_process_alive(&r));
+        if monitor_alive {
+            return;
+        }
+
         let status_file = overlay_dir.join("agent.status");
         if !status_file.exists() {
-            // Process died without writing a status file — write a failed marker.
+            // Both CLI and monitor are gone — real crash, record it.
             let status = crate::commands::agent_monitor::AgentStatus {
                 exit_code: None,
                 completed_at: chrono::Utc::now(),
@@ -197,8 +209,7 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
         }
         // Clean up PID files.
         let _ = std::fs::remove_file(&pid_file);
-        let monitor_pid = overlay_dir.join("monitor.pid");
-        let _ = std::fs::remove_file(&monitor_pid);
+        let _ = std::fs::remove_file(&monitor_pid_file);
     }
 }
 

@@ -23,6 +23,7 @@ ph init                              # Initialize in a git repo
 ph <agent-name>                      # Create/resume agent overlay (interactive)
 ph <agent-name> --background         # Run agent in background
 ph plan "add caching layer"          # Decompose feature into parallel agents
+ph plan --from phantom-plan-<id>.md  # Dispatch a previously-saved plan (no re-planning)
 ph submit <agent>                    # Submit overlay: semantic merge to trunk, ripple to agents
 ph resolve <agent>                   # Auto-resolve conflicts via AI agent
 ph resume                            # Select and resume an interactive agent session

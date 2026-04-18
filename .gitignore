@@ -2,3 +2,4 @@
 .phantom/
 build.sh
 test-project/
+phantom-plan-*.md
