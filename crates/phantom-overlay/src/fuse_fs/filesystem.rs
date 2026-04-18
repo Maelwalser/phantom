@@ -281,7 +281,7 @@ impl Filesystem for PhantomFs {
         let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
         self.open_files
             .write()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(fh, OpenFile { file, writable });
         reply.opened(FileHandle(fh), FopenFlags::empty());
     }
