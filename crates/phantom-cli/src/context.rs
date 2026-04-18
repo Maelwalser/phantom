@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
+use phantom_core::GitOid;
 use phantom_events::SqliteEventStore;
 use phantom_git::GitOps;
 use phantom_overlay::OverlayManager;
@@ -74,6 +75,22 @@ impl PhantomContext {
     pub fn semantic(&self) -> SemanticMerger {
         SemanticMerger::new()
     }
+}
+
+/// Reject operations that require a real commit to anchor against.
+///
+/// Materialization reads `parent_oid` via `find_commit()`; the null OID
+/// (returned by `GitOps::head_oid()` when HEAD is unborn) causes libgit2 to
+/// bail with `odb: cannot read object: null OID cannot exist`. We fail early
+/// with a clear action instead of letting the agent do work that can never be
+/// committed.
+pub fn require_initialized_head(head: &GitOid) -> anyhow::Result<()> {
+    if *head == GitOid::zero() {
+        bail!(
+            "repository has no initial commit. Run `ph init` to auto-create one, or `git commit --allow-empty -m \"initial\"` before dispatching agents."
+        );
+    }
+    Ok(())
 }
 
 /// Scan `.phantom/overlays/` for existing agent directories and re-register them

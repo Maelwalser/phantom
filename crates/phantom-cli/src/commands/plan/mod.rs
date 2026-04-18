@@ -51,6 +51,16 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
 
+    // Fail fast if the repo has no initial commit; materialization cannot
+    // anchor against a null OID. Checking here avoids a needless LLM call
+    // to the planner.
+    let git = ctx.open_git()?;
+    let head = git
+        .head_oid()
+        .context("failed to read HEAD before planning")?;
+    crate::context::require_initialized_head(&head)?;
+    drop(git);
+
     // Step 1: Generate plan via AI planner.
     println!(
         "\n  {} Analyzing codebase for: {}",
