@@ -281,7 +281,7 @@ live rebase and a notification file dropped next to their work.
        │           │                      │  ours   = upper  │                │ lower: Y ✓│
        │ silent    │                      │  theirs = Y:a.rs │                │           │
        │ refresh   │                      │      ↓           │                │ silent    │
-       │           │                      │ upper: a.rs ✎    │                │ refresh   │
+       │           │                      │ upper: a.rs      │                │ refresh   │
        │           │                      │ lower: Y ✓       │                │           │
        │           │                      │                  │                │           │
        │           │                      │ ⚠ .phantom-      │                │           │
