@@ -163,8 +163,8 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     std::fs::write(plan_dir.join("plan.json"), &plan_json).context("failed to update plan.json")?;
 
     println!();
-    crate::ui::action_hint("phantom background", "to watch progress.");
-    crate::ui::action_hint("phantom status", "to see all agents.");
+    crate::ui::action_hint("ph background", "to watch progress.");
+    crate::ui::action_hint("ph status", "to see all agents.");
 
     Ok(())
 }

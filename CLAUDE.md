@@ -19,21 +19,21 @@ sudo apt install libfuse3-dev pkg-config build-essential
 cargo install --path crates/phantom-cli
 
 # Usage
-phantom init                         # Initialize in a git repo
-phantom <agent-name>                 # Create/resume agent overlay (interactive)
-phantom <agent-name> --background    # Run agent in background
-phantom plan "add caching layer"     # Decompose feature into parallel agents
-phantom submit <agent>               # Submit overlay: semantic merge to trunk, ripple to agents
-phantom resolve <agent>              # Auto-resolve conflicts via AI agent
-phantom resume                       # Select and resume an interactive agent session
-phantom tasks                        # List all agent task overlays
-phantom status                       # Show overlays, changesets, queue
-phantom log [filter]                 # Query event log (agent name or cs-id)
-phantom changes                      # Recent submits and materializations
-phantom background                   # Watch background agents
-phantom remove <agent>               # Tear down overlay (immediate, no prompt)
-phantom rollback [changeset-id]      # Drop changeset, replay downstream
-phantom down                         # Unmount all overlays, remove .phantom/ (prompts unless -f)
+ph init                              # Initialize in a git repo
+ph <agent-name>                      # Create/resume agent overlay (interactive)
+ph <agent-name> --background         # Run agent in background
+ph plan "add caching layer"          # Decompose feature into parallel agents
+ph submit <agent>                    # Submit overlay: semantic merge to trunk, ripple to agents
+ph resolve <agent>                   # Auto-resolve conflicts via AI agent
+ph resume                            # Select and resume an interactive agent session
+ph tasks                             # List all agent task overlays
+ph status                            # Show overlays, changesets, queue
+ph log [filter]                      # Query event log (agent name or cs-id)
+ph changes                           # Recent submits and materializations
+ph background                        # Watch background agents
+ph remove <agent>                    # Tear down overlay (immediate, no prompt)
+ph rollback [changeset-id]           # Drop changeset, replay downstream
+ph down                              # Unmount all overlays, remove .phantom/ (prompts unless -f)
 ```
 
 ## Workspace Structure
@@ -136,7 +136,7 @@ Pure coordination layer that composes `phantom-git`, `phantom-events`, `phantom-
 
 ## CLI Architecture
 
-The CLI uses external subcommand parsing: `phantom <agent-name>` is caught by `ExternalTask` and parsed as `TaskArgs`. This means any unrecognized subcommand becomes an agent name for task creation.
+The CLI uses external subcommand parsing: `ph <agent-name>` is caught by `ExternalTask` and parsed as `TaskArgs`. This means any unrecognized subcommand becomes an agent name for task creation.
 
 `PhantomContext` (in `context.rs`) locates the `.phantom/` directory and repository root by walking up from cwd. Subsystems (git, events, overlays, semantic) are opened lazily via `open_*` methods.
 
@@ -148,10 +148,10 @@ Key aliases: `re` (resume), `t` (tasks), `st` (status), `sub` (submit), `res` (r
 
 ## Data Flow
 
-1. **Task creation**: `phantom <agent>` → creates overlay dirs + FUSE mount → emits `TaskCreated` event → spawns CLI session (interactive or background)
+1. **Task creation**: `ph <agent>` → creates overlay dirs + FUSE mount → emits `TaskCreated` event → spawns CLI session (interactive or background)
 2. **Agent work**: agent reads/writes inside FUSE overlay (upper layer captures writes, lower falls through to trunk)
-3. **Submit + materialize**: `phantom submit` → scans `modified_files()` → tree-sitter extracts symbols from base and current → diffs to `SemanticOperation` list → appends `ChangesetSubmitted` event → three-way semantic merge per file → atomic git commit → ripple check → live rebase shadowed files in other agents' uppers → write `TrunkNotification` files → emit audit events
-4. **Conflict resolution**: `phantom resolve` → finds conflicted changeset → extracts base/ours/theirs → generates conflict-specific `.phantom-task.md` → launches background AI agent
+3. **Submit + materialize**: `ph submit` → scans `modified_files()` → tree-sitter extracts symbols from base and current → diffs to `SemanticOperation` list → appends `ChangesetSubmitted` event → three-way semantic merge per file → atomic git commit → ripple check → live rebase shadowed files in other agents' uppers → write `TrunkNotification` files → emit audit events
+4. **Conflict resolution**: `ph resolve` → finds conflicted changeset → extracts base/ours/theirs → generates conflict-specific `.phantom-task.md` → launches background AI agent
 
 ## Coding Conventions
 
@@ -180,8 +180,8 @@ Key aliases: `re` (resume), `t` (tasks), `st` (status), `sub` (submit), `res` (r
 - Trunk notification system (file-based, per-agent)
 - CLI session management with PTY, Claude Code adapter, session resumption
 - Background agent execution with monitoring
-- `phantom plan` — AI-driven task decomposition into parallel agents
-- `phantom resolve` — AI-driven conflict resolution
+- `ph plan` — AI-driven task decomposition into parallel agents
+- `ph resolve` — AI-driven conflict resolution
 - All core CLI commands (init, task, submit, plan, resolve, status, log, changes, rollback, remove, background, down)
 - Integration tests for all major scenarios
 

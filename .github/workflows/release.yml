@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: Build x86_64-linux-gnu
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tarball: ${{ steps.package.outputs.tarball }}
+      checksum: ${{ steps.package.outputs.checksum }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+
+      - name: Verify Cargo.toml version matches tag
+        run: |
+          cargo_version=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; m=json.load(sys.stdin); print(next(p["version"] for p in m["packages"] if p["name"]=="phantom-cli"))')
+          if [ "${cargo_version}" != "${{ steps.meta.outputs.version }}" ]; then
+            echo "::error::tag v${{ steps.meta.outputs.version }} does not match phantom-cli version ${cargo_version}" >&2
+            exit 1
+          fi
+
+      - name: Build release binary
+        run: cargo build --release --locked --bin ph --target x86_64-unknown-linux-gnu
+
+      - name: Package artifacts
+        id: package
+        run: |
+          version="${{ steps.meta.outputs.version }}"
+          stage="phantom-${version}-x86_64-unknown-linux-gnu"
+          mkdir -p "dist/${stage}"
+          cp target/x86_64-unknown-linux-gnu/release/ph "dist/${stage}/"
+          cp README.md LICENSE "dist/${stage}/"
+          tar -C dist -czf "dist/${stage}.tar.gz" "${stage}"
+          sha256sum "dist/${stage}.tar.gz" | awk '{print $1}' > "dist/${stage}.tar.gz.sha256"
+          echo "tarball=dist/${stage}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "checksum=dist/${stage}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Generate installer.sh
+        run: |
+          version="${{ steps.meta.outputs.version }}"
+          tag="${{ steps.meta.outputs.tag }}"
+          repo="${GITHUB_REPOSITORY}"
+          base_url="https://github.com/${repo}/releases/download/${tag}"
+          tarball_name="phantom-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          cat > dist/installer.sh <<EOF
+          #!/bin/sh
+          # Phantom installer for Linux (x86_64).
+          # Downloads the v${version} release tarball, verifies its SHA-256
+          # checksum, and installs the \`ph\` binary into \$INSTALL_DIR
+          # (default: \$HOME/.local/bin).
+          set -eu
+
+          INSTALL_DIR="\${INSTALL_DIR:-\$HOME/.local/bin}"
+          TMP="\$(mktemp -d)"
+          trap 'rm -rf "\$TMP"' EXIT
+
+          arch="\$(uname -m)"
+          os="\$(uname -s)"
+          if [ "\$os" != "Linux" ] || [ "\$arch" != "x86_64" ]; then
+            echo "phantom currently supports x86_64 Linux only (got \$os/\$arch)" >&2
+            exit 1
+          fi
+
+          if ! command -v fusermount3 >/dev/null 2>&1; then
+            echo "warning: fusermount3 not found on PATH." >&2
+            echo "Phantom needs the fuse3 runtime to mount agent overlays. Install it with:" >&2
+            echo "  Debian/Ubuntu: sudo apt install fuse3 libfuse3-3" >&2
+            echo "  Fedora/RHEL:   sudo dnf install fuse3 fuse3-libs" >&2
+            echo "  Arch:          sudo pacman -S fuse3" >&2
+          fi
+
+          fetch() {
+            url="\$1"
+            out="\$2"
+            if command -v curl >/dev/null 2>&1; then
+              curl -fsSL "\$url" -o "\$out"
+            elif command -v wget >/dev/null 2>&1; then
+              wget -qO "\$out" "\$url"
+            else
+              echo "neither curl nor wget is installed" >&2
+              exit 1
+            fi
+          }
+
+          fetch "${base_url}/${tarball_name}" "\$TMP/${tarball_name}"
+          fetch "${base_url}/${tarball_name}.sha256" "\$TMP/${tarball_name}.sha256"
+
+          expected="\$(cat "\$TMP/${tarball_name}.sha256")"
+          actual="\$(sha256sum "\$TMP/${tarball_name}" | awk '{print \$1}')"
+          if [ "\$expected" != "\$actual" ]; then
+            echo "checksum mismatch: expected \$expected got \$actual" >&2
+            exit 1
+          fi
+
+          tar -C "\$TMP" -xzf "\$TMP/${tarball_name}"
+          mkdir -p "\$INSTALL_DIR"
+          install -m 0755 "\$TMP/phantom-${version}-x86_64-unknown-linux-gnu/ph" "\$INSTALL_DIR/ph"
+
+          echo "Installed ph v${version} to \$INSTALL_DIR/ph"
+          case ":\$PATH:" in
+            *":\$INSTALL_DIR:"*) ;;
+            *) echo "Add \$INSTALL_DIR to PATH to use ph." ;;
+          esac
+          EOF
+          chmod +x dist/installer.sh
+
+      - name: Upload artifacts to workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: phantom-x86_64-linux-gnu
+          path: |
+            dist/phantom-*.tar.gz
+            dist/phantom-*.tar.gz.sha256
+            dist/installer.sh
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: phantom-x86_64-linux-gnu
+          path: dist
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          version="${{ needs.build.outputs.version }}"
+          tag="v${version}"
+          if [ -f CHANGELOG.md ]; then
+            awk -v v="${version}" '
+              $0 ~ "^## \\[" v "\\]" { take=1; next }
+              take && /^## \[/ { exit }
+              take { print }
+            ' CHANGELOG.md > release-notes.md
+          fi
+          if [ ! -s release-notes.md ]; then
+            echo "Phantom ${tag} — see commit history for changes." > release-notes.md
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "${tag}" \
+            --title "Phantom ${tag}" \
+            --notes-file release-notes.md \
+            dist/phantom-*.tar.gz \
+            dist/phantom-*.tar.gz.sha256 \
+            dist/installer.sh

@@ -15,9 +15,16 @@ members = [
 ]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
+authors = ["Mael Walser <maelwalser04@gmail.com>"]
+repository = "https://github.com/Maelwalser/phantom"
+homepage = "https://github.com/Maelwalser/phantom"
+readme = "README.md"
+keywords = ["git", "vcs", "fuse", "ai-agents", "event-sourcing"]
+categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 phantom-core = { path = "crates/phantom-core" }

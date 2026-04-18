@@ -1,9 +1,10 @@
 [package]
 name = "phantom-git"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Git operations for Phantom, built on git2"
+publish = false
 
 [dependencies]
 phantom-core = { workspace = true }

@@ -55,6 +55,43 @@ pub(crate) fn wait_for_mount(mount_point: &Path, timeout: Duration) -> anyhow::R
     }
 }
 
+/// Verify the host can mount FUSE filesystems before we try to spawn the
+/// daemon. Catches the common "binary installed but libfuse3/fuse3 runtime
+/// missing" case with an actionable message instead of a confusing daemon
+/// crash deep in the spawn pipeline.
+pub(crate) fn preflight() -> anyhow::Result<()> {
+    let dev_fuse = Path::new("/dev/fuse");
+    if !dev_fuse.exists() {
+        anyhow::bail!(
+            "/dev/fuse is not present.\n\n\
+             Phantom needs the FUSE kernel module and userspace tools.\n\n\
+             Install them with:\n  \
+               Debian/Ubuntu: sudo apt install fuse3 libfuse3-3\n  \
+               Fedora/RHEL:   sudo dnf install fuse3 fuse3-libs\n  \
+               Arch:          sudo pacman -S fuse3\n\n\
+             Then load the module: sudo modprobe fuse",
+        );
+    }
+    if which_fusermount().is_none() {
+        anyhow::bail!(
+            "fusermount3 was not found on PATH.\n\n\
+             Phantom uses fusermount3 to mount and unmount agent overlays.\n\n\
+             Install it with:\n  \
+               Debian/Ubuntu: sudo apt install fuse3\n  \
+               Fedora/RHEL:   sudo dnf install fuse3\n  \
+               Arch:          sudo pacman -S fuse3",
+        );
+    }
+    Ok(())
+}
+
+fn which_fusermount() -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|p| p.join("fusermount3"))
+        .find(|p| p.is_file())
+}
+
 /// Spawn a `_fuse-mount` daemon child, write its PID file, and wait for
 /// the mount to become active. Kills the child and returns an error if the
 /// mount does not appear within `timeout`.
@@ -67,6 +104,7 @@ pub(crate) fn spawn_daemon(
     overrides: &FsOverrides,
     timeout: Duration,
 ) -> anyhow::Result<()> {
+    preflight()?;
     let phantom_bin = std::env::current_exe().context("failed to find phantom binary")?;
     let overlay_root = phantom_dir.join("overlays").join(agent);
     let pid_file = overlay_root.join("fuse.pid");

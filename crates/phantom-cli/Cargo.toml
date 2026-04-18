@@ -1,9 +1,16 @@
 [package]
 name = "phantom-cli"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The `phantom` command-line interface"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Event-sourced semantic VCS layer for parallel AI coding agents (the `ph` CLI)."
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+publish = false
 
 [[bin]]
 name = "ph"
