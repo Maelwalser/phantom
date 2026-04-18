@@ -16,6 +16,8 @@ use chrono::Utc;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{AgentId, ChangesetId, EventId};
 use phantom_core::traits::EventStore;
+use phantom_events::SqliteEventStore;
+use phantom_events::query::EventQuery;
 use phantom_session::adapter;
 use phantom_session::context_file;
 use phantom_session::post_session::PostSessionOutcome;
@@ -199,6 +201,22 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         ),
     };
 
+    // Reconcile against the event log. The monitor's local result can end in
+    // an error even though the work already made it to trunk — e.g. the
+    // submit pipeline crashed after `ChangesetMaterialized` but before
+    // `ChangesetSubmitted` was appended, or the conflict-retry path tripped
+    // on a non-fatal error. The event log is the source of truth: if trunk
+    // holds the commit, the agent succeeded and we should not plant a
+    // failure marker.
+    let (status, should_remove) = reconcile_with_event_log(
+        &events,
+        &agent_id,
+        &changeset_id,
+        status,
+        should_remove,
+    )
+    .await;
+
     // Write status file while the overlay still exists.
     let status_file = status_path(&ctx.phantom_dir, &args.agent);
     if let Ok(json) = serde_json::to_string_pretty(&status) {
@@ -216,6 +234,67 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     }
 
     result.map(|_| ())
+}
+
+/// If the local result would mark the agent as failed but the event log shows
+/// `ChangesetMaterialized` for this changeset, override the status to success.
+///
+/// Prevents a false "failed" marker from a mid-pipeline error (e.g., a failed
+/// `ChangesetSubmitted` append, or a retry path that tripped on a secondary
+/// error) after the work already landed on trunk.
+async fn reconcile_with_event_log(
+    events: &SqliteEventStore,
+    agent_id: &AgentId,
+    changeset_id: &ChangesetId,
+    status: AgentStatus,
+    should_remove: bool,
+) -> (AgentStatus, bool) {
+    let needs_check = status.error.is_some() || status.exit_code != Some(0);
+    if !needs_check {
+        return (status, should_remove);
+    }
+
+    if !was_changeset_materialized(events, changeset_id).await {
+        return (status, should_remove);
+    }
+
+    tracing::warn!(
+        agent = %agent_id,
+        changeset = %changeset_id,
+        original_error = ?status.error,
+        original_exit_code = ?status.exit_code,
+        "reconciling agent.status: ChangesetMaterialized event exists for this changeset — overriding to success"
+    );
+
+    (
+        AgentStatus {
+            exit_code: Some(0),
+            completed_at: status.completed_at,
+            materialized: true,
+            error: None,
+        },
+        true,
+    )
+}
+
+/// Return `true` if a `ChangesetMaterialized` event has been recorded for the
+/// given changeset. Errors from the event store are treated as "not found" so
+/// that a transient query failure does not accidentally promote a real error
+/// status into a fake success.
+async fn was_changeset_materialized(
+    events: &SqliteEventStore,
+    changeset_id: &ChangesetId,
+) -> bool {
+    let query = EventQuery {
+        changeset_id: Some(changeset_id.clone()),
+        kind_prefixes: vec!["ChangesetMaterialized".into()],
+        limit: Some(1),
+        ..Default::default()
+    };
+    events
+        .query(&query)
+        .await
+        .is_ok_and(|evs| !evs.is_empty())
 }
 
 /// Spawn the CLI agent process as our direct child, wait for it, return the exit code.
@@ -338,4 +417,99 @@ pub(super) async fn run_post_completion(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phantom_core::changeset::SemanticOperation;
+    use phantom_core::id::GitOid;
+
+    async fn store_with_materialized(cs_id: &ChangesetId, agent_id: &AgentId) -> SqliteEventStore {
+        let store = SqliteEventStore::in_memory().await.unwrap();
+        let event = Event {
+            id: EventId(0),
+            timestamp: Utc::now(),
+            changeset_id: cs_id.clone(),
+            agent_id: agent_id.clone(),
+            causal_parent: None,
+            kind: EventKind::ChangesetMaterialized {
+                new_commit: GitOid::zero(),
+            },
+        };
+        store.append(event).await.unwrap();
+        store
+    }
+
+    fn failing_status() -> AgentStatus {
+        AgentStatus {
+            exit_code: Some(0),
+            completed_at: Utc::now(),
+            materialized: false,
+            error: Some("submission failed due to conflicts".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn reconcile_overrides_error_status_when_materialized_event_exists() {
+        let agent = AgentId("scribe".into());
+        let cs = ChangesetId("cs-1".into());
+        let events = store_with_materialized(&cs, &agent).await;
+
+        let (status, should_remove) =
+            reconcile_with_event_log(&events, &agent, &cs, failing_status(), false).await;
+
+        assert!(status.error.is_none(), "error should be cleared");
+        assert_eq!(status.exit_code, Some(0));
+        assert!(status.materialized, "materialized should be true");
+        assert!(should_remove, "overlay should be removed on reconciled success");
+    }
+
+    #[tokio::test]
+    async fn reconcile_preserves_error_when_no_materialized_event() {
+        let agent = AgentId("scribe".into());
+        let cs = ChangesetId("cs-1".into());
+        let events = SqliteEventStore::in_memory().await.unwrap();
+        // Append an unrelated event so the store isn't empty.
+        let unrelated = Event {
+            id: EventId(0),
+            timestamp: Utc::now(),
+            changeset_id: cs.clone(),
+            agent_id: agent.clone(),
+            causal_parent: None,
+            kind: EventKind::ChangesetSubmitted {
+                operations: Vec::<SemanticOperation>::new(),
+            },
+        };
+        events.append(unrelated).await.unwrap();
+
+        let (status, should_remove) =
+            reconcile_with_event_log(&events, &agent, &cs, failing_status(), false).await;
+
+        assert!(status.error.is_some(), "error should be preserved");
+        assert!(!status.materialized);
+        assert!(!should_remove);
+    }
+
+    #[tokio::test]
+    async fn reconcile_is_noop_for_already_successful_status() {
+        let agent = AgentId("scribe".into());
+        let cs = ChangesetId("cs-1".into());
+        // Even with a materialized event present, a successful input should
+        // pass through unchanged (no unnecessary query).
+        let events = store_with_materialized(&cs, &agent).await;
+        let success = AgentStatus {
+            exit_code: Some(0),
+            completed_at: Utc::now(),
+            materialized: true,
+            error: None,
+        };
+
+        let (status, should_remove) =
+            reconcile_with_event_log(&events, &agent, &cs, success.clone(), true).await;
+
+        assert!(status.error.is_none());
+        assert!(status.materialized);
+        assert!(should_remove);
+    }
 }
