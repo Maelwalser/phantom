@@ -74,6 +74,10 @@ pub enum Commands {
     #[command(alias = "x", display_name = "exec/x")]
     Exec(commands::exec::ExecArgs),
 
+    /// Run the project's build, lint, and test commands as a post-plan gate
+    #[command(alias = "v", display_name = "verify/v")]
+    Verify(commands::verify::VerifyArgs),
+
     /// Internal: run FUSE mount daemon (not for direct use)
     #[command(name = "_fuse-mount", hide = true)]
     FuseMount(commands::fuse_mount::FuseMountArgs),

@@ -187,9 +187,18 @@ pub(super) async fn run_summary(
         for agent_id in &pending_agent_ids {
             if let Ok(layer) = mgr.get_layer(agent_id)
                 && let Ok(files) = layer.modified_files()
-                && !files.is_empty()
             {
-                pending_overlays.push((agent_id, files.len()));
+                // Match the submit pipeline: only count files that would
+                // actually be submitted. The raw upper-layer walk includes
+                // gitignored build artifacts (target/, node_modules/, etc.),
+                // inflating the count into the thousands.
+                let submittable = files
+                    .iter()
+                    .filter(|p| !git.is_ignored(p).unwrap_or(false))
+                    .count();
+                if submittable > 0 {
+                    pending_overlays.push((agent_id, submittable));
+                }
             }
         }
     }
@@ -203,10 +212,10 @@ pub(super) async fn run_summary(
         ui::section_header("Pending changesets");
         println!(
             "  {}",
-            ui::style_dim(&format!("{:<14} {:>5}", "AGENT", "FILES"))
+            ui::style_dim(&format!("{:<14} {:>7}", "AGENT", "CHANGES"))
         );
         for (agent_id, file_count) in &pending_overlays {
-            println!("  {agent_id:<14} {file_count:>5}");
+            println!("  {agent_id:<14} {file_count:>7}");
         }
     }
     println!();

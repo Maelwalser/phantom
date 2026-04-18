@@ -30,6 +30,7 @@ pub(super) async fn dispatch_domain(
     let agent_id = crate::services::validate::agent_id(&domain.agent_id)?;
     let git = ctx.open_git()?;
     let head = git.head_oid().context("failed to read HEAD")?;
+    crate::context::require_initialized_head(&head)?;
 
     // Create the overlay.
     let handle = overlays

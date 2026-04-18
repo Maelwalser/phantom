@@ -79,6 +79,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
 
     let agent_id = crate::services::validate::agent_id(&args.agent)?;
     let head = git.head_oid().context("failed to read HEAD")?;
+    crate::context::require_initialized_head(&head)?;
 
     // Resolve the user's category choice before creating the overlay. If the
     // user cancels an interactive menu or textbox, exit cleanly without

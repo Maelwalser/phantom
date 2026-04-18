@@ -150,9 +150,11 @@ fn modified_files_includes_symlinks() {
     let (lower, upper) = setup();
     let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
+    // `bin/.bin/esbuild` avoids the built-in `node_modules` artifact exclusion;
+    // this test is about symlinks, not about any particular path.
     layer
         .create_symlink(
-            Path::new("node_modules/.bin/esbuild"),
+            Path::new("bin/.bin/esbuild"),
             Path::new("../esbuild/bin/esbuild"),
         )
         .unwrap();

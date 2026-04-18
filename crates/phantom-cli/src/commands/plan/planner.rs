@@ -103,9 +103,13 @@ Rules:
 - Each domain gets its own agent with its own filesystem overlay
 - CONFLICT PREVENTION: No two parallel domains (same wave) may list the same file in files_to_modify. If two domains need the same file, one MUST depends_on the other
 - Shared config/build files (package.json, tsconfig.json, Cargo.toml, pyproject.toml, go.mod, Makefile, etc.) are the #1 source of merge conflicts. If multiple domains need these, create a "scaffold" or "setup" domain (wave 0) that owns all shared config, and have other domains depends_on it
+- LOCK FILES are automatically managed by phantom's finalize step — NEVER list Cargo.lock, package-lock.json, pnpm-lock.yaml, yarn.lock, uv.lock, poetry.lock, Pipfile.lock, go.sum, composer.lock, Gemfile.lock, or pubspec.lock in files_to_modify. The finalize step regenerates a single canonical lock file after all domains submit
+- BUILD ARTIFACTS (target/, node_modules/, dist/, __pycache__/, .next/, .nuxt/, .pytest_cache/, .dart_tool/, build output) are ephemeral and MUST NOT appear in any file scope — they are filtered at submit time
 - For greenfield projects (empty or near-empty repo), ALWAYS create a scaffold domain for project setup and config files as wave 0
 - files_not_to_modify MUST list every file owned by another domain to prevent accidental edits
 - Use depends_on freely when file sets overlap — correctness matters more than maximum parallelism
+- BALANCE WAVES: if a wave has only one domain while a later wave has three or more, look for ways to split the lone domain into parallel subdomains that share the same ancestors. A single-domain wave serializes the critical path
+- CROSS-CRATE DEPENDENCIES: when crate A imports a type from crate B, A's domain MUST depends_on B's domain even if their file sets are disjoint. Import implies dependency
 - Keep domains focused: 1-5 files each
 - Include verification commands appropriate for this project's toolchain
 - Names must be unique kebab-case identifiers

@@ -231,6 +231,12 @@ pub fn write_current_base(
     agent_id: &AgentId,
     base: &GitOid,
 ) -> Result<(), OrchestratorError> {
+    if *base == GitOid::zero() {
+        return Err(OrchestratorError::LiveRebase(format!(
+            "refusing to persist null OID as current_base for {agent_id}: repository has no initial commit"
+        )));
+    }
+
     let dir = phantom_dir.join("overlays").join(&agent_id.0);
     std::fs::create_dir_all(&dir)?;
 
@@ -355,6 +361,27 @@ mod tests {
         let agent = AgentId("ghost".into());
         let result = read_current_base(tmp.path(), &agent).unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn write_current_base_rejects_null_oid() {
+        let tmp = TempDir::new().unwrap();
+        let agent = AgentId("unborn".into());
+
+        let err = write_current_base(tmp.path(), &agent, &GitOid::zero()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("null OID") || msg.contains("no initial commit"),
+            "unexpected error: {msg}"
+        );
+
+        assert!(
+            !tmp.path()
+                .join("overlays")
+                .join("unborn")
+                .join("current_base")
+                .exists()
+        );
     }
 
     #[test]

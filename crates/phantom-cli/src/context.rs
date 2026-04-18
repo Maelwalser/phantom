@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
+use phantom_core::GitOid;
 use phantom_events::SqliteEventStore;
 use phantom_git::GitOps;
 use phantom_overlay::OverlayManager;
@@ -74,6 +75,22 @@ impl PhantomContext {
     pub fn semantic(&self) -> SemanticMerger {
         SemanticMerger::new()
     }
+}
+
+/// Reject operations that require a real commit to anchor against.
+///
+/// Materialization reads `parent_oid` via `find_commit()`; the null OID
+/// (returned by `GitOps::head_oid()` when HEAD is unborn) causes libgit2 to
+/// bail with `odb: cannot read object: null OID cannot exist`. We fail early
+/// with a clear action instead of letting the agent do work that can never be
+/// committed.
+pub fn require_initialized_head(head: &GitOid) -> anyhow::Result<()> {
+    if *head == GitOid::zero() {
+        bail!(
+            "repository has no initial commit. Run `ph init` to auto-create one, or `git commit --allow-empty -m \"initial\"` before dispatching agents."
+        );
+    }
+    Ok(())
 }
 
 /// Scan `.phantom/overlays/` for existing agent directories and re-register them
@@ -160,9 +177,21 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
     };
 
     if !crate::pid_guard::is_process_alive(&record) {
+        // The CLI child exited. Don't declare failure while the monitor is
+        // still orchestrating the post-session flow (submit + materialize),
+        // which runs for tens of seconds on large first commits. Only the
+        // monitor writes `agent.status`; racing it here would plant a
+        // "died unexpectedly" marker on a healthy submit.
+        let monitor_pid_file = overlay_dir.join("monitor.pid");
+        let monitor_alive = crate::pid_guard::read_pid_file(&monitor_pid_file)
+            .is_some_and(|r| crate::pid_guard::is_process_alive(&r));
+        if monitor_alive {
+            return;
+        }
+
         let status_file = overlay_dir.join("agent.status");
         if !status_file.exists() {
-            // Process died without writing a status file — write a failed marker.
+            // Both CLI and monitor are gone — real crash, record it.
             let status = crate::commands::agent_monitor::AgentStatus {
                 exit_code: None,
                 completed_at: chrono::Utc::now(),
@@ -180,8 +209,7 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
         }
         // Clean up PID files.
         let _ = std::fs::remove_file(&pid_file);
-        let monitor_pid = overlay_dir.join("monitor.pid");
-        let _ = std::fs::remove_file(&monitor_pid);
+        let _ = std::fs::remove_file(&monitor_pid_file);
     }
 }
 

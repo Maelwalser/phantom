@@ -14,7 +14,7 @@ use crate::git::{self, GitOps};
 /// Build a commit from pre-created blob OIDs without touching the working tree.
 pub(super) fn commit_from_oids(
     git: &GitOps,
-    file_oids: &[(PathBuf, git2::Oid)],
+    file_oids: &[(PathBuf, git2::Oid, u32)],
     parent_oid: &GitOid,
     message: &str,
     author: &str,
@@ -25,12 +25,18 @@ pub(super) fn commit_from_oids(
 /// Build a commit from pre-created blob OIDs plus a list of deleted paths.
 pub(super) fn commit_from_oids_with_deletions(
     git: &GitOps,
-    file_oids: &[(PathBuf, git2::Oid)],
+    file_oids: &[(PathBuf, git2::Oid, u32)],
     deletions: &[PathBuf],
     parent_oid: &GitOid,
     message: &str,
     author: &str,
 ) -> Result<GitOid, OrchestratorError> {
+    if *parent_oid == GitOid::zero() {
+        return Err(OrchestratorError::MaterializationFailed(
+            "parent commit is null OID — repository has no initial commit. Run `ph init` to seed one.".into(),
+        ));
+    }
+
     let repo = git.repo();
     let git2_parent_oid = git::git_oid_to_oid(parent_oid)?;
     let parent = repo.find_commit(git2_parent_oid)?;
@@ -44,4 +50,24 @@ pub(super) fn commit_from_oids_with_deletions(
     let new_oid = repo.commit(Some("HEAD"), &sig, &sig, message, &new_tree, &[&parent])?;
 
     Ok(git::oid_to_git_oid(new_oid))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn rejects_null_parent_oid() {
+        let dir = TempDir::new().unwrap();
+        let _repo = git2::Repository::init(dir.path()).unwrap();
+        let git = GitOps::open(dir.path()).unwrap();
+
+        let err = commit_from_oids(&git, &[], &GitOid::zero(), "msg", "tester").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("null OID") && msg.contains("ph init"),
+            "unexpected error: {msg}"
+        );
+    }
 }

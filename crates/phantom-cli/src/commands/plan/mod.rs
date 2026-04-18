@@ -6,11 +6,15 @@
 
 mod dispatch;
 mod display;
+mod markdown;
 mod planner;
 mod validate;
 
+use std::path::PathBuf;
+
 use anyhow::Context;
 use chrono::Utc;
+use dialoguer::Select;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{AgentId, ChangesetId, EventId, PlanId};
 use phantom_core::plan::{Plan, PlanDomain, PlanStatus, RawPlanOutput};
@@ -31,44 +35,75 @@ pub struct PlanArgs {
     /// Don't auto-submit (agents will wait for manual submit)
     #[arg(long)]
     pub no_submit: bool,
+    /// Implement a previously-saved plan file (skips AI planning).
+    #[arg(long, value_name = "PATH", conflicts_with = "description")]
+    pub from: Option<PathBuf>,
 }
 
 pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
-    let description = match args.description {
-        Some(d) => d,
-        None => match crate::ui::textbox::multiline_input(
-            "Describe what to implement:",
-            "Enter your plan description...",
-        )? {
-            Some(d) if !d.trim().is_empty() => d,
-            _ => {
-                println!("Aborted.");
-                return Ok(());
-            }
-        },
-    };
-
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
 
-    // Step 1: Generate plan via AI planner.
-    println!(
-        "\n  {} Analyzing codebase for: {}",
-        console::style("⟳").cyan(),
-        console::style(&description).bold()
-    );
-    println!();
+    // Fail fast if the repo has no initial commit; materialization cannot
+    // anchor against a null OID. Checking here avoids a needless LLM call
+    // to the planner and also protects the `--from` path.
+    let git = ctx.open_git()?;
+    let head = git
+        .head_oid()
+        .context("failed to read HEAD before planning")?;
+    crate::context::require_initialized_head(&head)?;
+    drop(git);
 
-    let raw_output = planner::run_planner(&ctx.repo_root, &ctx.phantom_dir, &description)?;
+    // Build the Plan — either by loading a saved file, or by invoking the
+    // AI planner on a fresh description.
+    let (plan, description) = if let Some(path) = &args.from {
+        let plan = markdown::parse_plan_file(path)?;
+        println!(
+            "\n  {} Loaded plan {} from {}",
+            console::style("✓").green(),
+            console::style(&plan.id.0).bold(),
+            console::style(path.display()).dim()
+        );
+        println!();
+        let description = plan.request.clone();
+        (plan, description)
+    } else {
+        let description = match args.description.clone() {
+            Some(d) => d,
+            None => match crate::ui::textbox::multiline_input(
+                "Describe what to implement:",
+                "Enter your plan description...",
+            )? {
+                Some(d) if !d.trim().is_empty() => d,
+                _ => {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            },
+        };
 
-    // Step 2: Build the Plan struct.
-    let plan_id = generate_plan_id();
-    let plan = build_plan(&plan_id, &description, raw_output);
+        // Step 1: Generate plan via AI planner.
+        println!(
+            "\n  {} Analyzing codebase for: {}",
+            console::style("⟳").cyan(),
+            console::style(&description).bold()
+        );
+        println!();
+
+        let raw_output = planner::run_planner(&ctx.repo_root, &ctx.phantom_dir, &description)?;
+
+        // Step 2: Build the Plan struct.
+        let plan_id = generate_plan_id();
+        let plan = build_plan(&plan_id, &description, raw_output);
+        (plan, description)
+    };
 
     if plan.domains.is_empty() {
         crate::ui::empty_state("Planner returned no domains. Nothing to dispatch.", None);
         return Ok(());
     }
+
+    let plan_id = plan.id.clone();
 
     // Step 3: Display the plan.
     display::display_plan(&plan);
@@ -78,22 +113,18 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Step 4: Confirm.
-    if !args.yes {
-        print!(
-            "  Dispatch {} agent(s)? [Y/n] ",
-            console::style(plan.domains.len()).bold()
-        );
-        use std::io::Write;
-        std::io::stdout().flush()?;
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        let input = input.trim().to_lowercase();
-        if input == "n" || input == "no" {
-            println!("Aborted.");
+    // Step 4: Decide — dispatch now, save for later, or cancel.
+    // `--yes` and `--from` short-circuit to "Implement now" (caller already
+    // committed to dispatch by passing those flags).
+    match select_next_action(&args)? {
+        NextAction::Cancel => {
+            println!("  {}", console::style("Cancelled.").dim());
             return Ok(());
         }
+        NextAction::SaveForLater => {
+            return save_plan_for_later(&ctx, &plan);
+        }
+        NextAction::ImplementNow => {}
     }
 
     // Step 5: Persist the plan.
@@ -109,6 +140,14 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
 
     // Step 5c: Warn about file overlap between parallel domains.
     validate::warn_parallel_file_overlap(&plan);
+
+    // Step 5d: Warn about phantom-managed paths (lock files, build artifacts)
+    // that the planner should never claim.
+    validate::warn_phantom_managed_paths(&plan);
+
+    // Step 5e: Warn about single-domain waves that bottleneck the critical
+    // path when later waves fan out.
+    validate::warn_single_domain_bottlenecks(&plan);
 
     // Step 6: Dispatch agents.
     let mut plan = plan;
@@ -173,6 +212,68 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
 fn generate_plan_id() -> PlanId {
     let now = Utc::now();
     PlanId(now.format("plan-%Y%m%d-%H%M%S").to_string())
+}
+
+/// What the user wants to do after the plan has been displayed.
+enum NextAction {
+    ImplementNow,
+    SaveForLater,
+    Cancel,
+}
+
+/// Present a rollback-style interactive menu. Short-circuits to
+/// [`NextAction::ImplementNow`] when the caller passed `--yes` or `--from`.
+fn select_next_action(args: &PlanArgs) -> anyhow::Result<NextAction> {
+    if args.yes || args.from.is_some() {
+        return Ok(NextAction::ImplementNow);
+    }
+
+    let items = [
+        "Implement now  — dispatch agents immediately",
+        "Save for later — write a portable plan file at the repo root",
+        "Cancel",
+    ];
+
+    let selection = Select::new()
+        .with_prompt("What would you like to do?")
+        .items(&items)
+        .default(0)
+        .interact_opt()?;
+
+    Ok(match selection {
+        Some(0) => NextAction::ImplementNow,
+        Some(1) => NextAction::SaveForLater,
+        _ => NextAction::Cancel,
+    })
+}
+
+/// Persist the plan as a portable Markdown file at the repo root and print a
+/// follow-up hint. Also mirrors the plan JSON to `.phantom/plans/<id>/` for
+/// consistency with the normal dispatch path.
+fn save_plan_for_later(ctx: &PhantomContext, plan: &Plan) -> anyhow::Result<()> {
+    let plan_dir = ctx.phantom_dir.join("plans").join(&plan.id.0);
+    std::fs::create_dir_all(&plan_dir)
+        .with_context(|| format!("failed to create plan directory {}", plan_dir.display()))?;
+    let plan_json = serde_json::to_string_pretty(plan).context("failed to serialize plan")?;
+    std::fs::write(plan_dir.join("plan.json"), &plan_json).context("failed to write plan.json")?;
+
+    let md_path = markdown::write_plan_file(&ctx.repo_root, plan)?;
+    let rel = md_path.strip_prefix(&ctx.repo_root).map_or_else(
+        |_| md_path.display().to_string(),
+        |p| p.display().to_string(),
+    );
+
+    println!(
+        "  {} Plan saved to {}",
+        console::style("✓").green(),
+        console::style(&rel).cyan()
+    );
+    println!();
+    crate::ui::action_hint(
+        &format!("ph plan --from {rel}"),
+        "to dispatch this plan later.",
+    );
+    Ok(())
 }
 
 /// Convert raw planner output into a full Plan struct.
