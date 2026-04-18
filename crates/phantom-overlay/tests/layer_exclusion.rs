@@ -116,6 +116,33 @@ fn deleted_cargo_lock_not_reported() {
 }
 
 #[test]
+fn whiteouts_json_excluded_at_any_depth() {
+    // Regression: an overlay teardown that interleaved writes could leave
+    // `.whiteouts.json` files inside subdirectories. The previous filter
+    // only caught the root copy, so nested ones leaked into changesets
+    // and were observed in the wild at the repo root after materialization.
+    let layer = layer();
+    layer
+        .write_file(std::path::Path::new(".whiteouts.json"), b"{}")
+        .unwrap();
+    layer
+        .write_file(std::path::Path::new("crates/foo/.whiteouts.json"), b"{}")
+        .unwrap();
+    layer
+        .write_file(std::path::Path::new("src/main.rs"), b"fn main(){}")
+        .unwrap();
+
+    let modified = layer.modified_files().unwrap();
+    assert!(
+        !modified
+            .iter()
+            .any(|p| p.file_name() == Some(std::ffi::OsStr::new(".whiteouts.json"))),
+        ".whiteouts.json must be filtered out at every depth; got {modified:?}",
+    );
+    assert!(modified.contains(&PathBuf::from("src/main.rs")));
+}
+
+#[test]
 fn source_files_not_excluded_even_when_named_like_directories() {
     // A source file in `crates/target/` (if a crate were named `target`)
     // is legitimate source, not build output — exclusion is anchored at

@@ -16,3 +16,4 @@ pub mod status;
 pub mod submit;
 pub mod task;
 pub mod tasks;
+pub mod verify;

@@ -141,6 +141,14 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     // Step 5c: Warn about file overlap between parallel domains.
     validate::warn_parallel_file_overlap(&plan);
 
+    // Step 5d: Warn about phantom-managed paths (lock files, build artifacts)
+    // that the planner should never claim.
+    validate::warn_phantom_managed_paths(&plan);
+
+    // Step 5e: Warn about single-domain waves that bottleneck the critical
+    // path when later waves fan out.
+    validate::warn_single_domain_bottlenecks(&plan);
+
     // Step 6: Dispatch agents.
     let mut plan = plan;
     let mut dispatched_agents = Vec::new();

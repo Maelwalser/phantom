@@ -8,12 +8,14 @@ use crate::error::GitError;
 /// Build a git tree by layering pre-created blob OIDs on top of `base_tree`.
 ///
 /// Callers create blobs up-front (one file at a time), then pass lightweight
-/// `(PathBuf, git2::Oid)` pairs here. The recursive calls only clone the path
-/// suffix and copy the 20-byte OID — no file-content duplication.
+/// `(PathBuf, git2::Oid, u32)` tuples here. The `u32` is the git file mode
+/// (`0o100644` regular, `0o100755` executable, `0o120000` symlink) — it
+/// travels with each blob so the executable bit and symlink-ness are
+/// preserved across the tree rebuild.
 pub fn build_tree_from_oids(
     repo: &git2::Repository,
     base_tree: &git2::Tree<'_>,
-    files: &[(PathBuf, git2::Oid)],
+    files: &[(PathBuf, git2::Oid, u32)],
 ) -> Result<git2::Oid, GitError> {
     build_tree_from_oids_with_deletions(repo, base_tree, files, &[])
 }
@@ -27,13 +29,14 @@ pub fn build_tree_from_oids(
 pub fn build_tree_from_oids_with_deletions(
     repo: &git2::Repository,
     base_tree: &git2::Tree<'_>,
-    files: &[(PathBuf, git2::Oid)],
+    files: &[(PathBuf, git2::Oid, u32)],
     deletions: &[PathBuf],
 ) -> Result<git2::Oid, GitError> {
-    let mut root_blobs: Vec<(&std::ffi::OsStr, git2::Oid)> = Vec::new();
-    let mut subdir_files: HashMap<&std::ffi::OsStr, Vec<(PathBuf, git2::Oid)>> = HashMap::new();
+    let mut root_blobs: Vec<(&std::ffi::OsStr, git2::Oid, u32)> = Vec::new();
+    let mut subdir_files: HashMap<&std::ffi::OsStr, Vec<(PathBuf, git2::Oid, u32)>> =
+        HashMap::new();
 
-    for (path, oid) in files {
+    for (path, oid, mode) in files {
         let mut components = path.components();
         let first = components
             .next()
@@ -43,12 +46,12 @@ pub fn build_tree_from_oids_with_deletions(
         let name = first.as_os_str();
 
         if remaining.as_os_str().is_empty() {
-            root_blobs.push((name, *oid));
+            root_blobs.push((name, *oid, *mode));
         } else {
             subdir_files
                 .entry(name)
                 .or_default()
-                .push((remaining, *oid));
+                .push((remaining, *oid, *mode));
         }
     }
 
@@ -83,12 +86,14 @@ pub fn build_tree_from_oids_with_deletions(
         let _ = builder.remove(name_str);
     }
 
-    for (name, oid) in &root_blobs {
+    for (name, oid, mode) in &root_blobs {
         builder.insert(
             name.to_str()
                 .ok_or_else(|| GitError::MaterializationFailed("non-UTF-8 filename".into()))?,
             *oid,
-            0o100644,
+            i32::try_from(*mode).map_err(|_| {
+                GitError::MaterializationFailed(format!("invalid git mode {mode:o}"))
+            })?,
         )?;
     }
 
@@ -154,8 +159,16 @@ mod tests {
         let base_tree = head.tree().unwrap();
 
         let file_oids = vec![
-            (PathBuf::from("a.txt"), repo.blob(b"modified-a").unwrap()),
-            (PathBuf::from("c.txt"), repo.blob(b"new-c").unwrap()),
+            (
+                PathBuf::from("a.txt"),
+                repo.blob(b"modified-a").unwrap(),
+                0o100_644_u32,
+            ),
+            (
+                PathBuf::from("c.txt"),
+                repo.blob(b"new-c").unwrap(),
+                0o100_644_u32,
+            ),
         ];
 
         let new_tree_oid = build_tree_from_oids(&repo, &base_tree, &file_oids).unwrap();
@@ -191,10 +204,12 @@ mod tests {
             (
                 PathBuf::from("src/main.rs"),
                 repo.blob(b"fn main() { new }").unwrap(),
+                0o100_644_u32,
             ),
             (
                 PathBuf::from("src/utils/helper.rs"),
                 repo.blob(b"pub fn help() {}").unwrap(),
+                0o100_644_u32,
             ),
         ];
 

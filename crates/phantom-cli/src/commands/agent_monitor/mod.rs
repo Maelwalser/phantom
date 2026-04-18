@@ -208,14 +208,8 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     // on a non-fatal error. The event log is the source of truth: if trunk
     // holds the commit, the agent succeeded and we should not plant a
     // failure marker.
-    let (status, should_remove) = reconcile_with_event_log(
-        &events,
-        &agent_id,
-        &changeset_id,
-        status,
-        should_remove,
-    )
-    .await;
+    let (status, should_remove) =
+        reconcile_with_event_log(&events, &agent_id, &changeset_id, status, should_remove).await;
 
     // Write status file while the overlay still exists.
     let status_file = status_path(&ctx.phantom_dir, &args.agent);
@@ -281,20 +275,14 @@ async fn reconcile_with_event_log(
 /// given changeset. Errors from the event store are treated as "not found" so
 /// that a transient query failure does not accidentally promote a real error
 /// status into a fake success.
-async fn was_changeset_materialized(
-    events: &SqliteEventStore,
-    changeset_id: &ChangesetId,
-) -> bool {
+async fn was_changeset_materialized(events: &SqliteEventStore, changeset_id: &ChangesetId) -> bool {
     let query = EventQuery {
         changeset_id: Some(changeset_id.clone()),
         kind_prefixes: vec!["ChangesetMaterialized".into()],
         limit: Some(1),
         ..Default::default()
     };
-    events
-        .query(&query)
-        .await
-        .is_ok_and(|evs| !evs.is_empty())
+    events.query(&query).await.is_ok_and(|evs| !evs.is_empty())
 }
 
 /// Spawn the CLI agent process as our direct child, wait for it, return the exit code.
@@ -462,7 +450,10 @@ mod tests {
         assert!(status.error.is_none(), "error should be cleared");
         assert_eq!(status.exit_code, Some(0));
         assert!(status.materialized, "materialized should be true");
-        assert!(should_remove, "overlay should be removed on reconciled success");
+        assert!(
+            should_remove,
+            "overlay should be removed on reconciled success"
+        );
     }
 
     #[tokio::test]

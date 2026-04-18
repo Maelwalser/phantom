@@ -30,8 +30,14 @@ impl OverlayLayer {
         Ok(all
             .into_iter()
             .filter(|p| {
-                let name = p.to_string_lossy();
-                if INTERNAL_FILES.iter().any(|f| name == *f) {
+                // Filter internal files by BASENAME at any depth. Matching
+                // the full relative path would leak a `.whiteouts.json`
+                // sitting inside a subdirectory into the changeset — seen
+                // in the wild when an overlay is torn down without a
+                // clean submit.
+                if let Some(basename) = p.file_name().and_then(|n| n.to_str())
+                    && INTERNAL_FILES.contains(&basename)
+                {
                     return false;
                 }
                 !is_excluded_artifact(p)

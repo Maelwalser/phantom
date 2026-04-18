@@ -144,6 +144,12 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
         } else {
             let label = styled_event_kind_label(&event.kind);
             println!("  {ts:>12}  {agent}  {label}");
+            // For conflict events, render a secondary line listing the
+            // conflicting files so the user can diagnose without digging
+            // into --verbose output.
+            if let Some(detail) = conflict_detail_line(&event.kind) {
+                println!("              {}", ui::style_dim(&detail));
+            }
         }
     }
 
@@ -187,6 +193,44 @@ fn parse_duration_ago(s: &str) -> anyhow::Result<chrono::DateTime<Utc>> {
     Ok(Utc::now() - duration)
 }
 
+/// Build a one-line "on foo.rs, bar.rs" fragment for a conflict list,
+/// truncating past 3 files to keep output terse.
+fn format_conflict_files(conflicts: &[phantom_core::ConflictDetail]) -> String {
+    use std::collections::BTreeSet;
+    let files: BTreeSet<&std::path::Path> = conflicts.iter().map(|c| c.file.as_path()).collect();
+    if files.is_empty() {
+        return String::new();
+    }
+    let mut names: Vec<String> = files
+        .iter()
+        .take(3)
+        .map(|p| p.display().to_string())
+        .collect();
+    if files.len() > 3 {
+        names.push(format!("+{} more", files.len() - 3));
+    }
+    names.join(", ")
+}
+
+/// Secondary-line detail shown under conflict events in compact log output.
+/// Lists the file paths that conflicted so the user can diagnose without
+/// running `ph log --verbose`.
+fn conflict_detail_line(kind: &phantom_core::EventKind) -> Option<String> {
+    use phantom_core::EventKind;
+    match kind {
+        EventKind::ChangesetConflicted { conflicts }
+        | EventKind::ConflictResolutionStarted { conflicts, .. } => {
+            let files = format_conflict_files(conflicts);
+            if files.is_empty() {
+                None
+            } else {
+                Some(format!("↳ {files}"))
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Format an `EventKind` into a one-line summary.
 fn format_event_kind(kind: &phantom_core::EventKind) -> String {
     use phantom_core::EventKind;
@@ -221,7 +265,15 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
             )
         }
         EventKind::ChangesetConflicted { conflicts } => {
-            format!("conflicted {{ {} conflict(s) }}", conflicts.len())
+            let files = format_conflict_files(conflicts);
+            if files.is_empty() {
+                format!("conflicted {{ {} conflict(s) }}", conflicts.len())
+            } else {
+                format!(
+                    "conflicted {{ {} conflict(s) on {files} }}",
+                    conflicts.len()
+                )
+            }
         }
         EventKind::ChangesetDropped { reason } => {
             format!("dropped {{ {reason} }}")
@@ -352,4 +404,86 @@ fn styled_event_kind_label(kind: &phantom_core::EventKind) -> console::StyledObj
 
 fn short_hex(hex: &str) -> &str {
     &hex[..12.min(hex.len())]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phantom_core::{ConflictDetail, ConflictKind, EventKind};
+    use std::path::PathBuf;
+
+    fn detail(file: &str) -> ConflictDetail {
+        ConflictDetail {
+            kind: ConflictKind::BothModifiedSymbol,
+            file: PathBuf::from(file),
+            symbol_id: None,
+            ours_changeset: phantom_core::ChangesetId("cs-a".into()),
+            theirs_changeset: phantom_core::ChangesetId("cs-b".into()),
+            description: String::new(),
+            ours_span: None,
+            theirs_span: None,
+            base_span: None,
+        }
+    }
+
+    #[test]
+    fn format_conflict_files_empty_returns_empty() {
+        assert!(format_conflict_files(&[]).is_empty());
+    }
+
+    #[test]
+    fn format_conflict_files_lists_paths() {
+        let got = format_conflict_files(&[detail("src/a.rs"), detail("src/b.rs")]);
+        assert_eq!(got, "src/a.rs, src/b.rs");
+    }
+
+    #[test]
+    fn format_conflict_files_dedupes_same_file() {
+        // Two symbol conflicts in the same file should collapse to one path.
+        let got = format_conflict_files(&[detail("src/a.rs"), detail("src/a.rs")]);
+        assert_eq!(got, "src/a.rs");
+    }
+
+    #[test]
+    fn format_conflict_files_truncates_past_three() {
+        let got = format_conflict_files(&[
+            detail("a.rs"),
+            detail("b.rs"),
+            detail("c.rs"),
+            detail("d.rs"),
+            detail("e.rs"),
+        ]);
+        assert_eq!(got, "a.rs, b.rs, c.rs, +2 more");
+    }
+
+    #[test]
+    fn conflict_detail_line_none_for_non_conflict_events() {
+        assert!(conflict_detail_line(&EventKind::TaskDestroyed).is_none());
+    }
+
+    #[test]
+    fn conflict_detail_line_renders_for_conflicted() {
+        let line = conflict_detail_line(&EventKind::ChangesetConflicted {
+            conflicts: vec![detail("src/main.rs")],
+        });
+        assert_eq!(line.as_deref(), Some("↳ src/main.rs"));
+    }
+
+    #[test]
+    fn conflict_detail_line_renders_for_resolution_started() {
+        let line = conflict_detail_line(&EventKind::ConflictResolutionStarted {
+            conflicts: vec![detail("src/lib.rs")],
+            new_base: None,
+        });
+        assert_eq!(line.as_deref(), Some("↳ src/lib.rs"));
+    }
+
+    #[test]
+    fn conflict_detail_line_empty_conflicts_returns_none() {
+        // An older event stored with no details should not render a
+        // misleading empty fragment.
+        assert!(
+            conflict_detail_line(&EventKind::ChangesetConflicted { conflicts: vec![] }).is_none(),
+        );
+    }
 }

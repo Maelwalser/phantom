@@ -23,6 +23,7 @@ use super::discovery::resolve_agent_context;
 use super::events::record_changeset_submitted;
 use super::operations::extract_operations;
 use super::overlay_scan::collect_changes;
+use super::scope_audit;
 use super::{SubmitAndMaterializeOutput, SubmitOutput};
 
 /// Bundled inputs for [`submit_and_materialize`].
@@ -51,6 +52,16 @@ pub(super) async fn run(
     let changes = collect_changes(ctx.git, ctx.layer)?;
     if changes.is_empty() {
         return Ok(None);
+    }
+
+    // Pre-submit scope audit: when the agent is part of a plan, compare
+    // modified/deleted paths against its PlanDomain scope. Out-of-scope
+    // writes are logged here (advisory) so the operator can see them in
+    // `ph log --verbose` after submit; tightening to a hard rejection is
+    // gated on operational signal in production.
+    if let Some(scope) = scope_audit::find_scope(ctx.phantom_dir, ctx.agent_id) {
+        let violations = scope_audit::audit_paths(&scope, &changes.modified, &changes.deleted);
+        scope_audit::log_violations(ctx.agent_id, &scope, &violations);
     }
 
     let agent_ctx = resolve_agent_context(ctx.events, ctx.agent_id).await?;

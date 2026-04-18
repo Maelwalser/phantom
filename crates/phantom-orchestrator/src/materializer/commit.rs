@@ -14,7 +14,7 @@ use crate::git::{self, GitOps};
 /// Build a commit from pre-created blob OIDs without touching the working tree.
 pub(super) fn commit_from_oids(
     git: &GitOps,
-    file_oids: &[(PathBuf, git2::Oid)],
+    file_oids: &[(PathBuf, git2::Oid, u32)],
     parent_oid: &GitOid,
     message: &str,
     author: &str,
@@ -25,7 +25,7 @@ pub(super) fn commit_from_oids(
 /// Build a commit from pre-created blob OIDs plus a list of deleted paths.
 pub(super) fn commit_from_oids_with_deletions(
     git: &GitOps,
-    file_oids: &[(PathBuf, git2::Oid)],
+    file_oids: &[(PathBuf, git2::Oid, u32)],
     deletions: &[PathBuf],
     parent_oid: &GitOid,
     message: &str,

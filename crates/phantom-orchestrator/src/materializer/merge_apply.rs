@@ -19,6 +19,42 @@ use super::events;
 use super::merge_file::{self, MergeFileOutcome};
 use super::path_validation;
 
+/// Resolve the git file mode for a merged-in file.
+///
+/// Prefers the agent's overlay (freshest signal — if the agent chmod'd the
+/// file, we want that). Falls back to the base trunk tree if the file is
+/// pre-existing. Defaults to a regular non-executable file.
+fn resolve_mode_for_merge(file: &Path, upper_dir: &Path, git: &GitOps, head: &GitOid) -> u32 {
+    let overlay_path = upper_dir.join(file);
+    if let Ok(meta) = std::fs::symlink_metadata(&overlay_path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if meta.file_type().is_symlink() {
+                return 0o120_000;
+            }
+            if meta.permissions().mode() & 0o111 != 0 {
+                return 0o100_755;
+            }
+            return 0o100_644;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = meta;
+            return 0o100_644;
+        }
+    }
+    // Fall back to the mode stored on trunk.
+    if let Ok(git2_head) = git::git_oid_to_oid(head)
+        && let Ok(commit) = git.repo().find_commit(git2_head)
+        && let Ok(tree) = commit.tree()
+        && let Ok(entry) = tree.get_path(file)
+    {
+        return u32::try_from(entry.filemode()).unwrap_or(0o100_644);
+    }
+    0o100_644
+}
+
 /// Bundled context for a merge-apply operation, avoiding excessive parameter counts.
 pub(super) struct MergeContext<'a> {
     pub(super) upper_dir: &'a Path,
@@ -43,7 +79,7 @@ pub(super) async fn merge_apply(
     );
 
     let mut all_conflicts = Vec::new();
-    let mut merged_files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut merged_files: Vec<(PathBuf, Vec<u8>, u32)> = Vec::new();
     let mut deleted_files: Vec<PathBuf> = Vec::new();
     let mut text_fallback_files: Vec<PathBuf> = Vec::new();
 
@@ -61,7 +97,8 @@ pub(super) async fn merge_apply(
                 if text_fallback {
                     text_fallback_files.push(file.clone());
                 }
-                merged_files.push((file.clone(), content));
+                let mode = resolve_mode_for_merge(file, ctx.upper_dir, git, ctx.head);
+                merged_files.push((file.clone(), content, mode));
             }
             MergeFileOutcome::Conflicted(conflicts) => {
                 all_conflicts.extend(conflicts);
