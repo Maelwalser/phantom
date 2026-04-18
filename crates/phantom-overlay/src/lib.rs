@@ -6,6 +6,7 @@
 //! writes go to a per-agent upper layer.
 
 pub mod error;
+mod exclusion;
 pub mod layer;
 pub mod manager;
 pub mod trunk_view;
