@@ -46,15 +46,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev fuse3 pkg-config
-      - name: Enable FUSE for unprivileged users
-        run: |
-          # Ubuntu 24.04 ships fusermount3 without the setuid bit, which
-          # prevents non-root FUSE mounts. AppArmor also restricts unprivileged
-          # user namespaces by default on noble, which breaks libfuse's mount
-          # path. Both are safe to relax inside an ephemeral CI runner.
-          sudo chmod u+s /usr/bin/fusermount3
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          ls -l /usr/bin/fusermount3 /dev/fuse
       - run: cargo test --workspace --all-features
 
   doc:
@@ -115,10 +106,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev fuse3 pkg-config
-      - name: Enable FUSE for unprivileged users
-        run: |
-          sudo chmod u+s /usr/bin/fusermount3
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage

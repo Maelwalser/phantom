@@ -101,7 +101,13 @@ fn phantom_task_background_and_status() {
     phantom(dir.path()).arg("init").assert().success();
 
     phantom(dir.path())
-        .args(["agent-a", "--background", "--task", "add rate limiting"])
+        .args([
+            "agent-a",
+            "--no-fuse",
+            "--background",
+            "--task",
+            "add rate limiting",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Agent 'agent-a' tasked"))
@@ -123,7 +129,7 @@ fn phantom_task_interactive_with_echo() {
 
     // Use `echo` as a stand-in for claude — it exits immediately
     phantom(dir.path())
-        .args(["agent-b", "--command", "echo"])
+        .args(["agent-b", "--no-fuse", "--command", "echo"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Agent 'agent-b' tasked"))
@@ -150,7 +156,13 @@ fn full_workflow_smoke_test() {
 
     // 2. Dispatch in background mode
     phantom(dir.path())
-        .args(["agent-a", "--background", "--task", "add feature X"])
+        .args([
+            "agent-a",
+            "--no-fuse",
+            "--background",
+            "--task",
+            "add feature X",
+        ])
         .assert()
         .success();
 
@@ -197,7 +209,14 @@ fn phantom_task_background_conflicts_with_auto_submit() {
     phantom(dir.path()).arg("init").assert().success();
 
     phantom(dir.path())
-        .args(["agent-a", "--background", "--task", "test", "--auto-submit"])
+        .args([
+            "agent-a",
+            "--no-fuse",
+            "--background",
+            "--task",
+            "test",
+            "--auto-submit",
+        ])
         .assert()
         .success();
 }
@@ -221,7 +240,13 @@ fn phantom_task_interactive_auto_submit_with_no_changes() {
 
     // echo exits immediately with no changes — auto-submit should report "no changes"
     phantom(dir.path())
-        .args(["agent-c", "--command", "echo", "--auto-submit"])
+        .args([
+            "agent-c",
+            "--no-fuse",
+            "--command",
+            "echo",
+            "--auto-submit",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("No changes detected"));
@@ -235,6 +260,7 @@ fn phantom_task_category_builtin_writes_rules_file_and_shows_label() {
     phantom(dir.path())
         .args([
             "agent-cat-builtin",
+            "--no-fuse",
             "--background",
             "--task",
             "fix bug",
@@ -264,6 +290,7 @@ fn phantom_task_cat_alias_resolves_same_as_category() {
     phantom(dir.path())
         .args([
             "agent-cat-alias",
+            "--no-fuse",
             "--background",
             "--task",
             "refactor",
@@ -286,6 +313,7 @@ fn phantom_task_category_with_external_md_path_succeeds() {
     phantom(dir.path())
         .args([
             "agent-cat-file",
+            "--no-fuse",
             "--background",
             "--task",
             "anything",
