@@ -240,13 +240,7 @@ fn phantom_task_interactive_auto_submit_with_no_changes() {
 
     // echo exits immediately with no changes — auto-submit should report "no changes"
     phantom(dir.path())
-        .args([
-            "agent-c",
-            "--no-fuse",
-            "--command",
-            "echo",
-            "--auto-submit",
-        ])
+        .args(["agent-c", "--no-fuse", "--command", "echo", "--auto-submit"])
         .assert()
         .success()
         .stdout(predicate::str::contains("No changes detected"));
