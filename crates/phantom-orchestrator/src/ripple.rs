@@ -53,7 +53,8 @@ impl RippleChecker {
     }
 }
 
-/// Classify each changed file as [`TrunkVisible`] or [`Shadowed`] for an agent.
+/// Classify each changed file as [`TrunkFileStatus::TrunkVisible`] or
+/// [`TrunkFileStatus::Shadowed`] for an agent.
 ///
 /// A file is `Shadowed` if it exists in the agent's upper directory (the agent
 /// still sees its old copy). Otherwise it is `TrunkVisible` (reads fall through

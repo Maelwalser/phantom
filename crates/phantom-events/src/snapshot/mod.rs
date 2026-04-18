@@ -4,8 +4,8 @@
 //! [`Projection`] build by persisting periodic snapshots of the changeset
 //! map and replaying only the events that occurred after the snapshot.
 //!
-//! Orchestration lives here; the DB I/O is in [`repository`] and the
-//! auto-save threshold is in [`policy`].
+//! Orchestration lives here; the DB I/O is in the `repository` submodule and
+//! the auto-save threshold is in the `policy` submodule.
 
 use tracing::debug;
 

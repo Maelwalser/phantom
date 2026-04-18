@@ -4,9 +4,9 @@
 //! agent ID, changeset ID, base commit, and available commands.
 //!
 //! Submodules:
-//! - [`task`]: basic context file writing
-//! - [`resolve`]: conflict resolution context and rules
-//! - [`plan`]: plan domain instruction files
+//! - `task`: basic context file writing
+//! - `resolve`: conflict resolution context and rules
+//! - `plan`: plan domain instruction files
 
 use std::path::Path;
 

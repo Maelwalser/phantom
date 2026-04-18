@@ -45,7 +45,7 @@ fn init_repo_with_source() -> TempDir {
 
 /// Build a `Command` for the `phantom` binary with working dir set.
 fn phantom(dir: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("phantom").unwrap();
+    let mut cmd = Command::cargo_bin("ph").unwrap();
     cmd.current_dir(dir).env("RUST_LOG", "");
     cmd
 }

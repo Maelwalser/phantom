@@ -48,10 +48,10 @@ pub(super) fn apply_events(changesets: &mut HashMap<ChangesetId, Changeset>, eve
             EventKind::TestsRun(result) => {
                 cs.test_result = Some(*result);
             }
-            EventKind::FileWritten { path, .. } | EventKind::FileDeleted { path } => {
-                if !cs.files_touched.contains(path) {
-                    cs.files_touched.push(path.clone());
-                }
+            EventKind::FileWritten { path, .. } | EventKind::FileDeleted { path }
+                if !cs.files_touched.contains(path) =>
+            {
+                cs.files_touched.push(path.clone());
             }
             EventKind::AgentLaunched { pid, .. } => {
                 cs.agent_pid = Some(*pid);

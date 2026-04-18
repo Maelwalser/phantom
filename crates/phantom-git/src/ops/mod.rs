@@ -2,10 +2,10 @@
 //! operations Phantom needs.
 //!
 //! The `impl GitOps` blocks are split across sibling modules by concern:
-//! - [`read`] — reading files and listing tree contents at a commit
-//! - [`history`] — mutating history (revert, hard reset)
-//! - [`diff`] — diffing commits and checking `.gitignore`
-//! - [`merge`] — three-way text merge (thin wrapper over [`crate::merge`])
+//! - `read` — reading files and listing tree contents at a commit
+//! - `history` — mutating history (revert, hard reset)
+//! - `diff` — diffing commits and checking `.gitignore`
+//! - `merge` — three-way text merge (thin wrapper over the crate-level `merge` module)
 
 use std::path::Path;
 

@@ -4,7 +4,7 @@
 
 Phantom is an event-sourced, semantic-aware version control layer for agentic AI development, built on top of Git. It enables multiple AI coding agents to work on the same codebase simultaneously with automatic symbol-level conflict detection, FUSE-based filesystem isolation, and instant propagation of finished work.
 
-Written in Rust (edition 2024, `rust-version = "1.85"`). Linux-first (FUSE). MIT license.
+Written in Rust (edition 2024, `rust-version = "1.88"`). Linux-first (FUSE). MIT license.
 
 ## Quick Reference
 

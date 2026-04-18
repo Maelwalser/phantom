@@ -115,13 +115,23 @@ pub(super) async fn run(
     // event is persisted — recovery relies on git metadata.  The invariant
     // ("trunk moves, no orphan event") is pinned by
     // tests/integration/tests/materialize_append_crash.rs.
-    record_changeset_submitted(
-        ctx.events,
-        agent_ctx.changeset_id,
-        ctx.agent_id,
-        extracted.all_ops,
-    )
-    .await?;
+    //
+    // Only record on clean materialization. When the merge produces a
+    // conflict, the materializer has already emitted ChangesetConflicted;
+    // appending ChangesetSubmitted afterwards would flip the projection
+    // status back to Submitted and hide the conflict from `ph resolve`.
+    if matches!(
+        materialize_output.result,
+        crate::materializer::MaterializeResult::Success { .. }
+    ) {
+        record_changeset_submitted(
+            ctx.events,
+            agent_ctx.changeset_id,
+            ctx.agent_id,
+            extracted.all_ops,
+        )
+        .await?;
+    }
 
     Ok(Some(SubmitAndMaterializeOutput {
         submit: submit_output,
