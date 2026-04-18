@@ -171,7 +171,7 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         retry::maybe_retry_on_conflict(&events, &agent_id, &changeset_id, exit_code, initial).await;
 
     // Build status from the outcome.
-    let (status, should_destroy) = match &result {
+    let (status, should_remove) = match &result {
         Ok(outcome) => {
             let materialized = matches!(outcome, PostSessionOutcome::Submitted { .. });
             (
@@ -185,7 +185,7 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
                         None
                     },
                 },
-                materialized, // destroy overlay only on successful materialization
+                materialized, // remove overlay only on successful materialization
             )
         }
         Err(e) => (
@@ -209,10 +209,10 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(pid_path(&ctx.phantom_dir, &args.agent));
     let _ = std::fs::remove_file(monitor_pid_path(&ctx.phantom_dir, &args.agent));
 
-    // Auto-destroy overlay after successful submit. On conflict or failure
+    // Auto-remove overlay after successful submit. On conflict or failure
     // the overlay is preserved for `phantom resolve` or manual recovery.
-    if should_destroy {
-        super::destroy::destroy_agent_overlay(&ctx, &agent_id, &changeset_id).await;
+    if should_remove {
+        super::remove::remove_agent_overlay(&ctx, &agent_id, &changeset_id).await;
     }
 
     result.map(|_| ())

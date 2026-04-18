@@ -33,7 +33,7 @@ struct FuseCleanupGuard {
 impl Drop for FuseCleanupGuard {
     fn drop(&mut self) {
         if self.active {
-            super::destroy::unmount_fuse(&self.phantom_dir, &self.agent);
+            super::remove::unmount_fuse(&self.phantom_dir, &self.agent);
         }
     }
 }

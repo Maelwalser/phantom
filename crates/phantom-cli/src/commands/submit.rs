@@ -37,7 +37,7 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
                 console::style(&changeset_id.to_string()).bold()
             );
 
-            // Auto-destroy overlay for background agents after successful submit.
+            // Auto-remove overlay for background agents after successful submit.
             let agent_events = events.query_by_agent(&agent_id).await?;
             let projection = Projection::from_events(&agent_events);
             let is_background = projection
@@ -45,8 +45,8 @@ pub async fn run(args: SubmitArgs) -> anyhow::Result<()> {
                 .is_some_and(|cs| cs.agent_pid.is_some());
 
             if is_background {
-                info!(agent = %agent_id, "auto-destroying background agent overlay after successful submit");
-                super::destroy::destroy_agent_overlay(&ctx, &agent_id, &changeset_id).await;
+                info!(agent = %agent_id, "auto-removing background agent overlay after successful submit");
+                super::remove::remove_agent_overlay(&ctx, &agent_id, &changeset_id).await;
                 println!(
                     "  {} Background agent '{}' overlay cleaned up.",
                     console::style("♻").dim(),

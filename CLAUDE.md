@@ -31,7 +31,7 @@ phantom status                       # Show overlays, changesets, queue
 phantom log [filter]                 # Query event log (agent name or cs-id)
 phantom changes                      # Recent submits and materializations
 phantom background                   # Watch background agents
-phantom destroy <agent>              # Tear down overlay (immediate, no prompt)
+phantom remove <agent>               # Tear down overlay (immediate, no prompt)
 phantom rollback [changeset-id]      # Drop changeset, replay downstream
 phantom down                         # Unmount all overlays, remove .phantom/ (prompts unless -f)
 ```
@@ -144,7 +144,7 @@ The CLI uses external subcommand parsing: `phantom <agent-name>` is caught by `E
 
 Hidden internal commands: `_fuse-mount` (FUSE daemon), `_agent-monitor` (background agent watcher).
 
-Key aliases: `re` (resume), `t` (tasks), `st` (status), `sub` (submit), `res` (resolve), `rb` (rollback), `l` (log), `c` (changes), `b` (background), `rm` (destroy).
+Key aliases: `re` (resume), `t` (tasks), `st` (status), `sub` (submit), `res` (resolve), `rb` (rollback), `l` (log), `c` (changes), `b` (background), `rm` (remove).
 
 ## Data Flow
 
@@ -182,7 +182,7 @@ Key aliases: `re` (resume), `t` (tasks), `st` (status), `sub` (submit), `res` (r
 - Background agent execution with monitoring
 - `phantom plan` — AI-driven task decomposition into parallel agents
 - `phantom resolve` — AI-driven conflict resolution
-- All core CLI commands (init, task, submit, plan, resolve, status, log, changes, rollback, destroy, background, down)
+- All core CLI commands (init, task, submit, plan, resolve, status, log, changes, rollback, remove, background, down)
 - Integration tests for all major scenarios
 
 ### Not Yet Implemented

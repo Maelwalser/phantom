@@ -118,7 +118,7 @@ cargo install --path crates/phantom-cli
 | `ph rollback` / `rb` | Drop a changeset and revert it |
 | `ph background` / `b` | Watch background agents |
 | `ph exec` / `x` | Run a command inside an agent's overlay view |
-| `ph destroy` / `rm` | Remove an agent's overlay (immediate, no prompt) |
+| `ph remove` / `rm` | Remove an agent's overlay (immediate, no prompt) |
 | `ph down` | Unmount everything and remove `.phantom/` |
 
 ### `ph <agent>`
@@ -206,7 +206,7 @@ ph x agent-b -- cat src/lib.rs
 
 Sets `PHANTOM_AGENT_ID`, `PHANTOM_OVERLAY_DIR`, `PHANTOM_REPO_ROOT` in the spawned process.
 
-### `ph destroy` / `rm`
+### `ph remove` / `rm`
 
 Removes an overlay, FUSE mount, and persisted session data. **No confirmation prompt.** Use `ph down` to remove `.phantom/` entirely with a prompt.
 

@@ -52,7 +52,7 @@ pub(super) enum ResumeStatus {
 
 /// Check the resume status of a changeset.
 ///
-/// Blocks resume only if the task has been explicitly destroyed. Otherwise
+/// Blocks resume only if the task has been explicitly removed. Otherwise
 /// returns the changeset status so the caller can decide whether to reuse the
 /// changeset or create a new one.
 pub(super) async fn check_changeset_resumable(
@@ -68,7 +68,7 @@ pub(super) async fn check_changeset_resumable(
         match &event.kind {
             EventKind::TaskDestroyed => {
                 anyhow::bail!(
-                    "task for changeset {cs_id} has been destroyed — \
+                    "task for changeset {cs_id} has been removed — \
                      use `phantom <new-agent>` to start fresh"
                 );
             }

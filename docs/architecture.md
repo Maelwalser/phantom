@@ -245,7 +245,7 @@ The `ph` binary.
 - `fs/fuse.rs` — spawn/waitfor/unmount helpers for the FUSE daemon.
 - `commands/` — one module per subcommand: `init`, `task` (with
   `resume.rs` and `spawn.rs`), `submit`, `status`, `tasks`, `plan`,
-  `resolve`, `rollback`, `log`, `changes`, `destroy`, `background`,
+  `resolve`, `rollback`, `log`, `changes`, `remove`, `background`,
   `resume`, `exec`, `down`, `fuse_mount` (internal), `agent_monitor`
   (internal).
 - `services/` — validation helpers (agent ID, changeset ID).

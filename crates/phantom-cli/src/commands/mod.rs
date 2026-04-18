@@ -1,7 +1,6 @@
 pub mod agent_monitor;
 pub mod background;
 pub mod changes;
-pub mod destroy;
 pub mod down;
 pub mod exec;
 pub mod fuse_mount;
@@ -9,6 +8,7 @@ pub mod init;
 pub mod interactive;
 pub mod log;
 pub mod plan;
+pub mod remove;
 pub mod resolve;
 pub mod resume;
 pub mod rollback;

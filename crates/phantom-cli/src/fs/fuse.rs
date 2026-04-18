@@ -1,7 +1,7 @@
 //! FUSE daemon spawn, mount detection, and unmount primitives.
 //!
 //! Consolidates the FUSE lifecycle operations previously duplicated across
-//! `plan`, `task`, `resolve`, `destroy`, `down`, and `context`. Commands
+//! `plan`, `task`, `resolve`, `remove`, `down`, and `context`. Commands
 //! compose these primitives with their own policy (e.g., fallback to kill
 //! on failed unmount, retry with lazy unmount).
 

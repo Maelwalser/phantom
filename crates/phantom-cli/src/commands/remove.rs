@@ -1,4 +1,4 @@
-//! `phantom destroy` — tear down an agent's overlay.
+//! `phantom remove` — tear down an agent's overlay.
 //!
 //! If a FUSE daemon is running for the agent, it is unmounted (via
 //! `fusermount3 -u`) before the overlay directories are removed.
@@ -14,12 +14,12 @@ use tracing::{info, warn};
 use crate::context::PhantomContext;
 
 #[derive(clap::Args)]
-pub struct DestroyArgs {
-    /// Agent identifier whose overlay to destroy
+pub struct RemoveArgs {
+    /// Agent identifier whose overlay to remove
     pub agent: String,
 }
 
-pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
+pub async fn run(args: RemoveArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
     let events_store = ctx.open_events().await?;
     let mut overlays = ctx.open_overlays_restored()?;
@@ -62,7 +62,7 @@ pub async fn run(args: DestroyArgs) -> anyhow::Result<()> {
     events_store.append(event).await?;
 
     println!(
-        "  {} Agent '{}' overlay destroyed.",
+        "  {} Agent '{}' overlay removed.",
         console::style("✗").yellow(),
         console::style(&args.agent).bold()
     );
@@ -100,7 +100,7 @@ pub(crate) fn unmount_fuse(phantom_dir: &std::path::Path, agent: &str) {
 /// Unmounts FUSE, removes overlay directories, and emits a `TaskDestroyed`
 /// event. Errors are logged but not propagated — the submission already
 /// succeeded, so the overlay is just stale at this point.
-pub(crate) async fn destroy_agent_overlay(
+pub(crate) async fn remove_agent_overlay(
     ctx: &PhantomContext,
     agent_id: &AgentId,
     changeset_id: &ChangesetId,
@@ -116,7 +116,7 @@ pub(crate) async fn destroy_agent_overlay(
     };
 
     if let Err(e) = overlays.destroy_overlay(agent_id) {
-        warn!(agent = %agent_id, error = %e, "failed to destroy overlay after successful submit");
+        warn!(agent = %agent_id, error = %e, "failed to remove overlay after successful submit");
         return;
     }
 

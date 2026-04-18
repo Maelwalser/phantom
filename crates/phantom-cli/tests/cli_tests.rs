@@ -49,7 +49,7 @@ fn phantom_help_lists_all_subcommands() {
         .stdout(predicate::str::contains("status"))
         .stdout(predicate::str::contains("rollback"))
         .stdout(predicate::str::contains("log"))
-        .stdout(predicate::str::contains("destroy"));
+        .stdout(predicate::str::contains("remove"));
 }
 
 #[test]

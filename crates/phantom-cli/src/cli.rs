@@ -20,34 +20,13 @@ pub struct TaskWrapper {
     name = "ph",
     version,
     about = "Semantic version control for agentic AI development",
-    override_help = "\
-Semantic version control for agentic AI development
-
-Usage: ph <agent> [OPTIONS]
-       ph [COMMAND]
-
-Commands:
-  init            Initialize Phantom in an existing git repository
-  submit/sub      Submit an agent's work: merge to trunk and ripple to other agents
-  status/st       Show status of overlays and changesets
-  tasks/t         List all agent task overlays
-  plan            Decompose a feature into parallel agent tasks
-  resolve/res     Auto-resolve merge conflicts by launching an AI agent
-  rollback/rb     Roll back a changeset and replay downstream
-  log/l           Query the event log
-  changes/c       Show materializations, or submits for a specific agent
-  destroy/rm      Destroy an agent's overlay
-  resume/re       Select and resume an interactive agent session
-  background/b    Watch background agents in real-time
-  exec/x          Run a command inside an agent's overlay
-  down            Tear down Phantom: unmount all FUSE overlays and remove .phantom/
-  help            Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version"
+    disable_help_flag = true
 )]
 pub struct Cli {
+    /// Print help
+    #[arg(short = 'h', long = "help", global = true, action = clap::ArgAction::HelpShort)]
+    pub help: Option<bool>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -79,9 +58,9 @@ pub enum Commands {
     /// Show materializations, or submits for a specific agent
     #[command(alias = "c", display_name = "changes/c")]
     Changes(commands::changes::ChangesArgs),
-    /// Destroy an agent's overlay
-    #[command(alias = "rm", display_name = "destroy/rm")]
-    Destroy(commands::destroy::DestroyArgs),
+    /// Remove an agent's overlay (immediate, no prompt)
+    #[command(alias = "rm", display_name = "remove/rm")]
+    Remove(commands::remove::RemoveArgs),
     /// Watch background agents in real-time
     #[command(alias = "b", display_name = "background/b")]
     Background(commands::background::BackgroundArgs),
