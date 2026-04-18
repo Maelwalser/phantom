@@ -257,7 +257,7 @@ fn collect_background_agents(phantom_dir: &Path, agents: &mut Vec<AgentId>) {
     let overlays_dir = phantom_dir.join("overlays");
     if let Ok(entries) = std::fs::read_dir(&overlays_dir) {
         for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+            if entry.file_type().is_ok_and(|t| t.is_dir())
                 && let Some(name) = entry.file_name().to_str()
             {
                 let dir = entry.path();

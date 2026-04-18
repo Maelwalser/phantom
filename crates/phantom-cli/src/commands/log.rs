@@ -273,9 +273,7 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
             exit_code,
             materialized,
         } => {
-            let code = exit_code
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signal".into());
+            let code = exit_code.map_or_else(|| "signal".into(), |c| c.to_string());
             format!("AgentCompleted {{ exit: {code}, materialized: {materialized} }}")
         }
         EventKind::PlanCreated {

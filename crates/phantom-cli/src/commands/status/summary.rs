@@ -206,7 +206,7 @@ pub(super) async fn run_summary(
             ui::style_dim(&format!("{:<14} {:>5}", "AGENT", "FILES"))
         );
         for (agent_id, file_count) in &pending_overlays {
-            println!("  {agent_id:<14} {file_count:>5}",);
+            println!("  {agent_id:<14} {file_count:>5}");
         }
     }
     println!();
