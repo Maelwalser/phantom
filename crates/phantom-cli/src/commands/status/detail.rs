@@ -13,12 +13,15 @@ use super::run_state::{AgentRunState, format_duration, read_agent_run_state};
 use crate::context::PhantomContext;
 use crate::ui;
 
+const DEFAULT_FILES_DISPLAY_LIMIT: usize = 10;
+
 /// Detailed view for a specific agent.
 pub(super) async fn run_detailed(
     ctx: &PhantomContext,
     events: &SqliteEventStore,
     _agent_ids: &[AgentId],
     agent_name: &str,
+    all_files: bool,
 ) -> anyhow::Result<()> {
     let phantom_dir = &ctx.phantom_dir;
     let agent_id = AgentId(agent_name.to_string());
@@ -84,8 +87,23 @@ pub(super) async fn run_detailed(
                     ui::style_bold("Modified files"),
                     ui::style_dim(&format!("({})", files.len()))
                 );
-                for f in &files {
+                let total = files.len();
+                let display_count = if all_files {
+                    total
+                } else {
+                    DEFAULT_FILES_DISPLAY_LIMIT.min(total)
+                };
+                for f in files.iter().take(display_count) {
                     println!("    {}", ui::style_dim(&f.display().to_string()));
+                }
+                if total > display_count {
+                    let remaining = total - display_count;
+                    println!(
+                        "    {}",
+                        ui::style_dim(&format!(
+                            "... and {remaining} more (use --all to show)"
+                        ))
+                    );
                 }
                 println!();
             }

@@ -100,8 +100,8 @@ impl<'a> Materializer<'a> {
             })?
             .to_path_buf();
 
-        if head == changeset.base_commit {
-            return direct_apply::direct_apply(
+        let result = if head == changeset.base_commit {
+            direct_apply::direct_apply(
                 self.git,
                 changeset,
                 upper_dir,
@@ -109,19 +109,65 @@ impl<'a> Materializer<'a> {
                 message,
                 event_store,
             )
-            .await;
-        }
-
-        let ctx = MergeContext {
-            upper_dir,
-            trunk_path: &trunk_path,
-            head: &head,
-            message,
-            event_store,
-            analyzer,
+            .await
+        } else {
+            let ctx = MergeContext {
+                upper_dir,
+                trunk_path: &trunk_path,
+                head: &head,
+                message,
+                event_store,
+                analyzer,
+            };
+            merge_apply::merge_apply(self.git, changeset, &ctx).await
         };
-        merge_apply::merge_apply(self.git, changeset, &ctx).await
+
+        // Post-materialization integrity check.
+        //
+        // No matter what happened above, `.git/HEAD` and `.git/config` must
+        // still be intact. A prior bug wrote the overlay's `.whiteouts.json`
+        // and a stale file list to trunk, wiping those files and leaving the
+        // repo unopenable by libgit2. The check below is cheap and catches
+        // such a regression immediately instead of letting later commands
+        // fail with cryptic "could not find repository" errors.
+        assert_trunk_integrity(&trunk_path)?;
+
+        result
     }
+}
+
+/// Assert that the trunk git repository is still openable.
+///
+/// Called after every materialization attempt (success, conflict, or error).
+/// If the repo can no longer be opened — or the essential `HEAD` / `config`
+/// files are missing — return [`OrchestratorError::IntegrityViolation`] so
+/// the caller stops immediately rather than cascading corruption.
+fn assert_trunk_integrity(trunk_path: &Path) -> Result<(), OrchestratorError> {
+    let git_dir = trunk_path.join(".git");
+
+    // Fast structural checks first — missing HEAD/config is the symptom we
+    // actually observed in the wild (phantom issue: manage-finance's
+    // `.git/HEAD` and `.git/config` deleted after submit).
+    for essential in ["HEAD", "config"] {
+        let path = git_dir.join(essential);
+        if !path.exists() {
+            return Err(OrchestratorError::IntegrityViolation(format!(
+                ".git/{essential} missing after materialization at {}",
+                trunk_path.display()
+            )));
+        }
+    }
+
+    // Full open check — covers subtler corruptions (malformed HEAD, broken
+    // refs) that pass the existence check.
+    git2::Repository::open(trunk_path).map_err(|e| {
+        OrchestratorError::IntegrityViolation(format!(
+            "git2::Repository::open({}) failed after materialization: {e}",
+            trunk_path.display()
+        ))
+    })?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -529,6 +575,96 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("parent traversal"), "error was: {err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_dotgit_path_and_leaves_trunk_intact() {
+        // Regression: before the reserved-path guard, a malformed op list
+        // containing `.git/HEAD` could cause the tree builder to write that
+        // entry into the new commit's tree, and the subsequent checkout
+        // would blow away the real `.git/HEAD` — leaving the repo
+        // unopenable. This test pins the invariant: such a path must abort
+        // materialization with a `reserved` error, AND trunk's `.git/HEAD`
+        // and `.git/config` must be byte-identical before and after.
+        let (dir, git) = init_repo(&[("src/main.rs", b"fn main() {}")]);
+        let base = git.head_oid().unwrap();
+
+        let trunk = dir.path();
+        let head_before = std::fs::read(trunk.join(".git/HEAD")).unwrap();
+        let config_before = std::fs::read(trunk.join(".git/config")).unwrap();
+
+        advance_trunk(&git, &[("src/main.rs", b"fn main() { /* v2 */ }")]);
+        let upper = make_upper(&[("src/main.rs", b"fn main() { /* agent */ }")]);
+        let event_store = MockEventStore::new();
+        let analyzer = MockAnalyzer::new();
+
+        let changeset = make_changeset("cs-evil", base, vec![PathBuf::from(".git/HEAD")]);
+
+        let materializer = Materializer::new(&git);
+        let result = materializer
+            .materialize(
+                &changeset,
+                upper.path(),
+                &event_store,
+                &analyzer,
+                "malicious commit",
+                None,
+            )
+            .await;
+
+        assert!(result.is_err(), "materialize must fail for .git/ paths");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("reserved"),
+            "expected reserved-path error, got: {err}"
+        );
+
+        // Critical assertion: trunk's VCS state is byte-identical.
+        assert_eq!(
+            std::fs::read(trunk.join(".git/HEAD")).unwrap(),
+            head_before,
+            ".git/HEAD must be untouched"
+        );
+        assert_eq!(
+            std::fs::read(trunk.join(".git/config")).unwrap(),
+            config_before,
+            ".git/config must be untouched"
+        );
+        // And the repo still opens.
+        git2::Repository::open(trunk).expect("trunk repo must still open");
+    }
+
+    #[tokio::test]
+    async fn rejects_dotphantom_and_whiteouts_paths() {
+        let (_dir, git) = init_repo(&[("src/main.rs", b"fn main() {}")]);
+        let base = git.head_oid().unwrap();
+
+        advance_trunk(&git, &[("src/main.rs", b"fn main() { /* v2 */ }")]);
+
+        for bad in [".phantom/events.db", ".whiteouts.json", "a/.whiteouts.json"] {
+            let upper = make_upper(&[("src/main.rs", b"")]);
+            let event_store = MockEventStore::new();
+            let analyzer = MockAnalyzer::new();
+
+            let changeset = make_changeset("cs-bad", base, vec![PathBuf::from(bad)]);
+            let materializer = Materializer::new(&git);
+            let err = materializer
+                .materialize(
+                    &changeset,
+                    upper.path(),
+                    &event_store,
+                    &analyzer,
+                    "bad",
+                    None,
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("reserved"),
+                "expected reserved-path error for {bad}, got: {err}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -149,3 +149,16 @@ pub(super) async fn run(
         materialize: materialize_output,
     }))
 }
+
+// NOTE: An earlier iteration of this file contained a `reconcile_current_base`
+// helper that tried to cross-check the on-disk `current_base` against the
+// event-log base. That helper was removed because the on-disk file is written
+// at task creation AND at every live rebase, so "disk differs from event log"
+// has no unambiguous meaning — it can mean either "live rebase succeeded but
+// event append failed" (disk is newer) or "conflict-resolve advanced the log
+// past the disk's last write" (event log is newer). The event log is the
+// authoritative source; the fix for the false-conflict bug lives in
+// `discovery.rs` (honor `LiveRebased { conflicted_files: [] }` as a base
+// advance). If on-disk/event-log drift becomes a real problem, fix it at the
+// write side by making `write_current_base` + event append atomic — not by
+// trying to paper over divergence at read time.

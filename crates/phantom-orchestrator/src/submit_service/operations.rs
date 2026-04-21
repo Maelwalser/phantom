@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use phantom_core::changeset::SemanticOperation;
 use phantom_core::id::GitOid;
+use phantom_core::reserved::is_reserved_path;
 use phantom_core::traits::SemanticAnalyzer;
 
 use crate::error::OrchestratorError;
@@ -57,8 +58,32 @@ pub(super) fn extract_operations(
 ) -> Result<ExtractedOps, OrchestratorError> {
     let mut all_ops: Vec<SemanticOperation> = Vec::new();
     let mut counts = OpCounts::default();
+    // Reserved paths (`.git/`, `.phantom/`, `.whiteouts.json`) are infrastructure —
+    // they must never appear in a semantic op list, let alone be committed to
+    // trunk. The overlay already filters them from `modified_files`; re-check
+    // here as defense-in-depth so no future change can silently leak them.
+    let modified: Vec<&PathBuf> = modified
+        .iter()
+        .filter(|p| match is_reserved_path(p) {
+            Some(kind) => {
+                tracing::warn!(path = %p.display(), ?kind, "dropping reserved path from submit op list");
+                false
+            }
+            None => true,
+        })
+        .collect();
+    let deleted: Vec<&PathBuf> = deleted
+        .iter()
+        .filter(|p| match is_reserved_path(p) {
+            Some(kind) => {
+                tracing::warn!(path = %p.display(), ?kind, "dropping reserved path from deletion op list");
+                false
+            }
+            None => true,
+        })
+        .collect();
 
-    for file in modified {
+    for file in &modified {
         let agent_content = std::fs::read(upper_dir.join(file)).map_err(OrchestratorError::Io)?;
         let ops = diff_file(git, analyzer, base_commit, file, &agent_content);
         for op in &ops {
@@ -67,16 +92,18 @@ pub(super) fn extract_operations(
         all_ops.extend(ops);
     }
 
-    for file in deleted {
-        all_ops.push(SemanticOperation::DeleteFile { path: file.clone() });
+    for file in &deleted {
+        all_ops.push(SemanticOperation::DeleteFile {
+            path: (*file).clone(),
+        });
         counts.deletions += 1;
     }
 
     // If semantic analysis yielded no structured ops, record raw diffs.
     if all_ops.is_empty() && !modified.is_empty() {
-        for file in modified {
+        for file in &modified {
             all_ops.push(SemanticOperation::RawDiff {
-                path: file.clone(),
+                path: (*file).clone(),
                 patch: String::new(),
             });
             counts.modifications += 1;
@@ -326,6 +353,69 @@ mod tests {
             SemanticOperation::RawDiff { path, .. } if path == Path::new("a.rs")
         ));
         assert_eq!(extracted.counts.modifications, 1);
+    }
+
+    #[test]
+    fn reserved_paths_are_dropped_from_modified_and_deleted() {
+        let (_repo_dir, git) = init_repo(&[("keep.rs", b"fn keep() {}")]);
+        let base = git.head_oid().unwrap();
+        let upper = TempDir::new().unwrap();
+
+        // Simulate an overlay that (erroneously) reported `.git/HEAD`,
+        // `.phantom/events.db`, and `.whiteouts.json` as modified, plus a
+        // legitimate deleted file inside `.git/`.  Nothing matching a
+        // reserved path may end up in the op list.
+        std::fs::create_dir_all(upper.path().join(".git")).unwrap();
+        std::fs::write(upper.path().join(".git/HEAD"), b"ref: refs/heads/x\n").unwrap();
+        std::fs::write(upper.path().join(".whiteouts.json"), b"{}").unwrap();
+
+        let analyzer = StubAnalyzer {
+            current_marker: b"",
+            base: vec![],
+            current: vec![],
+        };
+        let extracted = extract_operations(
+            &git,
+            &analyzer,
+            &base,
+            upper.path(),
+            &[
+                PathBuf::from(".git/HEAD"),
+                PathBuf::from(".whiteouts.json"),
+            ],
+            &[
+                PathBuf::from(".phantom/events.db"),
+                PathBuf::from("gone.rs"),
+            ],
+        )
+        .unwrap();
+
+        // `.git/HEAD` and `.whiteouts.json` were filtered from modified;
+        // `.phantom/events.db` was filtered from deleted. Only `gone.rs`
+        // survives as a deletion.
+        assert_eq!(extracted.all_ops.len(), 1);
+        assert!(
+            matches!(
+                &extracted.all_ops[0],
+                SemanticOperation::DeleteFile { path } if path == Path::new("gone.rs")
+            ),
+            "only gone.rs should remain, got: {:?}",
+            extracted.all_ops
+        );
+        for op in &extracted.all_ops {
+            let path = match op {
+                SemanticOperation::AddSymbol { file, .. }
+                | SemanticOperation::ModifySymbol { file, .. }
+                | SemanticOperation::DeleteSymbol { file, .. } => file.clone(),
+                SemanticOperation::AddFile { path, .. }
+                | SemanticOperation::DeleteFile { path }
+                | SemanticOperation::RawDiff { path, .. } => path.clone(),
+            };
+            assert!(
+                phantom_core::reserved::is_reserved_path(&path).is_none(),
+                "reserved path leaked into op list: {path:?}"
+            );
+        }
     }
 
     #[test]

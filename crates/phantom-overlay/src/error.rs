@@ -31,6 +31,15 @@ pub enum OverlayError {
     #[error("path not found: {}", _0.display())]
     PathNotFound(PathBuf),
 
+    /// Refused to write to a reserved path (`.git/`, `.phantom/`, or
+    /// `.whiteouts.json` at any depth).
+    ///
+    /// Writing these paths would corrupt the user's git repository or
+    /// Phantom's own state, so the overlay returns an error to the caller
+    /// (mapped to `EACCES`/`ENOENT` at the FUSE boundary).
+    #[error("refusing to write to reserved path: {}", _0.display())]
+    ReservedPath(PathBuf),
+
     /// JSON serialization/deserialization of whiteout data failed.
     #[error("serialization error: {0}")]
     Serialization(String),
