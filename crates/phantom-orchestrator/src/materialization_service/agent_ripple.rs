@@ -174,7 +174,9 @@ pub(super) async fn handle_agent_ripple(
 }
 
 /// Parse the agent's overlapping upper-layer files and compute dependency
-/// impacts for the materialized changeset.
+/// impacts for the materialized changeset. Enriches each impact's
+/// `trunk_preview` with an actual signature diff snippet when the trunk
+/// content is available.
 ///
 /// Parsing failures for individual files are logged and skipped — the
 /// dependency graph is a best-effort signal, not a correctness boundary.
@@ -184,7 +186,32 @@ fn compute_agent_impacts(
 ) -> Vec<DependencyImpact> {
     let footprint =
         impact::collect_agent_footprint(ctx.analyzer, target.upper_path, target.files);
-    impact::compute_impacts(ctx.operations, &footprint)
+    let mut impacts = impact::compute_impacts(ctx.operations, &footprint);
+
+    // Load trunk content for each changed file once, then enrich previews.
+    // Cheap: the set of changed files is small (bounded by the submitter's
+    // modified files).
+    let mut new_contents = impact::TrunkContentMap::new();
+    let mut base_contents = impact::TrunkContentMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for op in ctx.operations {
+        let path = op.file_path();
+        if !seen.insert(path.to_path_buf()) {
+            continue;
+        }
+        if let Ok(bytes) = ctx.materializer.git().read_file_at_commit(ctx.head, path) {
+            new_contents.insert(path.to_path_buf(), bytes);
+        }
+        if let Ok(bytes) = ctx
+            .materializer
+            .git()
+            .read_file_at_commit(ctx.changeset_base, path)
+        {
+            base_contents.insert(path.to_path_buf(), bytes);
+        }
+    }
+    impact::enrich_trunk_previews(&mut impacts, ctx.operations, &new_contents, &base_contents);
+    impacts
 }
 
 /// Emit an [`EventKind::AgentNotified`] event recording the subset of trunk
