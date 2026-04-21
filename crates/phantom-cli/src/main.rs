@@ -88,6 +88,11 @@ fn print_overview() {
         "Semantic 3-way merge to trunk + ripple to other agents",
     );
     row(
+        "conflicts",
+        "conf",
+        "Inspect conflicted changesets and their files for manual resolution",
+    );
+    row(
         "resolve",
         "res",
         "Launch an AI agent on a conflicted changeset (experimental)",
@@ -201,6 +206,7 @@ async fn main() {
         Some(Commands::Plan(args)) => commands::plan::run(args).await,
         Some(Commands::Submit(args)) => commands::submit::run(args).await,
         Some(Commands::Status(args)) => commands::status::run(args).await,
+        Some(Commands::Conflicts(args)) => commands::conflicts::run(args).await,
         Some(Commands::Resolve(args)) => commands::resolve::run(args).await,
         Some(Commands::Rollback(args)) => commands::rollback::run(args).await,
         Some(Commands::Log(args)) => commands::log::run(args).await,

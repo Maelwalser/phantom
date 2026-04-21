@@ -118,6 +118,8 @@ pub enum MergeResult {
 pub enum MergeStrategy {
     /// Full tree-sitter-based semantic merge succeeded end-to-end.
     Semantic,
+    /// Structured-config merge (TOML/YAML/JSON key-level three-way merge).
+    ConfigStructured,
     /// Short-circuit: one side equals base, or both sides are identical.
     /// Conceptually accurate; no parse required.
     Trivial,
@@ -147,6 +149,7 @@ impl MergeStrategy {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Semantic => "semantic",
+            Self::ConfigStructured => "config-structured",
             Self::Trivial => "trivial",
             Self::TextFallbackUnsupported => "text (unsupported language)",
             Self::TextFallbackSemanticError => "text (semantic merger error)",
@@ -175,6 +178,15 @@ impl MergeReport {
         Self {
             result,
             strategy: MergeStrategy::Semantic,
+        }
+    }
+
+    /// Construct a report produced by the structured config merger.
+    #[must_use]
+    pub fn config_structured(result: MergeResult) -> Self {
+        Self {
+            result,
+            strategy: MergeStrategy::ConfigStructured,
         }
     }
 
@@ -341,6 +353,7 @@ mod tests {
     fn serde_merge_strategy_roundtrip() {
         for s in [
             MergeStrategy::Semantic,
+            MergeStrategy::ConfigStructured,
             MergeStrategy::Trivial,
             MergeStrategy::TextFallbackUnsupported,
             MergeStrategy::TextFallbackSemanticError,

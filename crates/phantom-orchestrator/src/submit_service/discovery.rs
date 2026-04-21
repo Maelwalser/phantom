@@ -2,9 +2,19 @@
 //! from the event log.
 //!
 //! A single pass over the agent's events pulls out the most recent
-//! `TaskCreated` record, then scans for a `ConflictResolutionStarted` that
-//! updates the base commit after a resolution so a post-resolve submit no
-//! longer re-detects the same conflict against a stale base.
+//! `TaskCreated` record, then scans for later events that advance the base:
+//!
+//! - `ConflictResolutionStarted { new_base: Some(_) }` — a resolve agent
+//!   re-based the overlay after handling a conflict.
+//! - `LiveRebased { new_base, .. }` — a successful ripple live-rebase
+//!   silently pulled trunk changes into the overlay's upper layer.
+//!
+//! Both must advance the submission base; otherwise the submit pipeline
+//! diffs the overlay against a stale base and fabricates `BothModifiedSymbol`
+//! conflicts (and worse: attributes trunk-side changes the agent never touched
+//! to the agent, which the materializer then tries to write back to trunk).
+//! The latest of the two wins so a manual resolve after a silent rebase, or
+//! vice versa, behaves correctly.
 
 use phantom_core::event::EventKind;
 use phantom_core::id::{AgentId, ChangesetId, GitOid};
@@ -49,21 +59,48 @@ pub(super) async fn resolve_agent_context(
             ))
         })?;
 
-    // If a conflict resolution updated the base, prefer the resolved base so a
-    // post-resolution submit does not re-detect the same conflict.
+    // Prefer the most recent base advance within this changeset. Ripple-driven
+    // `LiveRebased` and conflict-resolve-driven `ConflictResolutionStarted`
+    // both advance the base; whichever came last is authoritative.
+    //
+    // `LiveRebased` only counts when EVERY shadowed file merged cleanly
+    // (`conflicted_files` empty). A rebase that conflicted on some files
+    // leaves those files at the *old* base content in the overlay's upper
+    // layer; advancing the submission base past that would re-introduce the
+    // exact false-positive bug in reverse — diffing old upper content
+    // against a new base fabricates conflicts on every file trunk touched.
+    // In the partially-rebased case we keep the previous base and let the
+    // normal conflict flow handle the unmerged files.
+    //
+    // Scoping:
+    // - `ConflictResolutionStarted` is scoped to the specific changeset
+    //   being resolved, so it must match `changeset_id`.
+    // - `LiveRebased` is emitted by ripple on the *other* agent's behalf,
+    //   carrying the submitting agent's `changeset_id` but this agent's
+    //   `agent_id`. It is still relevant to this agent's current changeset
+    //   as long as it happened after the most recent `TaskCreated` — we
+    //   already iterate only this agent's events, so any `LiveRebased`
+    //   in the window since `TaskCreated` is authoritative regardless of
+    //   which changeset triggered it.
+    let task_created_idx = agent_events.iter().rposition(|e| {
+        matches!(e.kind, EventKind::TaskCreated { .. }) && e.changeset_id == changeset_id
+    });
     let base_commit = agent_events
         .iter()
+        .enumerate()
         .rev()
-        .find_map(|e| {
-            if e.changeset_id == changeset_id
-                && let EventKind::ConflictResolutionStarted {
-                    new_base: Some(base),
-                    ..
-                } = &e.kind
-            {
-                return Some(*base);
-            }
-            None
+        .take_while(|(i, _)| task_created_idx.is_none_or(|t| *i >= t))
+        .find_map(|(_, e)| match &e.kind {
+            EventKind::ConflictResolutionStarted {
+                new_base: Some(base),
+                ..
+            } if e.changeset_id == changeset_id => Some(*base),
+            EventKind::LiveRebased {
+                new_base,
+                conflicted_files,
+                ..
+            } if conflicted_files.is_empty() => Some(*new_base),
+            _ => None,
         })
         .unwrap_or(base_commit);
 
@@ -212,6 +249,202 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ctx.base_commit, base);
+    }
+
+    #[tokio::test]
+    async fn live_rebase_advances_base_commit() {
+        let store = MockEventStore::new();
+        let original_base = GitOid::from_bytes([0x11; 20]);
+        let rebased_base = GitOid::from_bytes([0x33; 20]);
+
+        store
+            .append(event(
+                "agent-a",
+                "cs-1",
+                EventKind::TaskCreated {
+                    base_commit: original_base,
+                    task: "refactor".into(),
+                },
+            ))
+            .await
+            .unwrap();
+        store
+            .append(event(
+                "agent-a",
+                "cs-1",
+                EventKind::LiveRebased {
+                    old_base: original_base,
+                    new_base: rebased_base,
+                    merged_files: vec![],
+                    conflicted_files: vec![],
+                },
+            ))
+            .await
+            .unwrap();
+
+        let ctx = resolve_agent_context(&store, &AgentId("agent-a".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            ctx.base_commit, rebased_base,
+            "a silent ripple live-rebase must advance the submission base"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_rebase_with_conflicts_does_not_advance_base() {
+        // When a ripple-driven live rebase conflicts on any file, that file's
+        // overlay upper content is left at the OLD base. Advancing the
+        // submission base would diff that old content against trunk HEAD and
+        // fabricate conflicts on every other file trunk touched — the exact
+        // symmetric failure of the bug this change fixes.
+        let store = MockEventStore::new();
+        let original_base = GitOid::from_bytes([0x11; 20]);
+        let rebased_head = GitOid::from_bytes([0x22; 20]);
+
+        store
+            .append(event(
+                "agent-a",
+                "cs-1",
+                EventKind::TaskCreated {
+                    base_commit: original_base,
+                    task: String::new(),
+                },
+            ))
+            .await
+            .unwrap();
+        store
+            .append(event(
+                "agent-a",
+                "cs-1",
+                EventKind::LiveRebased {
+                    old_base: original_base,
+                    new_base: rebased_head,
+                    merged_files: vec![],
+                    conflicted_files: vec![std::path::PathBuf::from("src/lib.rs")],
+                },
+            ))
+            .await
+            .unwrap();
+
+        let ctx = resolve_agent_context(&store, &AgentId("agent-a".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            ctx.base_commit, original_base,
+            "a partially-rebased agent must keep its original base until resolve lands"
+        );
+    }
+
+    #[tokio::test]
+    async fn latest_of_live_rebase_or_resolution_wins() {
+        let store = MockEventStore::new();
+        let b0 = GitOid::from_bytes([0x10; 20]);
+        let b1 = GitOid::from_bytes([0x11; 20]);
+        let b2 = GitOid::from_bytes([0x22; 20]);
+        let b3 = GitOid::from_bytes([0x33; 20]);
+
+        store
+            .append(event(
+                "agent-a",
+                "cs-1",
+                EventKind::TaskCreated {
+                    base_commit: b0,
+                    task: String::new(),
+                },
+            ))
+            .await
+            .unwrap();
+        // Older resolve advance
+        store
+            .append(event(
+                "agent-a",
+                "cs-1",
+                EventKind::ConflictResolutionStarted {
+                    conflicts: vec![] as Vec<ConflictDetail>,
+                    new_base: Some(b1),
+                },
+            ))
+            .await
+            .unwrap();
+        // Then a live rebase
+        store
+            .append(event(
+                "agent-a",
+                "cs-1",
+                EventKind::LiveRebased {
+                    old_base: b1,
+                    new_base: b2,
+                    merged_files: vec![],
+                    conflicted_files: vec![],
+                },
+            ))
+            .await
+            .unwrap();
+        // Then another resolve advance
+        store
+            .append(event(
+                "agent-a",
+                "cs-1",
+                EventKind::ConflictResolutionStarted {
+                    conflicts: vec![] as Vec<ConflictDetail>,
+                    new_base: Some(b3),
+                },
+            ))
+            .await
+            .unwrap();
+
+        let ctx = resolve_agent_context(&store, &AgentId("agent-a".into()))
+            .await
+            .unwrap();
+        assert_eq!(ctx.base_commit, b3, "latest base advance must win");
+    }
+
+    #[tokio::test]
+    async fn live_rebase_from_ripple_is_picked_up_despite_changeset_id_mismatch() {
+        // Cross-agent ripple: when agent A submits, agent B's overlay is live
+        // rebased, and the resulting `LiveRebased` event is scoped to A's
+        // submitting changeset (its `changeset_id`) even though the event's
+        // `agent_id` is B. When B submits, discovery must pick up that
+        // LiveRebased for B's base even though the changeset_id does not
+        // match B's own changeset_id.
+        let store = MockEventStore::new();
+        let base = GitOid::from_bytes([0xAA; 20]);
+        let ripple_new_base = GitOid::from_bytes([0xBB; 20]);
+
+        store
+            .append(event(
+                "agent-b",
+                "cs-b",
+                EventKind::TaskCreated {
+                    base_commit: base,
+                    task: String::new(),
+                },
+            ))
+            .await
+            .unwrap();
+        // LiveRebased carries agent-A's changeset_id but agent-B's agent_id.
+        store
+            .append(event(
+                "agent-b",
+                "cs-a-submitting",
+                EventKind::LiveRebased {
+                    old_base: base,
+                    new_base: ripple_new_base,
+                    merged_files: vec![std::path::PathBuf::from("src/lib.rs")],
+                    conflicted_files: vec![],
+                },
+            ))
+            .await
+            .unwrap();
+
+        let ctx = resolve_agent_context(&store, &AgentId("agent-b".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            ctx.base_commit, ripple_new_base,
+            "a clean ripple-driven LiveRebased must advance the base even though changeset_id comes from the submitting agent"
+        );
     }
 
     #[tokio::test]

@@ -24,6 +24,9 @@ blake3 = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 diffy = { workspace = true }
+toml_edit = { workspace = true }
+serde_yaml_ng = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

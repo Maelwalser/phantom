@@ -226,15 +226,11 @@ pub(super) async fn run_summary(
         ui::section_header("Conflicted changesets");
         println!(
             "  {}",
-            ui::style_dim(&format!(
-                "{:<20} {:<14} {:>5}   STATUS",
-                "ID", "AGENT", "FILES"
-            ))
+            ui::style_dim(&format!("{:<14} {:>7}   STATUS", "AGENT", "CHANGES"))
         );
         for cs in &conflicted {
             println!(
-                "  {:<20} {:<14} {:>5}   {}",
-                cs.id,
+                "  {:<14} {:>7}   {}",
                 cs.agent_id,
                 cs.files_touched.len(),
                 ui::status_label(cs.status),

@@ -103,6 +103,57 @@ fn read_symlink_hides_unsafe_on_disk_target() {
 }
 
 #[test]
+fn read_symlink_passes_through_absolute_target_in_lower_layer() {
+    // Plant a symlink with an absolute target in the lower layer (the user's
+    // real working tree). This mirrors how `uv venv`, `python -m venv`, and
+    // similar tools create `.venv/bin/python` pointing at the system Python.
+    let (lower, upper) = setup();
+    std::os::unix::fs::symlink("/usr/bin/env", lower.path().join("python")).unwrap();
+
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+    let target = layer
+        .read_symlink(Path::new("python"))
+        .expect("absolute lower-layer symlink target must be exposed verbatim");
+    assert_eq!(target, Path::new("/usr/bin/env"));
+}
+
+#[test]
+fn read_symlink_passes_through_parent_escape_in_lower_layer() {
+    let (lower, upper) = setup();
+    // A `..`-escape from the overlay root, planted in lower.
+    std::os::unix::fs::symlink("../../outside", lower.path().join("escape")).unwrap();
+
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+    let target = layer
+        .read_symlink(Path::new("escape"))
+        .expect("escaping lower-layer symlink target must be exposed verbatim");
+    assert_eq!(target, Path::new("../../outside"));
+}
+
+#[test]
+fn read_symlink_exposes_venv_python_layout_from_lower_layer() {
+    // End-to-end shape of the Python venv case that motivated this fix:
+    // `.venv/bin/python` pointing at an absolute interpreter path.
+    let (lower, upper) = setup();
+    std::fs::create_dir_all(lower.path().join(".venv/bin")).unwrap();
+    std::os::unix::fs::symlink("/usr/bin/env", lower.path().join(".venv/bin/python")).unwrap();
+    std::os::unix::fs::symlink("python", lower.path().join(".venv/bin/python3")).unwrap();
+
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
+
+    assert_eq!(
+        layer.read_symlink(Path::new(".venv/bin/python")).unwrap(),
+        Path::new("/usr/bin/env"),
+    );
+    assert_eq!(
+        layer.read_symlink(Path::new(".venv/bin/python3")).unwrap(),
+        Path::new("python"),
+    );
+}
+
+#[test]
 fn rename_copyup_skips_unsafe_symlink_from_lower() {
     // When a directory lives only in the lower layer and is renamed, the
     // overlay copies it up to the upper layer at the new name.  That

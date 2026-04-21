@@ -11,6 +11,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use phantom_core::reserved::is_reserved_path;
 use tracing::debug;
 
 use crate::error::OverlayError;
@@ -47,6 +48,20 @@ impl OverlayLayer {
 
         if old_passthrough {
             return self.rename_passthrough(old, new);
+        }
+
+        // Non-passthrough rename: both endpoints would touch the upper layer
+        // (directly, or via whiteout/COW). A rename into `.phantom/` or
+        // `.whiteouts.json` would corrupt Phantom's own state; reject both
+        // directions.  `.git/` is passthrough so this branch is never reached
+        // for it, but a rename *across* layers was already rejected above.
+        if let Some(kind) = is_reserved_path(old) {
+            tracing::warn!(path = %old.display(), ?kind, "refusing overlay rename: source is reserved");
+            return Err(OverlayError::ReservedPath(old.to_path_buf()));
+        }
+        if let Some(kind) = is_reserved_path(new) {
+            tracing::warn!(path = %new.display(), ?kind, "refusing overlay rename: destination is reserved");
+            return Err(OverlayError::ReservedPath(new.to_path_buf()));
         }
 
         // Source must exist in the overlay.

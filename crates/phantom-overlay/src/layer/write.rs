@@ -9,11 +9,39 @@ use std::io::Read as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+use phantom_core::reserved::is_reserved_path;
 use tracing::{debug, trace};
 
 use crate::error::OverlayError;
 use crate::types::{is_hidden, is_passthrough};
 use crate::whiteout::{is_safe_relative_path, is_safe_symlink_target};
+
+/// Reject upper-layer writes targeting Phantom's reserved paths
+/// (`.phantom/`, `.whiteouts.json` at any depth, and `.git/` when it is NOT
+/// being handled as passthrough).
+///
+/// `.git/` is passthrough by design (see [`PASSTHROUGH_DIRS`] in
+/// [`crate::types`]) so git-aware agents can read and write the real
+/// repository state from within the overlay mount. That contract is not
+/// broken here — callers already short-circuit to the lower layer for
+/// passthrough paths. This guard runs AFTER the passthrough check to catch
+/// anything that would otherwise land in the upper layer.
+///
+/// `.phantom/` is already hidden via [`is_hidden`], so it is caught by the
+/// existing `is_hidden` checks; this guard is an additional defense so a
+/// future relaxation of hidden-dir handling cannot silently re-expose it.
+///
+/// Returns a distinct [`OverlayError::ReservedPath`] so callers and tests
+/// can distinguish it from a simple not-found.
+///
+/// [`PASSTHROUGH_DIRS`]: crate::types
+fn guard_reserved(rel_path: &Path) -> Result<(), OverlayError> {
+    if let Some(kind) = is_reserved_path(rel_path) {
+        tracing::warn!(path = %rel_path.display(), ?kind, "refusing overlay upper-layer write to reserved path");
+        return Err(OverlayError::ReservedPath(rel_path.to_path_buf()));
+    }
+    Ok(())
+}
 
 use super::OverlayLayer;
 use super::io_util::ensure_parent_dir;
@@ -37,6 +65,11 @@ impl OverlayLayer {
             trace!(path = %rel_path.display(), layer = "lower-passthrough", "writing file");
             return Ok(());
         }
+        // After passthrough short-circuit: any remaining reserved-path write
+        // would land in the upper layer and then be walked into a changeset.
+        // Block it. (`.git/…` reached here only if passthrough routing changes
+        // in the future; `.whiteouts.json` and `.phantom/…` are blocked here.)
+        guard_reserved(rel_path)?;
 
         let upper_path = self.upper.join(rel_path);
         ensure_parent_dir(&upper_path)?;
@@ -76,6 +109,7 @@ impl OverlayLayer {
             trace!(path = %rel_path.display(), new_size, layer = "lower-passthrough", "truncate");
             return Ok(());
         }
+        guard_reserved(rel_path)?;
 
         let upper_path = self.upper.join(rel_path);
 
@@ -150,6 +184,7 @@ impl OverlayLayer {
             trace!(path = %rel_path.display(), mode = format!("{mode:#o}"), layer = "lower-passthrough", "chmod");
             return Ok(());
         }
+        guard_reserved(rel_path)?;
 
         if self
             .whiteouts
@@ -205,6 +240,11 @@ impl OverlayLayer {
             trace!(path = %rel_path.display(), target = %target.display(), layer = "lower-passthrough", "symlink");
             return Ok(());
         }
+        // Reject links placed in `.phantom/`/`.whiteouts.json` (upper layer)
+        // and also reject any link whose TARGET resolves into `.git/` or
+        // `.phantom/` — a dangling link today is a hostile write tomorrow.
+        guard_reserved(rel_path)?;
+        guard_reserved(target)?;
 
         let upper_path = self.upper.join(rel_path);
         ensure_parent_dir(&upper_path)?;
@@ -243,6 +283,11 @@ impl OverlayLayer {
             debug!(path = %rel_path.display(), "passthrough file deleted");
             return Ok(());
         }
+        // Non-passthrough deletes create whiteouts in the upper layer. A
+        // whiteout for `.whiteouts.json` or `.phantom/foo` would corrupt
+        // Phantom's own state; reject it. `.git/` is passthrough so this
+        // branch is never reached for it.
+        guard_reserved(rel_path)?;
 
         let upper_path = self.upper.join(rel_path);
         let lower = self.lower_path();
@@ -296,6 +341,9 @@ impl OverlayLayer {
             }
             return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
         }
+        // Non-passthrough: any `ensure_upper_copy` would land the path in the
+        // upper layer. Block reserved paths here as a last line of defense.
+        guard_reserved(rel_path)?;
 
         let upper_path = self.upper.join(rel_path);
 

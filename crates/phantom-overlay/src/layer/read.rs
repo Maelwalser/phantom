@@ -42,22 +42,31 @@ impl OverlayLayer {
 
     /// Read the target of a symbolic link.
     ///
-    /// Resolves the path through the overlay layers and reads the symlink
-    /// target.  Targets that escape the overlay root (absolute paths or
-    /// `..`-traversals that step outside) are not exposed — the call
-    /// returns `PathNotFound` as if the link did not exist.  This prevents
-    /// out-of-band writes to the upper layer from being reachable through
-    /// the FUSE surface.
+    /// Policy depends on the originating layer:
+    ///
+    /// - **Upper** (agent-authored): targets that escape the overlay root
+    ///   (absolute paths or `..`-traversals that step outside) are hidden —
+    ///   the call returns `PathNotFound` as if the link did not exist. This
+    ///   prevents out-of-band writes to the upper layer from being reachable
+    ///   through the FUSE surface.
+    /// - **Lower / Passthrough** (pre-existing in the user's real working
+    ///   tree): the target is returned verbatim. These symlinks were created
+    ///   by the user's own tooling — Python venvs, `node_modules/.bin`, Go
+    ///   tool caches, Homebrew-style symlink farms — and routinely point at
+    ///   absolute system paths. Filtering them would break those toolchains
+    ///   inside agent overlays without adding any privilege the user does
+    ///   not already have outside the mount.
     pub fn read_symlink(&self, rel_path: &Path) -> Result<PathBuf, OverlayError> {
         match self.classify(rel_path) {
-            ResolvedPath::Upper(path)
-            | ResolvedPath::Lower(path)
-            | ResolvedPath::Passthrough(path) => {
+            ResolvedPath::Upper(path) => {
                 let target = fs::read_link(&path)?;
                 if !is_safe_symlink_target(&target, rel_path) {
                     return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
                 }
                 Ok(target)
+            }
+            ResolvedPath::Lower(path) | ResolvedPath::Passthrough(path) => {
+                Ok(fs::read_link(&path)?)
             }
             ResolvedPath::NotFound => Err(OverlayError::PathNotFound(rel_path.to_path_buf())),
         }

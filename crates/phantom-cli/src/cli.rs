@@ -46,6 +46,9 @@ pub enum Commands {
     Tasks(commands::tasks::TasksArgs),
     /// Decompose a feature into parallel agent tasks
     Plan(commands::plan::PlanArgs),
+    /// Inspect conflicted changesets (read-only) for manual resolution
+    #[command(alias = "conf", display_name = "conflicts/conf")]
+    Conflicts(commands::conflicts::ConflictsArgs),
     /// Auto-resolve merge conflicts by launching an AI agent
     #[command(alias = "res", display_name = "resolve/res")]
     Resolve(commands::resolve::ResolveArgs),
