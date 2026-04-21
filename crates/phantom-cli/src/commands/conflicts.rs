@@ -43,10 +43,7 @@ pub async fn run(args: ConflictsArgs) -> anyhow::Result<()> {
         let conflicted = projection.conflicted_changesets();
         match conflicted.len() {
             0 => {
-                ui::empty_state(
-                    "No conflicts.",
-                    Some("Run `ph status` to see all agents."),
-                );
+                ui::empty_state("No conflicts.", Some("Run `ph status` to see all agents."));
                 return Ok(());
             }
             1 => conflicted[0].clone(),
@@ -98,7 +95,10 @@ fn prompt_select(conflicted: &[&Changeset]) -> anyhow::Result<Option<Changeset>>
 
 /// Pick the conflict payload from the most recent `ChangesetConflicted` event
 /// for the given changeset. Returns an empty `Vec` if no such event exists.
-fn latest_conflict_details(all_events: &[Event], changeset_id: &ChangesetId) -> Vec<ConflictDetail> {
+fn latest_conflict_details(
+    all_events: &[Event],
+    changeset_id: &ChangesetId,
+) -> Vec<ConflictDetail> {
     all_events
         .iter()
         .filter(|e| e.changeset_id == *changeset_id)

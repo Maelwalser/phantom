@@ -190,9 +190,10 @@ fn dotphantom_paths_never_appear_in_modified_files() {
 
     let modified = layer.modified_files().unwrap();
     assert!(
-        !modified.iter().any(
-            |p| p.starts_with(".phantom") || p.components().any(|c| c.as_os_str() == ".phantom")
-        ),
+        !modified
+            .iter()
+            .any(|p| p.starts_with(".phantom")
+                || p.components().any(|c| c.as_os_str() == ".phantom")),
         ".phantom/* must never appear in modified_files; got {modified:?}",
     );
     assert!(modified.contains(&PathBuf::from("src/lib.rs")));

@@ -84,7 +84,7 @@ impl OverlayManager {
     /// `fs::remove_dir_all(overlay_root)` would recurse INTO the mount and
     /// call `unlink(2)` on every file it walks. Those calls are routed to
     /// [`OverlayLayer::delete_file`], which for passthrough paths
-    /// (`.git/`, see [`crate::types::PASSTHROUGH_DIRS`]) deletes directly
+    /// (`.git/`, see `crate::types::PASSTHROUGH_DIRS`) deletes directly
     /// from the lower (trunk) layer — wiping `.git/HEAD`, `.git/config`,
     /// and `.git/description` and leaving the user's repository
     /// unopenable by libgit2.  This was observed in the wild after an
@@ -272,10 +272,7 @@ fn is_mount_point_by_device_id(path: &Path) -> bool {
 ///
 /// Guarantees that even if `mount/` is somehow a stale FUSE mount that
 /// slipped past [`is_fuse_mount_point`], we never recurse into it.
-fn remove_overlay_root_safely(
-    overlay_root: &Path,
-    mount_point: &Path,
-) -> Result<(), OverlayError> {
+fn remove_overlay_root_safely(overlay_root: &Path, mount_point: &Path) -> Result<(), OverlayError> {
     if !overlay_root.exists() {
         return Ok(());
     }

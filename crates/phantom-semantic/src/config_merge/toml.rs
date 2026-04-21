@@ -79,9 +79,7 @@ fn item_to_node(item: &Item) -> Node {
         Item::None => Node::Null,
         Item::Value(v) => value_to_node(v),
         Item::Table(t) => table_to_node(t),
-        Item::ArrayOfTables(arr) => {
-            Node::Array(arr.iter().map(table_to_node).collect())
-        }
+        Item::ArrayOfTables(arr) => Node::Array(arr.iter().map(table_to_node).collect()),
     }
 }
 
@@ -296,12 +294,7 @@ version = "2.0"
             panic!("expected conflict");
         };
         assert_eq!(details.len(), 1);
-        assert!(
-            details[0]
-                .description
-                .to_lowercase()
-                .contains("version")
-        );
+        assert!(details[0].description.to_lowercase().contains("version"));
     }
 
     #[test]

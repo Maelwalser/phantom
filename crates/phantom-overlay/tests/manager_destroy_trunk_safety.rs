@@ -53,11 +53,7 @@ fn destroy_overlay_never_deletes_trunk_files() {
         .join(&agent.0)
         .join("mount");
     std::fs::create_dir_all(mount_path.join(".git")).unwrap();
-    std::fs::write(
-        mount_path.join(".git/HEAD"),
-        b"ref: refs/heads/main\n",
-    )
-    .unwrap();
+    std::fs::write(mount_path.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
     std::fs::write(mount_path.join(".git/config"), b"[core]\n").unwrap();
 
     // destroy_overlay must either succeed (having skipped mount/) OR fail
@@ -105,7 +101,10 @@ fn destroy_overlay_succeeds_after_clean_unmount() {
         .join("overlays")
         .join(&agent.0)
         .join("mount");
-    assert!(mount_path.is_dir(), "create_overlay should have made mount/");
+    assert!(
+        mount_path.is_dir(),
+        "create_overlay should have made mount/"
+    );
     assert_eq!(
         std::fs::read_dir(&mount_path).unwrap().count(),
         0,

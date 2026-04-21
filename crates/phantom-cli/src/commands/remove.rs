@@ -75,7 +75,7 @@ pub async fn run(args: RemoveArgs) -> anyhow::Result<()> {
 ///
 /// This function must do its best to ensure the mount is GONE by the time
 /// it returns — even if that means escalating to SIGTERM + lazy unmount.
-/// If the mount is still live when [`crate::overlay_manager::destroy_overlay`]
+/// If the mount is still live when `crate::overlay_manager::destroy_overlay`
 /// runs afterwards, a recursive remove of the overlay root would walk
 /// through the FUSE mount and route `unlink(2)` calls to the passthrough
 /// `.git/` logic, wiping `.git/HEAD` and `.git/config` from the trunk.

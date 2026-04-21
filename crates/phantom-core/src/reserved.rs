@@ -63,7 +63,10 @@ mod tests {
         assert_eq!(check(".git"), Some(ReservedPathKind::DotGit));
         assert_eq!(check(".git/HEAD"), Some(ReservedPathKind::DotGit));
         assert_eq!(check(".git/config"), Some(ReservedPathKind::DotGit));
-        assert_eq!(check(".git/refs/heads/main"), Some(ReservedPathKind::DotGit));
+        assert_eq!(
+            check(".git/refs/heads/main"),
+            Some(ReservedPathKind::DotGit)
+        );
         assert_eq!(
             check("subdir/.git/HEAD"),
             Some(ReservedPathKind::DotGit),

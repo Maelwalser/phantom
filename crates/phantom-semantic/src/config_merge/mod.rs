@@ -12,9 +12,7 @@
 
 use std::path::Path;
 
-use phantom_core::conflict::{
-    ConflictDetail, ConflictKind, ConflictSpan, MergeResult,
-};
+use phantom_core::conflict::{ConflictDetail, ConflictKind, ConflictSpan, MergeResult};
 use phantom_core::id::{ChangesetId, SymbolId};
 
 use crate::error::SemanticError;
@@ -172,10 +170,14 @@ fn merge_mappings(
     path: &mut Vec<String>,
     conflicts: &mut Vec<NodeConflict>,
 ) -> Node {
-    let base_lookup: Vec<(&String, &Node)> =
-        base.map(|b| b.iter().map(|(k, v)| (k, v)).collect()).unwrap_or_default();
+    let base_lookup: Vec<(&String, &Node)> = base
+        .map(|b| b.iter().map(|(k, v)| (k, v)).collect())
+        .unwrap_or_default();
     let find = |haystack: &[(String, Node)], key: &str| -> Option<Node> {
-        haystack.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+        haystack
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
     };
     let base_find = |key: &str| -> Option<Node> {
         base_lookup
@@ -313,11 +315,7 @@ fn is_leaf_scalar(n: &Node) -> bool {
     matches!(n, Node::Null | Node::Bool(_) | Node::Scalar(_))
 }
 
-fn union_scalar_arrays(
-    base: Option<&[Node]>,
-    ours: &[Node],
-    theirs: &[Node],
-) -> Vec<Node> {
+fn union_scalar_arrays(base: Option<&[Node]>, ours: &[Node], theirs: &[Node]) -> Vec<Node> {
     let base = base.unwrap_or(&[]);
     let mut out: Vec<Node> = Vec::new();
     let push_unique = |out: &mut Vec<Node>, n: &Node| {
@@ -383,7 +381,11 @@ pub(crate) fn conflicts_to_details(
                 symbol_id: Some(SymbolId(format!(
                     "{}::{}",
                     path.display(),
-                    if dotted.is_empty() { "<root>".into() } else { dotted }
+                    if dotted.is_empty() {
+                        "<root>".into()
+                    } else {
+                        dotted
+                    }
                 ))),
                 ours_changeset: placeholder.clone(),
                 theirs_changeset: placeholder.clone(),
@@ -404,7 +406,12 @@ mod tests {
         Node::Scalar(s.into())
     }
     fn m(entries: &[(&str, Node)]) -> Node {
-        Node::Mapping(entries.iter().map(|(k, v)| ((*k).into(), v.clone())).collect())
+        Node::Mapping(
+            entries
+                .iter()
+                .map(|(k, v)| ((*k).into(), v.clone()))
+                .collect(),
+        )
     }
     fn a(items: &[Node]) -> Node {
         Node::Array(items.to_vec())
@@ -527,12 +534,13 @@ mod tests {
             ]),
         )]);
         let merged = merge_tree(&base, &ours, &theirs).unwrap();
-        let Node::Mapping(root) = merged else { panic!() };
+        let Node::Mapping(root) = merged else {
+            panic!()
+        };
         let Some((_, Node::Mapping(project))) = root.iter().find(|(k, _)| k == "project") else {
             panic!()
         };
-        let Some((_, Node::Array(deps))) = project.iter().find(|(k, _)| k == "dependencies")
-        else {
+        let Some((_, Node::Array(deps))) = project.iter().find(|(k, _)| k == "dependencies") else {
             panic!()
         };
         let texts: Vec<_> = deps

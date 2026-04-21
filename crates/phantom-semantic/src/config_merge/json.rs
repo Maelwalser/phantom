@@ -71,16 +71,12 @@ fn fallback_node(v: &serde_json::Value) -> Node {
         serde_json::Value::Bool(b) => Node::Bool(*b),
         serde_json::Value::Number(n) => Node::Scalar(n.to_string()),
         serde_json::Value::String(s) => Node::Scalar(format!("{s:?}")),
-        serde_json::Value::Array(items) => {
-            Node::Array(items.iter().map(fallback_node).collect())
-        }
-        serde_json::Value::Object(map) => {
-            Node::Mapping(
-                map.iter()
-                    .map(|(k, v)| (k.clone(), fallback_node(v)))
-                    .collect(),
-            )
-        }
+        serde_json::Value::Array(items) => Node::Array(items.iter().map(fallback_node).collect()),
+        serde_json::Value::Object(map) => Node::Mapping(
+            map.iter()
+                .map(|(k, v)| (k.clone(), fallback_node(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -276,17 +272,15 @@ impl<'a> JsonOrderedParser<'a> {
     fn parse_string_content(&mut self) -> Result<String, SemanticError> {
         let start = self.pos;
         self.consume_string()?;
-        let raw =
-            std::str::from_utf8(&self.src[start..self.pos]).map_err(|e| {
-                SemanticError::MergeError(format!("invalid utf-8 in key: {e}"))
-            })?;
-        let value: serde_json::Value =
-            serde_json::from_str(raw).map_err(|e| {
-                SemanticError::MergeError(format!("invalid json string: {e}"))
-            })?;
+        let raw = std::str::from_utf8(&self.src[start..self.pos])
+            .map_err(|e| SemanticError::MergeError(format!("invalid utf-8 in key: {e}")))?;
+        let value: serde_json::Value = serde_json::from_str(raw)
+            .map_err(|e| SemanticError::MergeError(format!("invalid json string: {e}")))?;
         match value {
             serde_json::Value::String(s) => Ok(s),
-            _ => Err(SemanticError::MergeError("object key must be string".into())),
+            _ => Err(SemanticError::MergeError(
+                "object key must be string".into(),
+            )),
         }
     }
 }

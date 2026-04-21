@@ -101,15 +101,8 @@ impl<'a> Materializer<'a> {
             .to_path_buf();
 
         let result = if head == changeset.base_commit {
-            direct_apply::direct_apply(
-                self.git,
-                changeset,
-                upper_dir,
-                &head,
-                message,
-                event_store,
-            )
-            .await
+            direct_apply::direct_apply(self.git, changeset, upper_dir, &head, message, event_store)
+                .await
         } else {
             let ctx = MergeContext {
                 upper_dir,

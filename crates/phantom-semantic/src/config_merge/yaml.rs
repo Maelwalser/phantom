@@ -56,11 +56,9 @@ fn parse(path: &Path, bytes: &[u8]) -> Result<Node, SemanticError> {
     if text.trim().is_empty() {
         return Ok(Node::Null);
     }
-    let value: Value = serde_yaml_ng::from_str(text).map_err(|e| {
-        SemanticError::ParseError {
-            path: PathBuf::from(path),
-            detail: format!("yaml parse error: {e}"),
-        }
+    let value: Value = serde_yaml_ng::from_str(text).map_err(|e| SemanticError::ParseError {
+        path: PathBuf::from(path),
+        detail: format!("yaml parse error: {e}"),
     })?;
     Ok(value_to_node(&value))
 }

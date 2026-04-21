@@ -379,10 +379,7 @@ mod tests {
             &analyzer,
             &base,
             upper.path(),
-            &[
-                PathBuf::from(".git/HEAD"),
-                PathBuf::from(".whiteouts.json"),
-            ],
+            &[PathBuf::from(".git/HEAD"), PathBuf::from(".whiteouts.json")],
             &[
                 PathBuf::from(".phantom/events.db"),
                 PathBuf::from("gone.rs"),

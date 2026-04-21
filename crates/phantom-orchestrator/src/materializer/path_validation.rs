@@ -101,8 +101,7 @@ mod tests {
 
     #[test]
     fn rejects_dotphantom_path() {
-        let err =
-            validate_path(Path::new(".phantom/events.db"), Path::new("/repo")).unwrap_err();
+        let err = validate_path(Path::new(".phantom/events.db"), Path::new("/repo")).unwrap_err();
         assert!(err.to_string().contains("reserved"), "{err}");
     }
 

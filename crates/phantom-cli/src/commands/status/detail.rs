@@ -100,9 +100,7 @@ pub(super) async fn run_detailed(
                     let remaining = total - display_count;
                     println!(
                         "    {}",
-                        ui::style_dim(&format!(
-                            "... and {remaining} more (use --all to show)"
-                        ))
+                        ui::style_dim(&format!("... and {remaining} more (use --all to show)"))
                     );
                 }
                 println!();

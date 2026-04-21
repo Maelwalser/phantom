@@ -112,15 +112,30 @@ async fn main() -> anyhow::Result<()> {
     let merger = SemanticMerger::new();
 
     println!("→ committing trunk source ({FILE})");
-    let base = commit_file(&git, FILE, TRUNK_SOURCE, "trunk: initial compute() and helper()")?;
+    let base = commit_file(
+        &git,
+        FILE,
+        TRUNK_SOURCE,
+        "trunk: initial compute() and helper()",
+    )?;
 
     let agent_a = make_agent(&phantom_dir, "agent-a", FILE, AGENT_A_SOURCE)?;
     let agent_b = make_agent(&phantom_dir, "agent-b", FILE, AGENT_B_SOURCE)?;
     let agent_c = make_agent(&phantom_dir, "agent-c", FILE, AGENT_C_SOURCE)?;
 
     let cs_a = build_changeset("cs-a", &agent_a, base, "rewrite compute() with base*5");
-    let cs_b = build_changeset("cs-b", &agent_b, base, "rewrite compute() with for-loop sum");
-    let cs_c = build_changeset("cs-c", &agent_c, base, "rewrite compute() with iterator sum");
+    let cs_b = build_changeset(
+        "cs-b",
+        &agent_b,
+        base,
+        "rewrite compute() with for-loop sum",
+    );
+    let cs_c = build_changeset(
+        "cs-c",
+        &agent_c,
+        base,
+        "rewrite compute() with iterator sum",
+    );
 
     let upper_a = phantom_dir.join("overlays").join(&agent_a.0).join("upper");
     let upper_b = phantom_dir.join("overlays").join(&agent_b.0).join("upper");
