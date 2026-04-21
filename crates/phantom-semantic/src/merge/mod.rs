@@ -14,6 +14,7 @@ use phantom_core::conflict::{MergeReport, MergeResult, MergeStrategy};
 use phantom_core::error::CoreError;
 use phantom_core::symbol::SymbolEntry;
 
+use crate::config_merge;
 use crate::diff;
 use crate::parser::Parser;
 
@@ -75,6 +76,27 @@ impl phantom_core::traits::SemanticAnalyzer for SemanticMerger {
         }
         if theirs == base {
             return Ok(MergeReport::trivial(MergeResult::Clean(ours.to_vec())));
+        }
+
+        // Structured-config merge (TOML / YAML / JSON): key-level three-way
+        // merge that correctly handles disjoint additive edits to the same
+        // table. Symbol-based semantic merge treats these files as opaque
+        // top-level sections and reports spurious conflicts.
+        if let Some(merger) = config_merge::merger_for(path) {
+            match merger.merge(base, ours, theirs, path) {
+                Ok(result) => return Ok(MergeReport::config_structured(result)),
+                Err(e) => {
+                    tracing::warn!(
+                        ?path,
+                        error = %e,
+                        "structured config merge failed, falling back to text merge"
+                    );
+                    return Ok(MergeReport::text_fallback(
+                        text::text_merge(base, ours, theirs, path),
+                        MergeStrategy::TextFallbackSemanticError,
+                    ));
+                }
+            }
         }
 
         // Try semantic merge if language is supported.

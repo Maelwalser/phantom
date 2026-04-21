@@ -65,6 +65,8 @@ tree-sitter-hcl = "1.1"
 tree-sitter-css = "0.25"
 tree-sitter-make = "1.1"
 diffy = "0.4"
+toml_edit = "0.22"
+serde_yaml_ng = "0.10"
 nix = { version = "0.30", features = ["term", "signal"] }
 regex = "1"
 dialoguer = "0.11"
