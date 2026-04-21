@@ -70,27 +70,62 @@ pub async fn run(args: RemoveArgs) -> anyhow::Result<()> {
 }
 
 /// Attempt to cleanly unmount a FUSE overlay and kill its daemon.
+///
+/// # VCS-corruption invariant
+///
+/// This function must do its best to ensure the mount is GONE by the time
+/// it returns — even if that means escalating to SIGTERM + lazy unmount.
+/// If the mount is still live when [`crate::overlay_manager::destroy_overlay`]
+/// runs afterwards, a recursive remove of the overlay root would walk
+/// through the FUSE mount and route `unlink(2)` calls to the passthrough
+/// `.git/` logic, wiping `.git/HEAD` and `.git/config` from the trunk.
+/// Best-effort unmount is NOT enough; a later check in `destroy_overlay`
+/// will abort the removal if the mount is still live.
 pub(crate) fn unmount_fuse(phantom_dir: &std::path::Path, agent: &str) {
     let overlay_root = phantom_dir.join("overlays").join(agent);
     let pid_file = overlay_root.join("fuse.pid");
     let mount_point = overlay_root.join("mount");
 
-    if !pid_file.exists() {
+    // Even if there is no pid file (e.g. overlay was scanned from disk in a
+    // fresh process), the mount may still be live. Proceed as long as the
+    // mount point exists.
+    if !mount_point.exists() {
+        let _ = std::fs::remove_file(&pid_file);
         return;
     }
 
-    // Try fusermount3 first (clean unmount)
+    // 1. Clean unmount via fusermount3 -u.
     if crate::fs::fuse::unmount(&mount_point) {
         info!(agent, "FUSE unmounted cleanly");
-    } else {
-        // Fallback: kill the daemon process (with PID reuse protection).
-        if let Some(record) = crate::pid_guard::read_pid_file(&pid_file)
-            && crate::pid_guard::kill_process(&record, libc::SIGTERM)
-        {
-            std::thread::sleep(Duration::from_millis(200));
-            info!(agent, pid = record.pid, "killed FUSE daemon");
+        let _ = std::fs::remove_file(&pid_file);
+        return;
+    }
+
+    // 2. SIGTERM the daemon, wait, retry unmount.
+    if let Some(record) = crate::pid_guard::read_pid_file(&pid_file)
+        && crate::pid_guard::kill_process(&record, libc::SIGTERM)
+    {
+        std::thread::sleep(Duration::from_millis(500));
+        info!(agent, pid = record.pid, "SIGTERM sent to FUSE daemon");
+        if crate::fs::fuse::unmount(&mount_point) {
+            info!(agent, "FUSE unmounted after SIGTERM");
+            let _ = std::fs::remove_file(&pid_file);
+            return;
         }
     }
+
+    // 3. Last resort: lazy unmount. Detaches the mount from the namespace
+    //    immediately even if the daemon is still in-flight. Prevents a
+    //    recursive remove from ever traversing through the FUSE mount.
+    warn!(
+        agent,
+        mount = %mount_point.display(),
+        "FUSE did not unmount cleanly; escalating to lazy unmount to avoid trunk corruption"
+    );
+    crate::fs::fuse::lazy_unmount(&mount_point);
+    // Give the kernel a moment to detach; not waiting here would leave a
+    // tiny race window where `destroy_overlay`'s mount check still sees it.
+    std::thread::sleep(Duration::from_millis(200));
 
     let _ = std::fs::remove_file(&pid_file);
 }

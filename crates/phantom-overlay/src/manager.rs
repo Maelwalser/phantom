@@ -77,14 +77,57 @@ impl OverlayManager {
     }
 
     /// Destroy an agent's overlay, removing its directories.
+    ///
+    /// # Safety critical — VCS corruption guard
+    ///
+    /// If the overlay's `mount/` is still a live FUSE mount point, a naive
+    /// `fs::remove_dir_all(overlay_root)` would recurse INTO the mount and
+    /// call `unlink(2)` on every file it walks. Those calls are routed to
+    /// [`OverlayLayer::delete_file`], which for passthrough paths
+    /// (`.git/`, see [`crate::types::PASSTHROUGH_DIRS`]) deletes directly
+    /// from the lower (trunk) layer — wiping `.git/HEAD`, `.git/config`,
+    /// and `.git/description` and leaving the user's repository
+    /// unopenable by libgit2.  This was observed in the wild after an
+    /// auto-resolve flow where the FUSE daemon had not fully unmounted
+    /// before `destroy_overlay` ran.
+    ///
+    /// So before removing anything: refuse if `mount/` is still a mount
+    /// point. The caller (CLI) is responsible for unmounting first; if they
+    /// did not, we fail loud rather than destroy the user's VCS.
     pub fn destroy_overlay(&mut self, agent_id: &AgentId) -> Result<(), OverlayError> {
         if self.active_overlays.remove(agent_id).is_none() {
             return Err(OverlayError::NotFound(agent_id.clone()));
         }
 
         let overlay_root = self.phantom_dir.join("overlays").join(&agent_id.0);
+        let mount_point = overlay_root.join("mount");
+
+        if is_fuse_mount_point(&mount_point) {
+            // Reinsert a minimal handle so the caller can retry after unmount
+            // without losing track of the overlay's existence. The handle is
+            // not reused beyond a `NotFound` check, so constructing a fresh
+            // layer would be wasteful — insert nothing and let the caller
+            // re-open via `restore_overlays` if they retry.
+            return Err(OverlayError::Io(std::io::Error::new(
+                std::io::ErrorKind::ResourceBusy,
+                format!(
+                    "refusing to remove overlay '{}': FUSE is still mounted at {}. \
+                     Recursive removal would route unlink calls through FUSE and \
+                     delete .git/HEAD and .git/config from the trunk. Unmount first.",
+                    agent_id,
+                    mount_point.display(),
+                ),
+            )));
+        }
+
         if overlay_root.exists() {
-            fs::remove_dir_all(&overlay_root)?;
+            // Even with the mount check above, extra defense: skip the mount
+            // subdir entirely — remove every other child, then rmdir the
+            // (now-empty) mount dir and finally the overlay root. A non-empty
+            // mount dir here means something was written AFTER the unmount
+            // check, which is a race we'd rather surface than silently
+            // recurse through.
+            remove_overlay_root_safely(&overlay_root, &mount_point)?;
         }
 
         info!(agent = %agent_id, "overlay destroyed");
@@ -161,6 +204,105 @@ impl OverlayManager {
         let layer = self.get_layer(agent_id)?;
         layer.clear_upper()
     }
+}
+
+/// Return `true` if `path` is a current mount point (FUSE or otherwise).
+///
+/// Reads `/proc/self/mountinfo` and compares entries against `path` and its
+/// canonicalized form.  Unknown / unreadable mountinfo is treated as
+/// "not a mount" — this is the conservative default for non-Linux targets
+/// (which don't run FUSE at all) but the caller MUST combine this check
+/// with a working unmount step; a silent false-negative would re-open the
+/// VCS-corruption hole this guard closes.
+fn is_fuse_mount_point(path: &Path) -> bool {
+    // Fast path: if the directory does not exist, it cannot be a mount.
+    if !path.exists() {
+        return false;
+    }
+
+    let Ok(mountinfo) = fs::read_to_string("/proc/self/mountinfo") else {
+        // Non-Linux or restricted environment — we cannot determine mount
+        // state. Fall back to the device-id trick below.
+        return is_mount_point_by_device_id(path);
+    };
+
+    let canon = path.canonicalize().ok();
+    for line in mountinfo.lines() {
+        // Format: `<mount_id> <parent_id> <major:minor> <root> <mount_point> ...`
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let mp = Path::new(fields[4]);
+        if mp == path {
+            return true;
+        }
+        if let Some(ref c) = canon
+            && mp == c.as_path()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Fallback mount-point detection: a directory is a mount point iff its
+/// device id differs from its parent's device id.  Less reliable than
+/// `/proc/mountinfo` (e.g. bind mounts within the same filesystem do not
+/// change the device id) but good enough as a last-resort guard on
+/// platforms without `/proc/self/mountinfo`.
+fn is_mount_point_by_device_id(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(path_meta) = fs::metadata(path) else {
+        return false;
+    };
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let Ok(parent_meta) = fs::metadata(parent) else {
+        return false;
+    };
+    path_meta.dev() != parent_meta.dev()
+}
+
+/// Recursively remove every child of `overlay_root` EXCEPT the `mount/`
+/// subdirectory, then rmdir `mount/` (which must be empty after unmount)
+/// and finally the overlay root itself.
+///
+/// Guarantees that even if `mount/` is somehow a stale FUSE mount that
+/// slipped past [`is_fuse_mount_point`], we never recurse into it.
+fn remove_overlay_root_safely(
+    overlay_root: &Path,
+    mount_point: &Path,
+) -> Result<(), OverlayError> {
+    if !overlay_root.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(overlay_root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path == mount_point {
+            // Never recurse into the mount. Just try to rmdir it (only works
+            // if it's actually empty, i.e. not a live FUSE mount). Ignore
+            // errors — a non-empty mount means we still shouldn't proceed.
+            let _ = fs::remove_dir(&path);
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            fs::remove_dir_all(&path)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+    }
+
+    // Attempt final rmdir of the overlay root. If `mount/` could not be
+    // removed (still mounted or non-empty), this will fail with ENOTEMPTY,
+    // which we surface rather than swallow.
+    fs::remove_dir(overlay_root)?;
+    Ok(())
 }
 
 #[cfg(test)]
