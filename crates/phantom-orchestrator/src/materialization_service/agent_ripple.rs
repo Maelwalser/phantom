@@ -8,10 +8,11 @@ use tracing::warn;
 
 use phantom_core::changeset::SemanticOperation;
 use phantom_core::event::{Event, EventKind};
-use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid};
-use phantom_core::notification::TrunkFileStatus;
+use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid, SymbolId};
+use phantom_core::notification::{DependencyImpact, TrunkFileStatus};
 use phantom_core::traits::{EventStore, SemanticAnalyzer};
 
+use crate::impact;
 use crate::live_rebase;
 use crate::materializer::Materializer;
 use crate::ripple;
@@ -52,14 +53,21 @@ pub(super) async fn handle_agent_ripple(
         .map(|(p, _)| p.clone())
         .collect();
 
+    // Compute per-agent dependency impacts before anything else so they can
+    // ship with the notification regardless of which downstream code path
+    // runs (no-shadow, rebase success, rebase failure).
+    let impacts = compute_agent_impacts(ctx, target);
+
     if shadowed_files.is_empty() {
         write_notification_and_base(
             ctx.phantom_dir,
             target.agent_id,
             *ctx.head,
             classified.clone(),
+            impacts.clone(),
         );
-        write_trunk_update(ctx, target, &classified);
+        write_trunk_update(ctx, target, &classified, &impacts);
+        emit_agent_notified(ctx, target, &impacts).await;
         return RippleEffect {
             agent_id: target.agent_id.clone(),
             files: target.files.to_vec(),
@@ -105,14 +113,16 @@ pub(super) async fn handle_agent_ripple(
                 })
                 .collect();
 
-            let notif = ripple::build_notification(*ctx.head, enriched.clone());
+            let notif =
+                ripple::build_notification(*ctx.head, enriched.clone(), impacts.clone());
             if let Err(e) =
                 ripple::write_trunk_notification(ctx.phantom_dir, target.agent_id, &notif)
             {
                 warn!(agent_id = %target.agent_id, error = %e, "failed to write notification");
             }
 
-            write_trunk_update(ctx, target, &enriched);
+            write_trunk_update(ctx, target, &enriched, &impacts);
+            emit_agent_notified(ctx, target, &impacts).await;
 
             let event = Event {
                 id: EventId(0),
@@ -149,8 +159,10 @@ pub(super) async fn handle_agent_ripple(
                 target.agent_id,
                 *ctx.head,
                 classified.clone(),
+                impacts.clone(),
             );
-            write_trunk_update(ctx, target, &classified);
+            write_trunk_update(ctx, target, &classified, &impacts);
+            emit_agent_notified(ctx, target, &impacts).await;
             RippleEffect {
                 agent_id: target.agent_id.clone(),
                 files: target.files.to_vec(),
@@ -158,5 +170,64 @@ pub(super) async fn handle_agent_ripple(
                 conflicted_count: shadowed_files.len(),
             }
         }
+    }
+}
+
+/// Parse the agent's overlapping upper-layer files and compute dependency
+/// impacts for the materialized changeset.
+///
+/// Parsing failures for individual files are logged and skipped — the
+/// dependency graph is a best-effort signal, not a correctness boundary.
+fn compute_agent_impacts(
+    ctx: &RippleContext<'_>,
+    target: &AffectedAgent<'_>,
+) -> Vec<DependencyImpact> {
+    let footprint =
+        impact::collect_agent_footprint(ctx.analyzer, target.upper_path, target.files);
+    impact::compute_impacts(ctx.operations, &footprint)
+}
+
+/// Emit an [`EventKind::AgentNotified`] event recording the subset of trunk
+/// symbols that actually impacted this agent. Uses the pre-existing event
+/// variant (event.rs:86-91) that was designed for exactly this purpose.
+///
+/// Silently skips when `impacts` is empty — no need to spam the event log
+/// with no-op notifications for agents whose working set didn't reference
+/// any changed trunk symbols.
+async fn emit_agent_notified(
+    ctx: &RippleContext<'_>,
+    target: &AffectedAgent<'_>,
+    impacts: &[DependencyImpact],
+) {
+    if impacts.is_empty() {
+        return;
+    }
+    // Deduplicate symbols — multiple impacts can point at the same trunk
+    // symbol via different references.
+    let mut seen: std::collections::HashSet<SymbolId> = std::collections::HashSet::new();
+    let mut changed_symbols: Vec<SymbolId> = Vec::new();
+    for impact in impacts {
+        if seen.insert(impact.depends_on.clone()) {
+            changed_symbols.push(impact.depends_on.clone());
+        }
+    }
+
+    let event = Event {
+        id: EventId(0),
+        timestamp: Utc::now(),
+        changeset_id: ctx.changeset_id.clone(),
+        agent_id: target.agent_id.clone(),
+        causal_parent: ctx.trigger_event_id,
+        kind: EventKind::AgentNotified {
+            agent_id: target.agent_id.clone(),
+            changed_symbols,
+        },
+    };
+    if let Err(e) = ctx.events.append(event).await {
+        warn!(
+            agent_id = %target.agent_id,
+            error = %e,
+            "failed to record AgentNotified event",
+        );
     }
 }

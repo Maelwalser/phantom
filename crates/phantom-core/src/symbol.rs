@@ -103,6 +103,81 @@ pub struct SymbolEntry {
     pub byte_range: Range<usize>,
     /// BLAKE3 hash of the symbol's source text.
     pub content_hash: ContentHash,
+    /// BLAKE3 hash of the symbol's *declaration* (signature, not body).
+    ///
+    /// For a function, this covers `fn name(args) -> ret` but not the body.
+    /// For a struct, the name and field declarations. When this hash differs
+    /// between two versions of the same symbol, the change is likely
+    /// API-breaking for dependents; when only `content_hash` differs, the
+    /// change is body-only and typically safe for dependents.
+    ///
+    /// Defaults to the all-zeros sentinel when an extractor does not compute
+    /// a signature (unsupported kind) or when deserializing older payloads
+    /// that predate this field. Consumers must treat a zero hash as "unknown"
+    /// and fall back to `content_hash` comparison.
+    #[serde(default = "ContentHash::zero")]
+    pub signature_hash: ContentHash,
+}
+
+/// The kind of reference a symbol makes to another symbol.
+///
+/// Used to build the semantic dependency graph. Each captured reference
+/// becomes an edge `source → target` in the graph with one of these kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ReferenceKind {
+    /// Function call or method invocation (`foo()`, `x.bar()`).
+    Call,
+    /// Type appears in a type position (`let x: MyType`, `fn f() -> Result<T>`).
+    TypeUse,
+    /// Import / use / `from X import Y`.
+    Import,
+    /// Struct field access or enum variant reference.
+    FieldAccess,
+    /// `impl Trait for Type` — target is the trait.
+    TraitImpl,
+}
+
+impl std::fmt::Display for ReferenceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Call => "call",
+            Self::TypeUse => "type",
+            Self::Import => "import",
+            Self::FieldAccess => "field",
+            Self::TraitImpl => "impl",
+        };
+        f.write_str(s)
+    }
+}
+
+/// An unresolved reference from one symbol to another.
+///
+/// Emitted by language extractors during tree-sitter traversal. Resolution
+/// to a concrete `SymbolId` target happens later in `DependencyGraph::update_file`
+/// using a [`SymbolIndex`](crate::traits::SymbolIndex) and a name+scope heuristic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolReference {
+    /// The symbol containing the reference (the "caller").
+    ///
+    /// For references at module scope (imports, top-level type aliases) that
+    /// don't live inside any enclosing symbol, extractors emit a synthetic
+    /// file-level source with `kind = SymbolKind::Module` and a `__file__`
+    /// name component.
+    pub source: SymbolId,
+    /// The short name of the referenced symbol (e.g. `"login"`).
+    pub target_name: String,
+    /// An optional scope hint parsed from a qualified path
+    /// (e.g. `crate::auth::login` → `Some("crate::auth")`).
+    ///
+    /// When `Some`, the resolver prefers candidates whose scope matches.
+    /// When `None`, the resolver falls back to name-only matching.
+    pub target_scope_hint: Option<String>,
+    /// The kind of reference (call / type-use / import / field / impl).
+    pub kind: ReferenceKind,
+    /// Path of the source file (where the reference appears).
+    pub file: PathBuf,
+    /// Byte range of the reference node in the source file.
+    pub byte_range: Range<usize>,
 }
 
 #[cfg(test)]
@@ -118,6 +193,7 @@ mod tests {
             file: PathBuf::from("src/handlers.rs"),
             byte_range: 100..250,
             content_hash: ContentHash::from_bytes(b"fn login() {}"),
+            signature_hash: ContentHash::from_bytes(b"fn login()"),
         }
     }
 
@@ -146,7 +222,49 @@ mod tests {
             file: PathBuf::from("test.rs"),
             byte_range,
             content_hash: ContentHash::from_bytes(name.as_bytes()),
+            signature_hash: ContentHash::from_bytes(name.as_bytes()),
         }
+    }
+
+    #[test]
+    fn serde_symbol_entry_decodes_without_signature_hash() {
+        // Older events written before signature_hash was introduced should
+        // deserialize with the zero sentinel rather than erroring out.
+        let legacy_json = r#"{
+            "id": "crate::foo::Function",
+            "kind": "Function",
+            "name": "foo",
+            "scope": "crate",
+            "file": "src/foo.rs",
+            "byte_range": {"start": 0, "end": 10},
+            "content_hash": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+        }"#;
+        let entry: SymbolEntry = serde_json::from_str(legacy_json).unwrap();
+        assert!(entry.signature_hash.is_zero());
+    }
+
+    #[test]
+    fn serde_symbol_reference_roundtrip() {
+        let r = SymbolReference {
+            source: SymbolId("crate::caller::Function".into()),
+            target_name: "login".into(),
+            target_scope_hint: Some("crate::auth".into()),
+            kind: ReferenceKind::Call,
+            file: PathBuf::from("src/caller.rs"),
+            byte_range: 42..47,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: SymbolReference = serde_json::from_str(&json).unwrap();
+        assert_eq!(r, back);
+    }
+
+    #[test]
+    fn reference_kind_display() {
+        assert_eq!(ReferenceKind::Call.to_string(), "call");
+        assert_eq!(ReferenceKind::TypeUse.to_string(), "type");
+        assert_eq!(ReferenceKind::Import.to_string(), "import");
+        assert_eq!(ReferenceKind::FieldAccess.to_string(), "field");
+        assert_eq!(ReferenceKind::TraitImpl.to_string(), "impl");
     }
 
     #[test]

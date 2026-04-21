@@ -125,20 +125,53 @@ pub fn write_plan_domain_instructions_with_toolchain(
         let _ = writeln!(content);
     }
 
-    // Dependencies
+    // Dependencies — upstream domains the agent depends on, with concrete
+    // agent IDs and the files each upstream owns. Gives this agent enough
+    // information to recognize incoming trunk notifications and connect them
+    // back to the domain-level dependency graph the planner produced.
     if !domain.depends_on.is_empty() {
-        let _ = writeln!(content, "## Dependencies");
+        let _ = writeln!(content, "## Upstream Domains");
         let _ = writeln!(
             content,
-            "This domain depends on work from these other domains:"
+            "This domain depends on work from these upstream domains. \
+             This agent did not start until each upstream materialized to trunk, \
+             so their changes are already visible in your overlay."
         );
-        for dep in &domain.depends_on {
-            let _ = writeln!(content, "- **{dep}**");
+        let _ = writeln!(content);
+
+        for dep_name in &domain.depends_on {
+            let upstream = plan.domains.iter().find(|d| &d.name == dep_name);
+            match upstream {
+                Some(up) => {
+                    let _ = writeln!(
+                        content,
+                        "- **{dep_name}** (agent `{}`)",
+                        up.agent_id
+                    );
+                    if !up.files_to_modify.is_empty() {
+                        let _ = writeln!(content, "  - Owns files:");
+                        for file in &up.files_to_modify {
+                            let _ = writeln!(content, "    - `{}`", file.display());
+                        }
+                    }
+                    if !up.description.is_empty() {
+                        let _ = writeln!(content, "  - Scope: {}", up.description);
+                    }
+                }
+                None => {
+                    // Planner referenced a dependency we can't resolve — still
+                    // list it so the agent knows there's an implicit prereq.
+                    let _ = writeln!(content, "- **{dep_name}** (domain not found in plan)");
+                }
+            }
         }
+        let _ = writeln!(content);
         let _ = writeln!(
             content,
-            "This agent did not start until all dependencies were materialized to trunk. \
-             Their changes are already visible in your overlay — you can rely on them being present."
+            "After each upstream submits, you will receive a trunk-update notification \
+             at `.phantom-trunk-update.md`. If any of your working symbols depend on a \
+             changed or deleted upstream symbol, the notification's `Impacted Dependencies` \
+             section will tell you exactly which references to review."
         );
         let _ = writeln!(content);
     }
@@ -341,6 +374,86 @@ mod tests {
         let detected_pos = body.find("cargo test --all").expect("detected missing");
         assert!(planner_pos < auto_pos);
         assert!(auto_pos < detected_pos);
+    }
+
+    #[test]
+    fn upstream_domains_section_lists_agent_id_and_files() {
+        use std::path::PathBuf;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("inst.md");
+
+        let plan = Plan {
+            id: PlanId("plan-abc".into()),
+            request: "multi-domain work".into(),
+            created_at: chrono::Utc::now(),
+            domains: vec![
+                PlanDomain {
+                    name: "auth".into(),
+                    agent_id: "plan-abc-auth".into(),
+                    description: "implement login".into(),
+                    files_to_modify: vec![PathBuf::from("src/auth.rs")],
+                    files_not_to_modify: vec![],
+                    requirements: vec![],
+                    verification: vec![],
+                    depends_on: vec![],
+                    category: None,
+                },
+                PlanDomain {
+                    name: "api".into(),
+                    agent_id: "plan-abc-api".into(),
+                    description: "wire /login endpoint".into(),
+                    files_to_modify: vec![PathBuf::from("src/api.rs")],
+                    files_not_to_modify: vec!["src/auth.rs".into()],
+                    requirements: vec![],
+                    verification: vec![],
+                    depends_on: vec!["auth".into()],
+                    category: None,
+                },
+            ],
+            status: PlanStatus::Draft,
+        };
+
+        write_plan_domain_instructions(&path, &plan.domains[1], &plan, None).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+
+        assert!(
+            body.contains("## Upstream Domains"),
+            "expected Upstream Domains section: {body}"
+        );
+        assert!(body.contains("agent `plan-abc-auth`"));
+        assert!(body.contains("`src/auth.rs`"));
+        assert!(body.contains("implement login"));
+        assert!(body.contains(".phantom-trunk-update.md"));
+        assert!(body.contains("Impacted Dependencies"));
+    }
+
+    #[test]
+    fn upstream_domains_section_handles_missing_dependency() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("inst.md");
+
+        let plan = Plan {
+            id: PlanId("plan-x".into()),
+            request: "r".into(),
+            created_at: chrono::Utc::now(),
+            domains: vec![PlanDomain {
+                name: "solo".into(),
+                agent_id: "plan-x-solo".into(),
+                description: "solo".into(),
+                files_to_modify: vec![],
+                files_not_to_modify: vec![],
+                requirements: vec![],
+                verification: vec![],
+                depends_on: vec!["missing_dep".into()],
+                category: None,
+            }],
+            status: PlanStatus::Draft,
+        };
+
+        write_plan_domain_instructions(&path, &plan.domains[0], &plan, None).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("**missing_dep** (domain not found"));
     }
 
     #[test]

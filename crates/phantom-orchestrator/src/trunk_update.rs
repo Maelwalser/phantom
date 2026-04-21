@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use phantom_core::changeset::SemanticOperation;
 use phantom_core::id::{AgentId, ChangesetId, GitOid};
-use phantom_core::notification::TrunkFileStatus;
+use phantom_core::notification::{DependencyImpact, TrunkFileStatus};
 use phantom_core::symbol::SymbolKind;
 
 use crate::git::GitOps;
@@ -31,12 +31,15 @@ const BYTE_BUDGET: usize = 4096;
 ///
 /// Operations are filtered to only those affecting `classified_files`. Line
 /// numbers are computed from the source at `head` when available.
+/// `impacts` is appended under an `## Impacted Dependencies` section; pass
+/// an empty slice to omit that section.
 pub fn generate_trunk_update_md(
     submitting_agent: &AgentId,
     changeset_id: &ChangesetId,
     head: &GitOid,
     operations: &[SemanticOperation],
     classified_files: &[(PathBuf, TrunkFileStatus)],
+    impacts: &[DependencyImpact],
     git: &GitOps,
 ) -> String {
     let head_short = &head.to_hex()[..12.min(head.to_hex().len())];
@@ -71,12 +74,67 @@ pub fn generate_trunk_update_md(
         md.push_str(&section);
     }
 
+    let impacts_section = render_impacts_section(impacts);
+    if !impacts_section.is_empty() && md.len() + impacts_section.len() <= BYTE_BUDGET {
+        md.push_str(&impacts_section);
+    } else if !impacts_section.is_empty() {
+        use std::fmt::Write;
+        let _ = write!(
+            md,
+            "\n## Impacted Dependencies\n\n{} impact(s) omitted (budget reached). \
+             See `trunk-updated.json` for the full list.\n",
+            impacts.len()
+        );
+    }
+
     md.push_str(
         "\n---\n*Your overlay has been live-rebased where applicable. \
          No action needed unless you depend on the modified symbols' behavior.*\n",
     );
 
     md
+}
+
+/// Render the `## Impacted Dependencies` section, or an empty string when
+/// `impacts` is empty.
+///
+/// Impacts are grouped by severity class. Within a class, the caller has
+/// already sorted by file path + byte range (see [`compute_impacts`](crate::impact::compute_impacts)).
+fn render_impacts_section(impacts: &[DependencyImpact]) -> String {
+    if impacts.is_empty() {
+        return String::new();
+    }
+
+    use std::fmt::Write;
+    let mut out = String::from("\n## Impacted Dependencies\n\n");
+    let _ = writeln!(
+        out,
+        "{} of your symbols reference trunk symbols that just changed:",
+        impacts.len()
+    );
+
+    for impact in impacts {
+        let your_name = impact.your_symbol.name();
+        let dep_name = impact.depends_on.name();
+        let (start, end) = impact.line_range;
+        let location = if start == end {
+            format!("{}:{start}", impact.file.display())
+        } else {
+            format!("{}:{start}-{end}", impact.file.display())
+        };
+        let preview = impact
+            .trunk_preview
+            .as_deref()
+            .map(|p| format!(" — {p}"))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "- **{}**: `{your_name}` → `{dep_name}` at `{location}` ({}){preview}",
+            impact.change.label(),
+            impact.edge_kind,
+        );
+    }
+    out
 }
 
 /// Write (or append) the markdown notification into an agent's upper directory.
@@ -284,6 +342,7 @@ mod tests {
             file: PathBuf::from("src/lib.rs"),
             byte_range: byte_start..byte_end,
             content_hash: ContentHash([0; 32]),
+            signature_hash: ContentHash([0; 32]),
         }
     }
 

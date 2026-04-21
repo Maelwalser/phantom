@@ -46,6 +46,7 @@ pub fn diff_symbols(
                     ops.push(SemanticOperation::ModifySymbol {
                         file: file.to_path_buf(),
                         old_hash: old_entry.content_hash,
+                        old_signature_hash: old_entry.signature_hash,
                         new_entry: (*new_entry).clone(),
                     });
                 }
@@ -83,6 +84,7 @@ mod tests {
     fn make_symbol(name: &str, kind: SymbolKind, body: &str) -> SymbolEntry {
         let scope = "crate";
         let kind_str = format!("{kind:?}").to_lowercase();
+        let content_hash = ContentHash::from_bytes(body.as_bytes());
         SymbolEntry {
             id: SymbolId(format!("{scope}::{name}::{kind_str}")),
             kind,
@@ -90,7 +92,8 @@ mod tests {
             scope: scope.to_string(),
             file: PathBuf::from("test.rs"),
             byte_range: 0..body.len(),
-            content_hash: ContentHash::from_bytes(body.as_bytes()),
+            content_hash,
+            signature_hash: content_hash,
         }
     }
 

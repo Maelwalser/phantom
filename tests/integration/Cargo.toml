@@ -13,6 +13,7 @@ phantom-overlay = { workspace = true }
 phantom-semantic = { workspace = true }
 phantom-orchestrator = { workspace = true }
 chrono = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 git2 = { workspace = true }
 tokio = { workspace = true }

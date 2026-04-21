@@ -104,7 +104,19 @@ pub async fn materialize_and_ripple(
         .map(|a| (a.agent_id.clone(), a.files_touched.clone()))
         .collect();
 
-    let affected = RippleChecker::check_ripple(&changed_files, &active);
+    let mut affected = RippleChecker::check_ripple(&changed_files, &active);
+
+    // Dependency-only ripple: include every active agent whose upper-layer
+    // references a symbol the changeset just changed — even if no file
+    // overlaps. This is the key behaviour the semantic dependency graph
+    // unlocks: without it, an agent that calls `login` but doesn't touch
+    // `auth.rs` would never hear about a signature change to `login`.
+    let dep_only =
+        dependency_affected_agents(analyzer, &changeset.operations, active_overlays, &affected);
+    for (agent_id, files) in dep_only {
+        affected.entry(agent_id).or_insert(files);
+    }
+
     let mut ripple_effects = Vec::new();
 
     let ripple_ctx = RippleContext {
@@ -120,7 +132,11 @@ pub async fn materialize_and_ripple(
         trigger_event_id,
     };
 
+    // Skip the submitting agent — ripples never fire on the submitter itself.
     for (agent_id, files) in &affected {
+        if agent_id == &changeset.agent_id {
+            continue;
+        }
         let Some(overlay) = active_overlays.iter().find(|a| a.agent_id == *agent_id) else {
             continue;
         };
@@ -138,4 +154,39 @@ pub async fn materialize_and_ripple(
         result,
         ripple_effects,
     })
+}
+
+/// Identify active agents whose upper-layer references target a changed
+/// symbol, beyond the file-overlap set already detected by `RippleChecker`.
+///
+/// For each such agent, parses every file in their `files_touched` list and
+/// checks for impact. The returned map uses the agent's full `files_touched`
+/// as the "affected files" — downstream classification will mark each as
+/// `TrunkVisible` (no live rebase needed since these files didn't change on
+/// trunk; the agent just holds references to changed symbols).
+fn dependency_affected_agents(
+    analyzer: &dyn SemanticAnalyzer,
+    operations: &[phantom_core::changeset::SemanticOperation],
+    active_overlays: &[ActiveOverlay],
+    already_affected: &std::collections::HashMap<AgentId, Vec<PathBuf>>,
+) -> Vec<(AgentId, Vec<PathBuf>)> {
+    let mut out: Vec<(AgentId, Vec<PathBuf>)> = Vec::new();
+    for overlay in active_overlays {
+        if already_affected.contains_key(&overlay.agent_id) {
+            continue;
+        }
+        if overlay.files_touched.is_empty() {
+            continue;
+        }
+        let footprint = crate::impact::collect_agent_footprint(
+            analyzer,
+            &overlay.upper_dir,
+            &overlay.files_touched,
+        );
+        let impacts = crate::impact::compute_impacts(operations, &footprint);
+        if !impacts.is_empty() {
+            out.push((overlay.agent_id.clone(), overlay.files_touched.clone()));
+        }
+    }
+    out
 }

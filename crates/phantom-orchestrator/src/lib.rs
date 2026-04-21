@@ -5,6 +5,7 @@
 
 pub mod error;
 pub mod git;
+pub mod impact;
 pub mod live_rebase;
 pub mod materialization_service;
 pub mod materializer;

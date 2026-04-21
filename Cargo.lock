@@ -1368,6 +1368,7 @@ dependencies = [
  "phantom-overlay",
  "phantom-semantic",
  "phantom-testkit",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

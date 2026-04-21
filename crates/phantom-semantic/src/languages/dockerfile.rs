@@ -228,6 +228,7 @@ fn push_symbol_raw(
         file: file_path.to_path_buf(),
         byte_range: start..end,
         content_hash,
+        signature_hash: content_hash,
     });
 }
 
