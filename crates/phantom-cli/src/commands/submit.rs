@@ -175,7 +175,11 @@ pub async fn submit_agent(
                                     console::style(format!(
                                         "[dep-graph: {} symbol impact{}]",
                                         effect.dep_impact_count,
-                                        if effect.dep_impact_count == 1 { "" } else { "s" }
+                                        if effect.dep_impact_count == 1 {
+                                            ""
+                                        } else {
+                                            "s"
+                                        }
                                     ))
                                     .cyan(),
                                 );
@@ -268,8 +272,8 @@ pub(crate) async fn build_active_overlays(
                     // directory so in-progress work is visible to the ripple.
                     // Filter falls back to the projection list on I/O errors
                     // so we never regress pre-existing behaviour.
-                    let live = phantom_overlay::list_modified_files_in_upper(&upper)
-                        .unwrap_or_default();
+                    let live =
+                        phantom_overlay::list_modified_files_in_upper(&upper).unwrap_or_default();
                     let mut files_touched = cs.files_touched.clone();
                     for path in live {
                         if !files_touched.contains(&path) {

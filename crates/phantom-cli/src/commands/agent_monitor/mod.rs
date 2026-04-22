@@ -141,9 +141,7 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     // `<work_dir>/.claude/settings.json` (the path Claude trusts), marker
     // copy at `.phantom/overlays/<agent>/claude-settings.json`.
     // Failure here is non-fatal — we fall back to file-only delivery.
-    if let Err(e) =
-        phantom_session::hook_config::write(&ctx.phantom_dir, &agent_id, &work_dir)
-    {
+    if let Err(e) = phantom_session::hook_config::write(&ctx.phantom_dir, &agent_id, &work_dir) {
         tracing::warn!(error = %e, "failed to write hook settings; falling back to file-only delivery");
     }
     let marker = phantom_session::hook_config::settings_path(&ctx.phantom_dir, &agent_id);

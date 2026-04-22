@@ -132,7 +132,7 @@ pub fn write(phantom_dir: &Path, agent_id: &AgentId, work_dir: &Path) -> anyhow:
     write_with_bin(&marker, Some(&project), &phantom_bin, agent_id)
 }
 
-/// Same as [`write`], but the binary path is supplied explicitly and the
+/// Same as [`write()`], but the binary path is supplied explicitly and the
 /// project-settings destination is optional. Useful for tests that do not
 /// want to depend on `current_exe` or an existing FUSE mount.
 pub fn write_with_bin(

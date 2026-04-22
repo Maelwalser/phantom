@@ -87,12 +87,7 @@ pub fn run(args: &NotifyHookArgs) -> anyhow::Result<()> {
         }
     };
     let agent_id = AgentId(args.agent.clone());
-    trace_invocation(
-        Some(&ctx.phantom_dir),
-        &args.agent,
-        &args.event,
-        "invoked",
-    );
+    trace_invocation(Some(&ctx.phantom_dir), &args.agent, &args.event, "invoked");
     emit_hook_output(
         &ctx.phantom_dir,
         &agent_id,
@@ -105,12 +100,7 @@ pub fn run(args: &NotifyHookArgs) -> anyhow::Result<()> {
 /// phantom dir was found). Keeps a durable record of every hook invocation
 /// so we can tell at a glance whether Claude's hook runner is calling us —
 /// essential when debugging an end-to-end demo. Zero impact on the hot path.
-fn trace_invocation(
-    phantom_dir: Option<&std::path::Path>,
-    agent: &str,
-    event: &str,
-    note: &str,
-) {
+fn trace_invocation(phantom_dir: Option<&std::path::Path>, agent: &str, event: &str, note: &str) {
     let log_path = match phantom_dir {
         Some(p) => p.join("notify-hook.log"),
         None => std::path::PathBuf::from("/tmp/phantom-notify-hook.log"),
