@@ -164,6 +164,21 @@ pub async fn submit_agent(
                                     console::style(effect.merged_count).green(),
                                     console::style(effect.conflicted_count).red(),
                                 );
+                            } else if effect.files.is_empty() && effect.dep_impact_count > 0 {
+                                // Dep-only ripple: no file overlap, but the
+                                // agent references a trunk symbol that
+                                // changed. Annotate so "0 file(s)" doesn't
+                                // read as a no-op.
+                                println!(
+                                    "    {} 0 file(s) {}",
+                                    console::style(&effect.agent_id.to_string()).bold(),
+                                    console::style(format!(
+                                        "[dep-graph: {} symbol impact{}]",
+                                        effect.dep_impact_count,
+                                        if effect.dep_impact_count == 1 { "" } else { "s" }
+                                    ))
+                                    .cyan(),
+                                );
                             } else {
                                 println!(
                                     "    {} {} file(s)",

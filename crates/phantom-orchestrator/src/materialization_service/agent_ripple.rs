@@ -87,6 +87,7 @@ pub(super) async fn handle_agent_ripple(
             files: target.files.to_vec(),
             merged_count: 0,
             conflicted_count: 0,
+            dep_impact_count: impacts.len(),
         };
     }
 
@@ -164,6 +165,7 @@ pub(super) async fn handle_agent_ripple(
                 files: target.files.to_vec(),
                 merged_count: rebase_result.merged.len(),
                 conflicted_count: rebase_result.conflicted.len(),
+                dep_impact_count: impacts.len(),
             }
         }
         Err(e) => {
@@ -183,6 +185,7 @@ pub(super) async fn handle_agent_ripple(
                 files: target.files.to_vec(),
                 merged_count: 0,
                 conflicted_count: shadowed_files.len(),
+                dep_impact_count: impacts.len(),
             }
         }
     }

@@ -30,6 +30,12 @@ pub struct RippleEffect {
     pub merged_count: usize,
     /// Number of files that had conflicts during live rebase.
     pub conflicted_count: usize,
+    /// Number of per-symbol dependency impacts surfaced to this agent.
+    ///
+    /// Non-zero when the agent holds a reference to a trunk symbol that
+    /// changed — surfaced in the ripple summary so a "0 file(s)" row still
+    /// has a reason attached (dep-graph match).
+    pub dep_impact_count: usize,
 }
 
 /// Output of the full materialize-and-ripple pipeline.

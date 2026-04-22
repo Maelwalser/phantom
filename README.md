@@ -30,8 +30,9 @@ A version control layer for AI coding tools. Built on Git, Phantom lets multiple
 - **Changesets** instead of branches — atomic units keyed by symbols.
 - **FUSE overlays** instead of worktrees — per-agent copy-on-write filesystems.
 - **Semantic merge** instead of textual merge — tree-sitter AST diffing.
+- **Cross-file dependency graph** — agents are warned in real time when trunk changes touch symbols their upper layer depends on.
 - **Event log** instead of reflog — append-only SQLite, replayable and rollback-ready.
-- **Resumable sessions** bound to each overlay.
+- **Resumable sessions** bound to each overlay, with active notifications piped straight into the agent's prompt.
 
 Phantom sits on top of Git. Git remains the source of truth.
 
@@ -111,7 +112,9 @@ cargo install --path crates/phantom-cli
 | `ph tasks` / `t` | List all agent overlays |
 | `ph resume` / `re` | Resume an interactive agent session |
 | `ph plan` | Decompose a feature into parallel agents *(experimental)* |
+| `ph conflicts` / `conf` | Inspect conflicted changesets and the files they touched |
 | `ph resolve` / `res` | Auto-resolve merge conflicts via AI agent *(experimental)* |
+| `ph verify` / `v` | Run the project's build / lint / test commands as a post-plan gate |
 | `ph status` / `st` | Show overlays, changesets, trunk state |
 | `ph log` / `l` | Query the event log |
 | `ph changes` / `c` | Show recent submits and materializations |
@@ -154,7 +157,7 @@ Outcomes: **Success** (committed, ripple to other agents) or **Conflict** (use `
 
 ### `ph plan` *(experimental)*
 
-Splits a feature request into parallel agents via an AI planner. Domains can declare `depends_on` so dependent agents wait for upstream materialization before starting.
+Splits a feature request into parallel agents via an AI planner. Domains can declare `depends_on` so dependent agents wait for upstream materialization before starting. Each domain may also carry a **task category** (`corrective`, `perfective`, `preventive`, `adaptive`, or `custom:<name>`) which controls which `.phantom/rules/<category>.md` rules file is layered into that agent's context.
 
 ```bash
 ph plan                                  # opens editor
@@ -162,6 +165,32 @@ ph plan "add caching layer"
 ph plan "add caching" --dry-run          # preview only
 ph plan "add caching" -y                 # skip confirmation
 ph plan "add caching" --no-submit        # disable auto-submit
+ph plan --from phantom-plan-<id>.md      # dispatch a previously saved plan
+```
+
+A plan can be saved to a human-readable `phantom-plan-<id>.md` file (with an embedded JSON payload) and dispatched later with `--from`, skipping the AI planner entirely.
+
+### `ph conflicts` / `conf`
+
+Read-only inspection of conflicted changesets. Lists every changeset in `Conflicted` or `Resolving` state; with a single match or an explicit agent argument it renders the conflict detail — file, conflict kind, description, line spans, and the on-disk paths needed to fix it by hand.
+
+```bash
+ph conflicts                  # picker across all conflicts
+ph conf agent-a               # jump straight to agent-a's conflict
+```
+
+Pair with `ph resolve <agent>` to hand the same conflict to an AI agent instead of fixing it manually.
+
+### `ph verify` / `v`
+
+Runs the project's build, lint, and test commands as a post-plan gate. Commands are auto-detected from sentinel files by `phantom-toolchain` (Rust, Node, Python, Go, JVM, Ruby, Elixir). Steps run in sequence and stop on the first failure; exit code is non-zero on the first failing step.
+
+```bash
+ph verify
+ph v --skip-build
+ph v --skip-lint
+ph v --skip-tests
+ph v --no-fail-fast           # run every step even after a failure
 ```
 
 ### `ph resolve` / `res` *(experimental)*
@@ -226,6 +255,10 @@ Each overlay binds a coding session (Claude Code by default). The session ID is 
 A `.phantom-task.md` is placed in the overlay with agent metadata and available commands.
 
 Environment variables in the session: `PHANTOM_AGENT_ID`, `PHANTOM_CHANGESET_ID`, `PHANTOM_OVERLAY_DIR`, `PHANTOM_REPO_ROOT`, `PHANTOM_INTERACTIVE`.
+
+### Active notifications
+
+For Claude Code sessions Phantom writes a per-overlay `settings.json` that wires the internal `phantom _notify-hook` command into `SessionStart`, `UserPromptSubmit`, and `PostToolUse` hooks. Trunk updates, ripple results, and dependency-graph conflict warnings are delivered as `hookSpecificOutput.additionalContext` directly into the agent's prompt (budgeted to ~8 KB so the prompt cache stays warm). A `.phantom-trunk.md` file is still written next to the overlay as a fallback for CLIs that do not support hooks.
 
 ## How It Works
 
@@ -303,6 +336,8 @@ Per-file outcomes recorded in each agent's `.phantom-trunk.md`:
 | File edited, trunk change is non-overlapping | Upper kept, both changes reconcilable   | `Shadowed`          |
 | File edited, merge can't auto-resolve        | Upper kept, agent notified to resolve   | `RebaseConflict`    |
 
+Ripple also consults the **cross-file dependency graph**. Phantom builds a symbol-reference graph per language (Rust, TypeScript/JavaScript, Python, Go) from the tree-sitter ASTs and, when trunk changes a symbol, flags every agent whose upper layer *references* that symbol — not only the agents who touched the same file. Those agents receive an early conflict warning through the Claude Code hook (`SessionStart` / `UserPromptSubmit`) so they can reconcile before submit time.
+
 ### Conflict resolution
 
 | Scenario | Result |
@@ -313,6 +348,7 @@ Per-file outcomes recorded in each agent's `.phantom-trunk.md`:
 | Modify vs delete same symbol | **Conflict** |
 | Same import added twice | Auto-deduplicate |
 | Additive insertions to same collection | Auto-merge |
+| Disjoint additive edits to shared TOML / YAML / JSON tables | Auto-merge (key-level, not line-level) |
 
 Files without a tree-sitter grammar fall back to text-level three-way merge via `diffy`.
 
@@ -325,9 +361,10 @@ crates/
 ├── phantom-git/              # git2 wrapper
 ├── phantom-events/           # SQLite WAL event store
 ├── phantom-overlay/          # FUSE overlay
-├── phantom-semantic/         # tree-sitter + semantic merge
+├── phantom-semantic/         # tree-sitter + semantic merge + dependency graph
+├── phantom-toolchain/        # project toolchain detection (build/lint/test commands)
 ├── phantom-orchestrator/     # materialize, ripple, live rebase, submit
-├── phantom-session/          # PTY, CLI adapters, context files
+├── phantom-session/          # PTY, CLI adapters, context files, Claude Code hooks
 └── phantom-testkit/          # test utilities
 tests/integration/            # end-to-end tests
 ```
@@ -336,12 +373,14 @@ tests/integration/            # end-to-end tests
 
 **Programming:**
 
-| Language | Extensions |
-|----------|-----------|
-| Rust | `.rs` |
-| TypeScript / JavaScript | `.ts`, `.js`, `.tsx`, `.jsx` |
-| Python | `.py` |
-| Go | `.go` |
+| Language | Extensions | Dependency graph |
+|----------|-----------|------------------|
+| Rust | `.rs` | Yes |
+| TypeScript / JavaScript | `.ts`, `.js`, `.tsx`, `.jsx` | Yes |
+| Python | `.py` | Yes |
+| Go | `.go` | Yes |
+
+Languages with a dependency graph get cross-file symbol-reference tracking, which powers the ripple-time conflict warnings described in [How It Works](#ripple--trunk-updates-propagate-to-every-active-agent).
 
 **Config:**
 
@@ -371,9 +410,10 @@ Integration tests live in `tests/integration/` and create temporary git repos wi
 
 ## Roadmap
 
-- [ ] Full `.phantom/config.toml` schema
+- [ ] Expanded `.phantom/config.toml` schema (defaults, hooks, CLI overrides)
 - [ ] Agent re-task automation
-- [ ] Incremental parsing
+- [ ] Incremental parsing (currently full reparse per materialization)
+- [ ] Dependency graph for more languages (Java/Kotlin, Ruby, C/C++)
 - [ ] Aider, Cursor, Codex adapters
 - [ ] macOS NFS overlay fallback
 - [ ] Benchmarks
