@@ -242,11 +242,31 @@ pub(crate) async fn build_active_overlays(
                 .ok()
                 .map(std::path::Path::to_path_buf);
             match (cs_data, agent_upper) {
-                (Some(cs), Some(upper)) => Some(ActiveOverlay {
-                    agent_id: a.clone(),
-                    files_touched: cs.files_touched.clone(),
-                    upper_dir: upper,
-                }),
+                (Some(cs), Some(upper)) => {
+                    // `cs.files_touched` reflects only submitted / event-logged
+                    // state. For a *running* agent that has unsaved writes in
+                    // its FUSE upper, the projection's list is empty and the
+                    // ripple would skip it — even though the agent is the
+                    // exact audience an active notification is meant to reach.
+                    //
+                    // Union the projection view with a live walk of the upper
+                    // directory so in-progress work is visible to the ripple.
+                    // Filter falls back to the projection list on I/O errors
+                    // so we never regress pre-existing behaviour.
+                    let live = phantom_overlay::list_modified_files_in_upper(&upper)
+                        .unwrap_or_default();
+                    let mut files_touched = cs.files_touched.clone();
+                    for path in live {
+                        if !files_touched.contains(&path) {
+                            files_touched.push(path);
+                        }
+                    }
+                    Some(ActiveOverlay {
+                        agent_id: a.clone(),
+                        files_touched,
+                        upper_dir: upper,
+                    })
+                }
                 _ => None,
             }
         })

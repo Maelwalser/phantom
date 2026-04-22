@@ -17,7 +17,7 @@ pub(super) fn run_planner(
     let cli_command = crate::context::default_cli(phantom_dir);
     let adapter = phantom_session::adapter::adapter_for(&cli_command);
     let mut cmd = adapter
-        .build_headless_command(repo_root, &prompt, &[], None)
+        .build_headless_command(repo_root, &prompt, &[], None, None)
         .context("planner CLI does not support headless mode")?;
     cmd.args(["--output-format", "json"]);
     cmd.stdin(std::process::Stdio::null());

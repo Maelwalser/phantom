@@ -20,6 +20,7 @@ impl CliAdapter for ClaudeAdapter {
         session_id: Option<&str>,
         env_vars: &[(&str, &str)],
         system_prompt_file: Option<&Path>,
+        hook_settings_file: Option<&Path>,
     ) -> Command {
         let mut cmd = Command::new("claude");
         cmd.current_dir(work_dir);
@@ -46,6 +47,15 @@ impl CliAdapter for ClaudeAdapter {
             cmd.args(["--append-system-prompt-file", path_str]);
         }
 
+        // Register Phantom's active-notification hooks (UserPromptSubmit,
+        // PostToolUse, SessionStart) via Claude's per-invocation settings
+        // file. Absent settings degrade gracefully to file-only delivery.
+        if let Some(path) = hook_settings_file
+            && let Some(path_str) = path.to_str()
+        {
+            cmd.args(["--settings", path_str]);
+        }
+
         cmd
     }
 
@@ -55,6 +65,7 @@ impl CliAdapter for ClaudeAdapter {
         task: &str,
         env_vars: &[(&str, &str)],
         system_prompt_file: Option<&Path>,
+        hook_settings_file: Option<&Path>,
     ) -> Option<Command> {
         let mut cmd = Command::new("claude");
         cmd.current_dir(work_dir);
@@ -76,6 +87,12 @@ impl CliAdapter for ClaudeAdapter {
             && let Some(path_str) = path.to_str()
         {
             cmd.args(["--append-system-prompt-file", path_str]);
+        }
+
+        if let Some(path) = hook_settings_file
+            && let Some(path_str) = path.to_str()
+        {
+            cmd.args(["--settings", path_str]);
         }
 
         Some(cmd)

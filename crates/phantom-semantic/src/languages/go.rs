@@ -79,8 +79,10 @@ fn resolve_package_scope(root: Node<'_>, source: &[u8]) -> String {
         }
         let mut inner = child.walk();
         for ident in child.named_children(&mut inner) {
-            if matches!(ident.kind(), "package_identifier" | "_package_identifier" | "identifier")
-            {
+            if matches!(
+                ident.kind(),
+                "package_identifier" | "_package_identifier" | "identifier"
+            ) {
                 return node_text(ident, source);
             }
         }
@@ -344,8 +346,10 @@ fn push_go_reference(
     package_scope: &str,
 ) {
     let range = node.start_byte()..node.end_byte();
-    let source = find_enclosing_symbol(symbols, &range)
-        .map_or_else(|| go_file_module_id(file_path, package_scope), |s| s.id.clone());
+    let source = find_enclosing_symbol(symbols, &range).map_or_else(
+        || go_file_module_id(file_path, package_scope),
+        |s| s.id.clone(),
+    );
 
     if let Some(enclosing) = find_enclosing_symbol(symbols, &range)
         && enclosing.name == target_name
@@ -445,10 +449,8 @@ type Handler interface {
 
     #[test]
     fn signature_hash_stable_for_body_only_change() {
-        let (s1, _) =
-            parse_go("package p\nfunc Foo(x int) int {\n    return x\n}\n");
-        let (s2, _) =
-            parse_go("package p\nfunc Foo(x int) int {\n    return x + 1\n}\n");
+        let (s1, _) = parse_go("package p\nfunc Foo(x int) int {\n    return x\n}\n");
+        let (s2, _) = parse_go("package p\nfunc Foo(x int) int {\n    return x + 1\n}\n");
         assert_eq!(s1[0].signature_hash, s2[0].signature_hash);
         assert_ne!(s1[0].content_hash, s2[0].content_hash);
     }
@@ -549,7 +551,10 @@ import (
             .iter()
             .find(|r| r.kind == ReferenceKind::Import && r.target_name == "auth")
             .expect("expected import ref for auth");
-        assert_eq!(auth.target_scope_hint.as_deref(), Some("github.com/example"));
+        assert_eq!(
+            auth.target_scope_hint.as_deref(),
+            Some("github.com/example")
+        );
     }
 
     #[test]

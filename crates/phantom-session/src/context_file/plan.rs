@@ -143,11 +143,7 @@ pub fn write_plan_domain_instructions_with_toolchain(
             let upstream = plan.domains.iter().find(|d| &d.name == dep_name);
             match upstream {
                 Some(up) => {
-                    let _ = writeln!(
-                        content,
-                        "- **{dep_name}** (agent `{}`)",
-                        up.agent_id
-                    );
+                    let _ = writeln!(content, "- **{dep_name}** (agent `{}`)", up.agent_id);
                     if !up.files_to_modify.is_empty() {
                         let _ = writeln!(content, "  - Owns files:");
                         for file in &up.files_to_modify {
@@ -168,10 +164,12 @@ pub fn write_plan_domain_instructions_with_toolchain(
         let _ = writeln!(content);
         let _ = writeln!(
             content,
-            "After each upstream submits, you will receive a trunk-update notification \
-             at `.phantom-trunk-update.md`. If any of your working symbols depend on a \
-             changed or deleted upstream symbol, the notification's `Impacted Dependencies` \
-             section will tell you exactly which references to review."
+            "After each upstream submits, Phantom injects a trunk-update block \
+             directly into your next turn — you do not need to re-read any file. \
+             If any of your working symbols depend on a changed or deleted upstream \
+             symbol, the injected `Impacted Dependencies` section tells you exactly \
+             which references to review. A mirror of each update is also written to \
+             `.phantom-trunk-update.md` for reference between turns."
         );
         let _ = writeln!(content);
     }

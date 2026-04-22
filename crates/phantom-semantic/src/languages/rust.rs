@@ -824,7 +824,10 @@ fn caller() {
 }
 "#;
         let (_, refs) = parse_and_extract_refs(src);
-        let calls: Vec<_> = refs.iter().filter(|r| r.kind == ReferenceKind::Call).collect();
+        let calls: Vec<_> = refs
+            .iter()
+            .filter(|r| r.kind == ReferenceKind::Call)
+            .collect();
         assert!(
             calls.iter().any(|r| r.target_name == "login"),
             "expected a call to `login`, got: {refs:?}"

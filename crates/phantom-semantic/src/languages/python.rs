@@ -181,7 +181,14 @@ fn walk_py_references(
             let module_name = node
                 .child_by_field_name("module_name")
                 .map(|m| node_text(m, source));
-            walk_py_import(node, source, file_path, symbols, refs, module_name.as_deref());
+            walk_py_import(
+                node,
+                source,
+                file_path,
+                symbols,
+                refs,
+                module_name.as_deref(),
+            );
         }
         "class_definition" => {
             // Base classes in the argument list are TypeUse refs.

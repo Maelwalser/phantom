@@ -145,6 +145,7 @@ pub async fn materialize_and_ripple(
             agent_id,
             files,
             upper_path: &overlay.upper_dir,
+            touched_files: &overlay.files_touched,
         };
 
         ripple_effects.push(handle_agent_ripple(&ripple_ctx, &target).await);
@@ -159,11 +160,19 @@ pub async fn materialize_and_ripple(
 /// Identify active agents whose upper-layer references target a changed
 /// symbol, beyond the file-overlap set already detected by `RippleChecker`.
 ///
-/// For each such agent, parses every file in their `files_touched` list and
-/// checks for impact. The returned map uses the agent's full `files_touched`
-/// as the "affected files" — downstream classification will mark each as
-/// `TrunkVisible` (no live rebase needed since these files didn't change on
-/// trunk; the agent just holds references to changed symbols).
+/// Dep-only ripples by construction have **no file overlap** with trunk's
+/// changed set — the agent just happens to reference a symbol that changed
+/// in a file the agent never touched. The returned map therefore uses an
+/// empty "affected files" vector: downstream classification produces no
+/// shadowed files, live-rebase is skipped, and the agent is notified
+/// purely via the `DependencyImpact` payload.
+///
+/// Before this change, the dep-only path seeded the affected list with the
+/// agent's own `files_touched`, which then got classified as `Shadowed` and
+/// routed through live-rebase. Since trunk didn't actually change those
+/// files, the three-way merge could legitimately fail and produce a
+/// spurious `RebaseConflict` — a known quirk called out in the active
+/// notification plan.
 fn dependency_affected_agents(
     analyzer: &dyn SemanticAnalyzer,
     operations: &[phantom_core::changeset::SemanticOperation],
@@ -185,7 +194,7 @@ fn dependency_affected_agents(
         );
         let impacts = crate::impact::compute_impacts(operations, &footprint);
         if !impacts.is_empty() {
-            out.push((overlay.agent_id.clone(), overlay.files_touched.clone()));
+            out.push((overlay.agent_id.clone(), Vec::new()));
         }
     }
     out

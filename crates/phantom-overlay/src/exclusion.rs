@@ -52,6 +52,11 @@ pub(crate) const EXCLUDED_PREFIXES: &[&str] = &[
     ".tox",
     ".dart_tool",
     ".svelte-kit",
+    // `.claude/` holds per-agent Claude Code settings written by Phantom
+    // (`phantom-session::hook_config`) so the running session can register
+    // the trunk-update notification hooks in a directory Claude trusts.
+    // Never belongs in a changeset.
+    ".claude",
 ];
 
 /// Returns `true` when the given relative path is a machine-generated

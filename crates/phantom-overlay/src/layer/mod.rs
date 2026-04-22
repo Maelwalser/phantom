@@ -32,6 +32,8 @@ mod read;
 mod rename;
 mod write;
 
+pub use maintenance::list_modified_files_in_upper;
+
 /// Copy-on-write overlay layer.
 ///
 /// The lower layer is the trunk working tree (read-only source of truth).

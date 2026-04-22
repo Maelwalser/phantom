@@ -8,6 +8,7 @@
 
 pub mod adapter;
 pub mod context_file;
+pub mod hook_config;
 pub mod post_session;
 pub mod pty;
 pub mod signatures;

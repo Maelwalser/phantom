@@ -43,6 +43,7 @@ pub fn spawn_with_pty(
     session_id: Option<&str>,
     env_vars: &[(&str, &str)],
     system_prompt_file: Option<&Path>,
+    hook_settings_file: Option<&Path>,
 ) -> anyhow::Result<(ExitStatus, Option<String>)> {
     // Guard: only one PTY session per process. The SIGINT handler writes to a
     // global AtomicBool, so concurrent sessions would race on it.
@@ -65,7 +66,13 @@ pub fn spawn_with_pty(
     let slave_fd = pty.slave;
 
     // 2. Build the command via the adapter.
-    let mut cmd = adapter.build_command(work_dir, session_id, env_vars, system_prompt_file);
+    let mut cmd = adapter.build_command(
+        work_dir,
+        session_id,
+        env_vars,
+        system_prompt_file,
+        hook_settings_file,
+    );
 
     // Set the slave fd as stdin/stdout/stderr for the child.
     // SAFETY: slave_fd is a valid open file descriptor. We use `dup` so the

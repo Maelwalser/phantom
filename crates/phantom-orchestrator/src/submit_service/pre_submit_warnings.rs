@@ -48,7 +48,8 @@ pub(super) fn run(
         return;
     }
 
-    let per_agent = collect_impacts_per_agent(analyzer, submitting_agent, active_overlays, &breaking_ops);
+    let per_agent =
+        collect_impacts_per_agent(analyzer, submitting_agent, active_overlays, &breaking_ops);
     if per_agent.is_empty() {
         return;
     }
@@ -123,9 +124,10 @@ fn render_warning(breaking_ops: &[SemanticOperation], per_agent: &[PreSubmitImpa
             SemanticOperation::ModifySymbol { new_entry, .. } => {
                 ("signature changed", new_entry.kind.to_string())
             }
-            SemanticOperation::DeleteSymbol { id, .. } => {
-                ("deleted", id.0.split("::").last().unwrap_or("symbol").to_string())
-            }
+            SemanticOperation::DeleteSymbol { id, .. } => (
+                "deleted",
+                id.0.split("::").last().unwrap_or("symbol").to_string(),
+            ),
             _ => ("changed", String::new()),
         };
         if detail.is_empty() {
@@ -197,11 +199,7 @@ mod tests {
             Ok(self.refs.clone())
         }
 
-        fn diff_symbols(
-            &self,
-            _: &[SymbolEntry],
-            _: &[SymbolEntry],
-        ) -> Vec<SemanticOperation> {
+        fn diff_symbols(&self, _: &[SymbolEntry], _: &[SymbolEntry]) -> Vec<SemanticOperation> {
             vec![]
         }
 

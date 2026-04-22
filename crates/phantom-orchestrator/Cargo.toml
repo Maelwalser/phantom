@@ -19,6 +19,7 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 diffy = { workspace = true }
 chrono = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 nix = { workspace = true }

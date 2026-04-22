@@ -219,6 +219,7 @@ async fn main() {
         Some(Commands::Verify(args)) => commands::verify::run(args).await,
         Some(Commands::FuseMount(args)) => commands::fuse_mount::run(args),
         Some(Commands::AgentMonitor(args)) => commands::agent_monitor::run(args).await,
+        Some(Commands::NotifyHook(args)) => commands::notify_hook::run(&args),
         Some(Commands::ExternalTask(ext_args)) => {
             // Parse external subcommand args as TaskArgs.
             // ext_args[0] is the agent name, rest are flags like --background.

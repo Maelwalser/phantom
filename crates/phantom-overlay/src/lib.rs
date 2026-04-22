@@ -23,6 +23,7 @@ mod inode_table;
 
 pub use error::OverlayError;
 pub use layer::OverlayLayer;
+pub use layer::list_modified_files_in_upper;
 pub use manager::{MountHandle, OverlayManager};
 pub use trunk_view::TrunkView;
 pub use types::{DirEntry, FileType};

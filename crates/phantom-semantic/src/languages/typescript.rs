@@ -726,7 +726,8 @@ function place(o: Order): void {}
 
     #[test]
     fn self_recursion_does_not_emit_self_edge() {
-        let (_, refs) = parse_ts("function fib(n: number): number { return n < 2 ? n : fib(n-1) + fib(n-2); }");
+        let (_, refs) =
+            parse_ts("function fib(n: number): number { return n < 2 ? n : fib(n-1) + fib(n-2); }");
         let self_calls: Vec<_> = refs
             .iter()
             .filter(|r| r.kind == ReferenceKind::Call && r.target_name == "fib")

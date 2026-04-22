@@ -20,6 +20,7 @@ impl CliAdapter for OpenCodeAdapter {
         session_id: Option<&str>,
         env_vars: &[(&str, &str)],
         _system_prompt_file: Option<&Path>,
+        _hook_settings_file: Option<&Path>,
     ) -> Command {
         let mut cmd = Command::new("opencode");
 
@@ -50,6 +51,7 @@ impl CliAdapter for OpenCodeAdapter {
         task: &str,
         env_vars: &[(&str, &str)],
         _system_prompt_file: Option<&Path>,
+        _hook_settings_file: Option<&Path>,
     ) -> Option<Command> {
         let mut cmd = Command::new("opencode");
 

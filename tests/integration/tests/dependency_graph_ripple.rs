@@ -58,7 +58,8 @@ async fn ripple_emits_signature_changed_impact_for_dependent_agent() {
 
     // Agent-a: changes login signature in src/auth.rs. Upper layer contains
     // only the modified file.
-    let (agent_a, upper_a) = ctx.create_agent("agent-a", &[("src/auth.rs", TRUNK_LOGIN_V2_SIG_CHANGED)]);
+    let (agent_a, upper_a) =
+        ctx.create_agent("agent-a", &[("src/auth.rs", TRUNK_LOGIN_V2_SIG_CHANGED)]);
 
     // Agent-b: has src/handlers.rs in its upper layer (it's already "working"
     // on this file, even if unchanged).
@@ -66,10 +67,7 @@ async fn ripple_emits_signature_changed_impact_for_dependent_agent() {
 
     // Both agents need a TaskCreated event so discovery succeeds.
     let events = MockEventStore::new();
-    for (cs_id, agent, _) in [
-        ("cs-a", &agent_a, &upper_a),
-        ("cs-b", &agent_b, &upper_b),
-    ] {
+    for (cs_id, agent, _) in [("cs-a", &agent_a, &upper_a), ("cs-b", &agent_b, &upper_b)] {
         events
             .append(Event {
                 id: EventId(0),

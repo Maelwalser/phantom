@@ -39,8 +39,7 @@ const CALLER: &str = r#"pub mod handlers {
 #[tokio::test]
 async fn pre_submit_warning_appears_in_submitter_context_file() {
     let ctx = TestContext::new_async().await;
-    let base =
-        ctx.commit_files(&[("src/auth.rs", AUTH_V1), ("src/handlers.rs", CALLER)]);
+    let base = ctx.commit_files(&[("src/auth.rs", AUTH_V1), ("src/handlers.rs", CALLER)]);
 
     // Agent-a is about to make a breaking signature change.
     let (agent_a, upper_a) = ctx.create_agent("agent-a", &[("src/auth.rs", AUTH_V2)]);

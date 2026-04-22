@@ -339,7 +339,12 @@ fn new_symbol_preview(op: &SemanticOperation, contents: &TrunkContentMap) -> Opt
         _ => return None,
     };
     let content = contents.get(&entry.file)?;
-    snippet_from_range(content, &entry.byte_range, /*prefer_signature=*/ true, 120)
+    snippet_from_range(
+        content,
+        &entry.byte_range,
+        /*prefer_signature=*/ true,
+        120,
+    )
 }
 
 /// Render the old-side declaration snippet for a `ModifySymbol`.
@@ -363,7 +368,10 @@ fn old_symbol_preview(op: &SemanticOperation, base_contents: &TrunkContentMap) -
     let name_bytes = new_entry.name.as_bytes();
     let pos = find_subslice(content, name_bytes)?;
     // Expand to the line containing `pos`.
-    let line_start = content[..pos].iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let line_start = content[..pos]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |i| i + 1);
     let line_end = content[pos..]
         .iter()
         .position(|&b| b == b'\n')
@@ -715,7 +723,12 @@ mod tests {
             line_range: (1, 1),
             trunk_preview: None,
         }];
-        enrich_trunk_previews(&mut impacts, &ops, &TrunkContentMap::new(), &TrunkContentMap::new());
+        enrich_trunk_previews(
+            &mut impacts,
+            &ops,
+            &TrunkContentMap::new(),
+            &TrunkContentMap::new(),
+        );
         let preview = impacts[0].trunk_preview.as_ref().expect("preview present");
         assert!(preview.contains("deleted"));
     }

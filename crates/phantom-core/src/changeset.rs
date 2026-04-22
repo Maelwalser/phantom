@@ -192,8 +192,7 @@ impl SemanticOperation {
                     // modification as a signature change rather than silently
                     // classifying it as body-only. False positive is safer
                     // than false negative for dependency notifications.
-                    *old_signature_hash != new_entry.signature_hash
-                        || old_signature_hash.is_zero()
+                    *old_signature_hash != new_entry.signature_hash || old_signature_hash.is_zero()
                 } else {
                     *old_signature_hash != new_entry.signature_hash
                 }

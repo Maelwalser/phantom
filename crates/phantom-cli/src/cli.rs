@@ -89,6 +89,10 @@ pub enum Commands {
     #[command(name = "_agent-monitor", hide = true)]
     AgentMonitor(commands::agent_monitor::AgentMonitorArgs),
 
+    /// Internal: emit pending trunk-update notifications as Claude hook output
+    #[command(name = "_notify-hook", hide = true)]
+    NotifyHook(commands::notify_hook::NotifyHookArgs),
+
     /// Catch-all: treat unrecognized subcommands as agent names for task creation
     #[command(external_subcommand)]
     ExternalTask(Vec<OsString>),

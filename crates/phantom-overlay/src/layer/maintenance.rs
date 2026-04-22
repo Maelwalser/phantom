@@ -156,3 +156,24 @@ fn is_filtered(path: &std::path::Path) -> bool {
     }
     is_excluded_artifact(path)
 }
+
+/// List files that have been written to an agent's upper layer, given just
+/// the upper-dir path.
+///
+/// Mirrors [`OverlayLayer::modified_files`] but does not require constructing
+/// an `OverlayLayer` (which needs the lower-layer pointer). Used at ripple
+/// time to enumerate **live, unsubmitted** writes of other active agents so
+/// the ripple can target them even before they submit.
+///
+/// Returns paths relative to `upper_dir`, filtered the same way as
+/// `modified_files` (reserved paths, Phantom internals, build artefacts).
+/// Returns an empty vector when `upper_dir` does not exist.
+pub fn list_modified_files_in_upper(
+    upper_dir: &std::path::Path,
+) -> Result<Vec<PathBuf>, OverlayError> {
+    if !upper_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let all = walk_files(upper_dir, upper_dir)?;
+    Ok(all.into_iter().filter(|p| !is_filtered(p)).collect())
+}

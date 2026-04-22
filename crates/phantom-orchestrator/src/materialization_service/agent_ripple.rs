@@ -9,12 +9,13 @@ use tracing::warn;
 use phantom_core::changeset::SemanticOperation;
 use phantom_core::event::{Event, EventKind};
 use phantom_core::id::{AgentId, ChangesetId, EventId, GitOid, SymbolId};
-use phantom_core::notification::{DependencyImpact, TrunkFileStatus};
+use phantom_core::notification::{DependencyImpact, TrunkFileStatus, TrunkNotification};
 use phantom_core::traits::{EventStore, SemanticAnalyzer};
 
 use crate::impact;
 use crate::live_rebase;
 use crate::materializer::Materializer;
+use crate::pending_notifications::{self, PendingNotification};
 use crate::ripple;
 
 use super::RippleEffect;
@@ -37,8 +38,20 @@ pub(super) struct RippleContext<'a> {
 /// Per-agent data for a single ripple.
 pub(super) struct AffectedAgent<'a> {
     pub agent_id: &'a AgentId,
+    /// Files that both (a) changed on trunk and (b) the agent has some
+    /// interest in. These are the files that get classified, live-rebased,
+    /// and surfaced in the markdown "file changed" list.
+    ///
+    /// Empty for dep-only ripples (where the agent never touched anything
+    /// trunk changed; only a symbol reference matters).
     pub files: &'a [PathBuf],
     pub upper_path: &'a Path,
+    /// The agent's full working-set of files — used to compute dependency
+    /// impacts independently from `files`. For file-overlap ripples this is
+    /// a superset of `files`; for dep-only ripples it contains files that
+    /// trunk did *not* change but whose symbols reference something that
+    /// did.
+    pub touched_files: &'a [PathBuf],
 }
 
 /// Process ripple effects for a single agent.
@@ -67,6 +80,7 @@ pub(super) async fn handle_agent_ripple(
             impacts.clone(),
         );
         write_trunk_update(ctx, target, &classified, &impacts);
+        enqueue_pending_notification(ctx, target, &classified, &impacts);
         emit_agent_notified(ctx, target, &impacts).await;
         return RippleEffect {
             agent_id: target.agent_id.clone(),
@@ -113,8 +127,7 @@ pub(super) async fn handle_agent_ripple(
                 })
                 .collect();
 
-            let notif =
-                ripple::build_notification(*ctx.head, enriched.clone(), impacts.clone());
+            let notif = ripple::build_notification(*ctx.head, enriched.clone(), impacts.clone());
             if let Err(e) =
                 ripple::write_trunk_notification(ctx.phantom_dir, target.agent_id, &notif)
             {
@@ -122,6 +135,7 @@ pub(super) async fn handle_agent_ripple(
             }
 
             write_trunk_update(ctx, target, &enriched, &impacts);
+            enqueue_pending_notification(ctx, target, &enriched, &impacts);
             emit_agent_notified(ctx, target, &impacts).await;
 
             let event = Event {
@@ -162,6 +176,7 @@ pub(super) async fn handle_agent_ripple(
                 impacts.clone(),
             );
             write_trunk_update(ctx, target, &classified, &impacts);
+            enqueue_pending_notification(ctx, target, &classified, &impacts);
             emit_agent_notified(ctx, target, &impacts).await;
             RippleEffect {
                 agent_id: target.agent_id.clone(),
@@ -170,6 +185,67 @@ pub(super) async fn handle_agent_ripple(
                 conflicted_count: shadowed_files.len(),
             }
         }
+    }
+}
+
+/// Write the per-changeset pending notification that Claude's hook drains on
+/// the next turn. Skipped when the ripple has no visible effect on this
+/// agent (no changed files *and* no dependency impacts) — there is nothing
+/// meaningful to inject and doing so would cost prompt cache space.
+///
+/// Failures are logged only; the pre-existing file-based notification has
+/// already been written, so Claude still has a recoverable path.
+fn enqueue_pending_notification(
+    ctx: &RippleContext<'_>,
+    target: &AffectedAgent<'_>,
+    classified: &[(PathBuf, TrunkFileStatus)],
+    impacts: &[DependencyImpact],
+) {
+    if classified.is_empty() && impacts.is_empty() {
+        return;
+    }
+
+    let notification = TrunkNotification {
+        new_commit: *ctx.head,
+        timestamp: chrono::Utc::now(),
+        files: classified.to_vec(),
+        dependency_impacts: impacts.to_vec(),
+    };
+
+    let relevant_ops: Vec<SemanticOperation> = ctx
+        .operations
+        .iter()
+        .filter(|op| {
+            classified
+                .iter()
+                .any(|(f, _)| op.file_path() == f.as_path())
+        })
+        .cloned()
+        .collect();
+
+    let summary_md = crate::trunk_update::generate_trunk_update_md(
+        ctx.submitting_agent,
+        ctx.changeset_id,
+        ctx.head,
+        &relevant_ops,
+        classified,
+        impacts,
+        ctx.materializer.git(),
+    );
+
+    let payload = PendingNotification {
+        changeset_id: ctx.changeset_id.clone(),
+        submitting_agent: ctx.submitting_agent.clone(),
+        notification,
+        summary_md,
+    };
+
+    if let Err(e) = pending_notifications::write(ctx.phantom_dir, target.agent_id, &payload) {
+        warn!(
+            agent_id = %target.agent_id,
+            error = %e,
+            "failed to enqueue pending notification for active delivery",
+        );
     }
 }
 
@@ -185,7 +261,7 @@ fn compute_agent_impacts(
     target: &AffectedAgent<'_>,
 ) -> Vec<DependencyImpact> {
     let footprint =
-        impact::collect_agent_footprint(ctx.analyzer, target.upper_path, target.files);
+        impact::collect_agent_footprint(ctx.analyzer, target.upper_path, target.touched_files);
     let mut impacts = impact::compute_impacts(ctx.operations, &footprint);
 
     // Load trunk content for each changed file once, then enrich previews.

@@ -19,7 +19,14 @@ use super::CONTEXT_FILE;
 /// Separator that marks the boundary between the static preamble and dynamic
 /// updates. Everything above this line is written once at task creation;
 /// everything below is append-only.
-const UPDATES_SECTION: &str = "\n---\n\n## Trunk Updates\n";
+///
+/// Trunk updates primarily arrive as injected context on the next turn
+/// (via Claude's `UserPromptSubmit` / `PostToolUse` hooks wired by
+/// `phantom-session::hook_config`). The file mirror below is kept for
+/// sessions running a CLI without hook support and as a scrollable audit
+/// trail between turns.
+const UPDATES_SECTION: &str = "\n---\n\n## Trunk Updates\n\n*Upstream changes arrive inline at the start of your next turn. \
+     The entries below are a mirror for reference.*\n";
 
 /// Write a context file into the overlay with agent metadata and optional task.
 ///
