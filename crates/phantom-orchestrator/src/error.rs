@@ -44,6 +44,15 @@ pub enum OrchestratorError {
     /// A live rebase operation failed.
     #[error("live rebase error: {0}")]
     LiveRebase(String),
+
+    /// Post-materialization integrity check failed.
+    ///
+    /// Emitted when, after a Phantom operation, the trunk git repository can
+    /// no longer be opened (e.g. `.git/HEAD` or `.git/config` went missing).
+    /// Phantom stops immediately rather than continue operating on a
+    /// corrupted repository.
+    #[error("repository integrity violated after Phantom operation: {0}")]
+    IntegrityViolation(String),
 }
 
 impl From<phantom_core::CoreError> for OrchestratorError {

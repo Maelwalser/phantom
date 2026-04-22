@@ -297,6 +297,7 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             // Delegate to the detailed status view.
             super::status::run(super::status::StatusArgs {
                 agent: Some(args.agent.clone()),
+                all: false,
             })
             .await?;
             return Ok(());

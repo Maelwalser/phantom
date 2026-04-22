@@ -3,6 +3,7 @@
 //! Implements [`phantom_core::SymbolIndex`] and [`phantom_core::SemanticAnalyzer`]
 //! using tree-sitter grammars for Rust, TypeScript, Python, and Go.
 
+pub(crate) mod config_merge;
 pub(crate) mod diff;
 pub mod error;
 pub(crate) mod graph;

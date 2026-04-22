@@ -15,6 +15,7 @@ pub mod event;
 pub mod id;
 pub mod notification;
 pub mod plan;
+pub mod reserved;
 pub mod symbol;
 pub mod task_category;
 pub mod traits;
@@ -28,6 +29,7 @@ pub use event::{Event, EventKind};
 pub use id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, PlanId, SymbolId};
 pub use notification::{DependencyImpact, ImpactChange, TrunkFileStatus, TrunkNotification};
 pub use plan::{Plan, PlanDomain, PlanStatus, RawPlanDomain, RawPlanOutput};
+pub use reserved::{ReservedPathKind, WHITEOUTS_JSON, is_reserved_path};
 pub use symbol::{
     ReferenceKind, SymbolEntry, SymbolKind, SymbolReference, find_enclosing_symbol,
 };

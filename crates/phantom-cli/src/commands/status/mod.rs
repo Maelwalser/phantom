@@ -19,6 +19,10 @@ pub use summary::extract_plan_prefix;
 pub struct StatusArgs {
     /// Show detailed status for a specific agent
     pub agent: Option<String>,
+
+    /// Show all modified files instead of truncating the list
+    #[arg(short, long)]
+    pub all: bool,
 }
 
 pub async fn run(args: StatusArgs) -> anyhow::Result<()> {
@@ -27,7 +31,7 @@ pub async fn run(args: StatusArgs) -> anyhow::Result<()> {
     let agent_ids = OverlayManager::scan_agent_ids(&ctx.phantom_dir)?;
 
     if let Some(agent_name) = &args.agent {
-        detail::run_detailed(&ctx, &events, &agent_ids, agent_name).await
+        detail::run_detailed(&ctx, &events, &agent_ids, agent_name, args.all).await
     } else {
         let git = ctx.open_git()?;
         summary::run_summary(&ctx, &git, &events, &agent_ids).await

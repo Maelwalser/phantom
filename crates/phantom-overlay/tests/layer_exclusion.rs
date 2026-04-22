@@ -121,16 +121,20 @@ fn whiteouts_json_excluded_at_any_depth() {
     // `.whiteouts.json` files inside subdirectories. The previous filter
     // only caught the root copy, so nested ones leaked into changesets
     // and were observed in the wild at the repo root after materialization.
-    let layer = layer();
-    layer
-        .write_file(std::path::Path::new(".whiteouts.json"), b"{}")
-        .unwrap();
-    layer
-        .write_file(std::path::Path::new("crates/foo/.whiteouts.json"), b"{}")
-        .unwrap();
-    layer
-        .write_file(std::path::Path::new("src/main.rs"), b"fn main(){}")
-        .unwrap();
+    //
+    // Writes to `.whiteouts.json` are now rejected at the overlay write
+    // boundary, so we seed the upper layer directly via std::fs to simulate
+    // the corrupted state and verify the READ-SIDE filter still catches
+    // nested copies.
+    let (lower, upper) = setup();
+    let upper_path = upper.path().to_path_buf();
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper_path.clone()).unwrap();
+
+    std::fs::write(upper_path.join(".whiteouts.json"), b"{}").unwrap();
+    std::fs::create_dir_all(upper_path.join("crates/foo")).unwrap();
+    std::fs::write(upper_path.join("crates/foo/.whiteouts.json"), b"{}").unwrap();
+    std::fs::create_dir_all(upper_path.join("src")).unwrap();
+    std::fs::write(upper_path.join("src/main.rs"), b"fn main(){}").unwrap();
 
     let modified = layer.modified_files().unwrap();
     assert!(
@@ -140,6 +144,93 @@ fn whiteouts_json_excluded_at_any_depth() {
         ".whiteouts.json must be filtered out at every depth; got {modified:?}",
     );
     assert!(modified.contains(&PathBuf::from("src/main.rs")));
+}
+
+#[test]
+fn dotgit_paths_never_appear_in_modified_files() {
+    // A past bug let `.git/HEAD` from the overlay upper layer leak into a
+    // changeset and be materialized back to trunk, wiping `.git/HEAD` and
+    // `.git/config` and leaving the user's repo unopenable. The filter must
+    // drop anything under `.git/` at any depth unconditionally — even if
+    // it was seeded on disk outside `write_file`.
+    let (lower, upper) = setup();
+    let upper_path = upper.path().to_path_buf();
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper_path.clone()).unwrap();
+
+    std::fs::create_dir_all(upper_path.join(".git/refs/heads")).unwrap();
+    std::fs::write(upper_path.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+    std::fs::write(upper_path.join(".git/config"), b"[core]\n").unwrap();
+    std::fs::write(upper_path.join(".git/refs/heads/main"), b"abc\n").unwrap();
+    std::fs::create_dir_all(upper_path.join("src")).unwrap();
+    std::fs::write(upper_path.join("src/main.rs"), b"fn main(){}").unwrap();
+
+    let modified = layer.modified_files().unwrap();
+    assert!(
+        !modified
+            .iter()
+            .any(|p| p.starts_with(".git") || p.components().any(|c| c.as_os_str() == ".git")),
+        ".git/* must never appear in modified_files; got {modified:?}",
+    );
+    assert!(modified.contains(&PathBuf::from("src/main.rs")));
+}
+
+#[test]
+fn dotphantom_paths_never_appear_in_modified_files() {
+    // `.phantom/` is Phantom's own state. Writing it back to trunk would
+    // stomp the event DB and overlay registry.
+    let (lower, upper) = setup();
+    let upper_path = upper.path().to_path_buf();
+    let layer = OverlayLayer::new(lower.path().to_path_buf(), upper_path.clone()).unwrap();
+
+    std::fs::create_dir_all(upper_path.join(".phantom/overlays")).unwrap();
+    std::fs::write(upper_path.join(".phantom/events.db"), b"").unwrap();
+    std::fs::write(upper_path.join(".phantom/overlays/log"), b"").unwrap();
+    std::fs::create_dir_all(upper_path.join("src")).unwrap();
+    std::fs::write(upper_path.join("src/lib.rs"), b"").unwrap();
+
+    let modified = layer.modified_files().unwrap();
+    assert!(
+        !modified
+            .iter()
+            .any(|p| p.starts_with(".phantom")
+                || p.components().any(|c| c.as_os_str() == ".phantom")),
+        ".phantom/* must never appear in modified_files; got {modified:?}",
+    );
+    assert!(modified.contains(&PathBuf::from("src/lib.rs")));
+}
+
+#[test]
+fn dotgit_paths_never_appear_in_deleted_files() {
+    // Whiting out `.git/HEAD` must not be visible to materialization. If it
+    // reached the tree builder, materializer could attempt to delete a file
+    // inside the trunk's `.git/` dir.
+    let (lower, upper) = setup();
+    let lower_path = lower.path().to_path_buf();
+    std::fs::create_dir_all(lower_path.join(".git")).unwrap();
+    std::fs::write(lower_path.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+
+    // Seed a pre-existing (pre-open) corrupted `.whiteouts.json` so the
+    // layer loads an unsafe whiteout set and we can verify it is filtered
+    // back out. This simulates an overlay that slipped past validation.
+    std::fs::write(
+        upper.path().join(".whiteouts.json"),
+        r#"{"paths":[".git/HEAD",".phantom/events.db","src/real.rs"]}"#,
+    )
+    .unwrap();
+    let lower_path = lower.path().to_path_buf();
+    let layer = OverlayLayer::new(lower_path, upper.path().to_path_buf()).unwrap();
+
+    let deleted = layer.deleted_files();
+    for p in &deleted {
+        assert!(
+            !p.components().any(|c| c.as_os_str() == ".git"),
+            ".git/* must never appear in deleted_files; got {deleted:?}"
+        );
+        assert!(
+            !p.components().any(|c| c.as_os_str() == ".phantom"),
+            ".phantom/* must never appear in deleted_files; got {deleted:?}"
+        );
+    }
 }
 
 #[test]

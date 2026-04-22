@@ -1,6 +1,7 @@
 pub mod agent_monitor;
 pub mod background;
 pub mod changes;
+pub mod conflicts;
 pub mod down;
 pub mod exec;
 pub mod fuse_mount;
