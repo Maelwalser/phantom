@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use phantom_core::SymbolEntry;
+use phantom_core::symbol::SymbolReference;
 
 use crate::error::SemanticError;
 use crate::languages::{self, LanguageExtractor};
@@ -90,6 +91,18 @@ impl Parser {
         path: &Path,
         content: &[u8],
     ) -> Result<Vec<SymbolEntry>, SemanticError> {
+        self.parse_file_with_refs(path, content).map(|(s, _)| s)
+    }
+
+    /// Parse a file and extract both its symbols and its outbound references.
+    ///
+    /// This is the preferred entry point for the dependency-graph build, since
+    /// it amortizes the tree-sitter parse across both operations.
+    pub fn parse_file_with_refs(
+        &self,
+        path: &Path,
+        content: &[u8],
+    ) -> Result<(Vec<SymbolEntry>, Vec<SymbolReference>), SemanticError> {
         let idx = self
             .resolve_index(path)
             .ok_or_else(|| SemanticError::UnsupportedLanguage {
@@ -117,7 +130,9 @@ impl Parser {
                 detail: "tree-sitter returned no tree".to_string(),
             })?;
 
-        Ok(extractor.extract_symbols(&tree, content, path))
+        let symbols = extractor.extract_symbols(&tree, content, path);
+        let refs = extractor.extract_references(&tree, content, path, &symbols);
+        Ok((symbols, refs))
     }
 
     /// Check if the given file path has a supported language.

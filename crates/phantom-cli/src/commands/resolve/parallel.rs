@@ -45,7 +45,7 @@ pub(super) fn spawn_parallel_resolve_agents(
         );
 
         let mut cmd = cli_adapter
-            .build_headless_command(work_dir, &task, &env_vars, Some(rules_path))
+            .build_headless_command(work_dir, &task, &env_vars, Some(rules_path), None)
             .context("CLI adapter does not support headless mode")?;
 
         cmd.stdin(std::process::Stdio::null())

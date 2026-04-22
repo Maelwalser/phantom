@@ -103,15 +103,20 @@ pub fn remove_trunk_notification(phantom_dir: &Path, agent_id: &AgentId) {
 }
 
 /// Build a [`TrunkNotification`] for an agent from classified file changes.
+///
+/// `dependency_impacts` is passed through directly — callers computed it at
+/// ripple time against the semantic dependency graph.
 #[must_use]
 pub fn build_notification(
     new_commit: GitOid,
     files: Vec<(PathBuf, TrunkFileStatus)>,
+    dependency_impacts: Vec<phantom_core::notification::DependencyImpact>,
 ) -> TrunkNotification {
     TrunkNotification {
         new_commit,
         timestamp: chrono::Utc::now(),
         files,
+        dependency_impacts,
     }
 }
 

@@ -21,10 +21,17 @@ pub fn spawn_direct(
     session_id: Option<&str>,
     env_vars: &[(&str, &str)],
     system_prompt_file: Option<&Path>,
+    hook_settings_file: Option<&Path>,
 ) -> anyhow::Result<(ExitStatus, Option<String>)> {
     use std::process::Stdio;
 
-    let mut cmd = adapter.build_command(work_dir, session_id, env_vars, system_prompt_file);
+    let mut cmd = adapter.build_command(
+        work_dir,
+        session_id,
+        env_vars,
+        system_prompt_file,
+        hook_settings_file,
+    );
     cmd.stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

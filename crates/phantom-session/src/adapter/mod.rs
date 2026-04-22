@@ -42,12 +42,18 @@ pub trait CliAdapter {
     ///
     /// When `system_prompt_file` is `Some`, the CLI should append the file's
     /// contents to its system prompt (e.g. `--append-system-prompt-file`).
+    ///
+    /// When `hook_settings_file` is `Some`, the CLI should load it as an
+    /// extra settings/config file (e.g. Claude's `--settings <path>`). This
+    /// is where Phantom registers its `_notify-hook` integration. Adapters
+    /// whose CLI does not support hooks may ignore the argument.
     fn build_command(
         &self,
         work_dir: &Path,
         session_id: Option<&str>,
         env_vars: &[(&str, &str)],
         system_prompt_file: Option<&Path>,
+        hook_settings_file: Option<&Path>,
     ) -> Command;
 
     /// Build a headless (non-interactive) command for background execution.
@@ -57,12 +63,16 @@ pub trait CliAdapter {
     ///
     /// When `system_prompt_file` is `Some`, the CLI should append the file's
     /// contents to its system prompt (e.g. `--append-system-prompt-file`).
+    ///
+    /// When `hook_settings_file` is `Some`, the CLI should load it as an
+    /// extra settings/config file (see [`build_command`](Self::build_command)).
     fn build_headless_command(
         &self,
         _work_dir: &Path,
         _task: &str,
         _env_vars: &[(&str, &str)],
         _system_prompt_file: Option<&Path>,
+        _hook_settings_file: Option<&Path>,
     ) -> Option<Command> {
         None
     }

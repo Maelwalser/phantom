@@ -8,6 +8,7 @@ pub mod fuse_mount;
 pub mod init;
 pub mod interactive;
 pub mod log;
+pub mod notify_hook;
 pub mod plan;
 pub mod remove;
 pub mod resolve;

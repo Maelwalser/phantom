@@ -95,6 +95,18 @@ pub enum SemanticOperation {
         file: PathBuf,
         /// Content hash before the modification.
         old_hash: ContentHash,
+        /// Signature hash before the modification.
+        ///
+        /// When this differs from `new_entry.signature_hash`, the change is
+        /// API-breaking for dependents. When they are equal but the content
+        /// hashes differ, the change is body-only and typically safe.
+        ///
+        /// Defaults to the zero sentinel when deserializing older payloads
+        /// written before this field existed; in that case the dependency
+        /// graph's impact analysis falls back to treating every modification
+        /// as a signature change (safe over-approximation).
+        #[serde(default = "ContentHash::zero")]
+        old_signature_hash: ContentHash,
         /// The updated symbol entry.
         new_entry: SymbolEntry,
     },
@@ -148,6 +160,44 @@ impl SemanticOperation {
             Self::ModifySymbol { new_entry, .. } => Some(&new_entry.name),
             Self::DeleteSymbol { id, .. } => Some(&id.0),
             Self::AddFile { .. } | Self::DeleteFile { .. } | Self::RawDiff { .. } => None,
+        }
+    }
+
+    /// Return the [`SymbolId`] this operation affects, when the operation is
+    /// symbol-level.
+    pub fn symbol_id(&self) -> Option<&SymbolId> {
+        match self {
+            Self::AddSymbol { symbol, .. } => Some(&symbol.id),
+            Self::ModifySymbol { new_entry, .. } => Some(&new_entry.id),
+            Self::DeleteSymbol { id, .. } => Some(id),
+            Self::AddFile { .. } | Self::DeleteFile { .. } | Self::RawDiff { .. } => None,
+        }
+    }
+
+    /// Return `true` if this [`SemanticOperation::ModifySymbol`] represents a
+    /// **signature change** — its declaration hash differs between old and new.
+    ///
+    /// Returns `false` for any other operation kind (adds, deletes, raw diffs).
+    /// Returns `true` as a safe over-approximation when the old signature hash
+    /// is the zero sentinel (typical for events written by older binaries).
+    pub fn is_signature_change(&self) -> bool {
+        match self {
+            Self::ModifySymbol {
+                old_signature_hash,
+                new_entry,
+                ..
+            } => {
+                if old_signature_hash.is_zero() || new_entry.signature_hash.is_zero() {
+                    // Unknown signature on either side — treat the whole
+                    // modification as a signature change rather than silently
+                    // classifying it as body-only. False positive is safer
+                    // than false negative for dependency notifications.
+                    *old_signature_hash != new_entry.signature_hash || old_signature_hash.is_zero()
+                } else {
+                    *old_signature_hash != new_entry.signature_hash
+                }
+            }
+            _ => false,
         }
     }
 }
@@ -261,6 +311,7 @@ mod tests {
                     file: PathBuf::from("src/api.rs"),
                     byte_range: 0..50,
                     content_hash: ContentHash::from_bytes(b"fn rate_limit() {}"),
+                    signature_hash: ContentHash::from_bytes(b"fn rate_limit()"),
                 },
             }],
             test_result: Some(TestResult {
@@ -410,6 +461,80 @@ mod tests {
             .try_transition_to(ChangesetStatus::Submitted)
             .unwrap();
         assert_eq!(next, ChangesetStatus::Submitted);
+    }
+
+    #[test]
+    fn is_signature_change_detects_signature_diff() {
+        let sym = SymbolEntry {
+            id: SymbolId("crate::foo::function".into()),
+            kind: SymbolKind::Function,
+            name: "foo".into(),
+            scope: "crate".into(),
+            file: PathBuf::from("src/foo.rs"),
+            byte_range: 0..10,
+            content_hash: ContentHash::from_bytes(b"new"),
+            signature_hash: ContentHash::from_bytes(b"new_sig"),
+        };
+        let op = SemanticOperation::ModifySymbol {
+            file: PathBuf::from("src/foo.rs"),
+            old_hash: ContentHash::from_bytes(b"old"),
+            old_signature_hash: ContentHash::from_bytes(b"old_sig"),
+            new_entry: sym,
+        };
+        assert!(op.is_signature_change());
+    }
+
+    #[test]
+    fn is_signature_change_false_for_body_only_diff() {
+        let sig = ContentHash::from_bytes(b"stable_sig");
+        let sym = SymbolEntry {
+            id: SymbolId("crate::foo::function".into()),
+            kind: SymbolKind::Function,
+            name: "foo".into(),
+            scope: "crate".into(),
+            file: PathBuf::from("src/foo.rs"),
+            byte_range: 0..10,
+            content_hash: ContentHash::from_bytes(b"new_body"),
+            signature_hash: sig,
+        };
+        let op = SemanticOperation::ModifySymbol {
+            file: PathBuf::from("src/foo.rs"),
+            old_hash: ContentHash::from_bytes(b"old_body"),
+            old_signature_hash: sig,
+            new_entry: sym,
+        };
+        assert!(!op.is_signature_change());
+    }
+
+    #[test]
+    fn is_signature_change_over_approximates_on_zero_old_hash() {
+        // Legacy events (missing old_signature_hash) must be classified as
+        // signature changes rather than silently dropped.
+        let sym = SymbolEntry {
+            id: SymbolId("crate::foo::function".into()),
+            kind: SymbolKind::Function,
+            name: "foo".into(),
+            scope: "crate".into(),
+            file: PathBuf::from("src/foo.rs"),
+            byte_range: 0..10,
+            content_hash: ContentHash::from_bytes(b"new"),
+            signature_hash: ContentHash::from_bytes(b"new_sig"),
+        };
+        let op = SemanticOperation::ModifySymbol {
+            file: PathBuf::from("src/foo.rs"),
+            old_hash: ContentHash::from_bytes(b"old"),
+            old_signature_hash: ContentHash::zero(),
+            new_entry: sym,
+        };
+        assert!(op.is_signature_change());
+    }
+
+    #[test]
+    fn is_signature_change_false_for_non_modify_ops() {
+        let op = SemanticOperation::AddFile {
+            path: PathBuf::from("x"),
+        };
+        assert!(!op.is_signature_change());
     }
 
     #[test]

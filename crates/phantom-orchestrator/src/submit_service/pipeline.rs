@@ -23,6 +23,7 @@ use super::discovery::resolve_agent_context;
 use super::events::record_changeset_submitted;
 use super::operations::extract_operations;
 use super::overlay_scan::collect_changes;
+use super::pre_submit_warnings;
 use super::scope_audit;
 use super::{SubmitAndMaterializeOutput, SubmitOutput};
 
@@ -79,6 +80,18 @@ pub(super) async fn run(
     // so concurrent readers do not see a mismatched notification.
     ripple::remove_trunk_notification(ctx.phantom_dir, ctx.agent_id);
     trunk_update::remove_trunk_update_md(ctx.upper_dir);
+
+    // Pre-submit outbound warning: if this changeset contains signature
+    // changes or deletions that other active agents reference, surface a
+    // heads-up inside the submitter's context file BEFORE materialization
+    // ripples out. Advisory only — submit is never blocked.
+    pre_submit_warnings::run(
+        ctx.analyzer,
+        ctx.agent_id,
+        ctx.upper_dir,
+        &extracted.all_ops,
+        ctx.active_overlays,
+    );
 
     // Build commit message: use the explicit one if provided, otherwise
     // synthesize a descriptive one from the semantic operations.

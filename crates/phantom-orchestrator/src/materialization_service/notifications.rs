@@ -10,7 +10,7 @@ use tracing::warn;
 
 use phantom_core::changeset::SemanticOperation;
 use phantom_core::id::{AgentId, GitOid};
-use phantom_core::notification::TrunkFileStatus;
+use phantom_core::notification::{DependencyImpact, TrunkFileStatus};
 
 use crate::live_rebase;
 use crate::ripple;
@@ -26,8 +26,9 @@ pub(super) fn write_notification_and_base(
     agent_id: &AgentId,
     head: GitOid,
     classified: Vec<(PathBuf, TrunkFileStatus)>,
+    impacts: Vec<DependencyImpact>,
 ) {
-    let notif = ripple::build_notification(head, classified);
+    let notif = ripple::build_notification(head, classified, impacts);
     if let Err(e) = ripple::write_trunk_notification(phantom_dir, agent_id, &notif) {
         warn!(%agent_id, error = %e, "failed to write notification");
     }
@@ -42,6 +43,7 @@ pub(super) fn write_trunk_update(
     ctx: &RippleContext<'_>,
     target: &AffectedAgent<'_>,
     classified: &[(PathBuf, TrunkFileStatus)],
+    impacts: &[DependencyImpact],
 ) {
     let relevant_ops: Vec<SemanticOperation> = ctx
         .operations
@@ -56,6 +58,7 @@ pub(super) fn write_trunk_update(
         ctx.head,
         &relevant_ops,
         classified,
+        impacts,
         ctx.materializer.git(),
     );
     if let Err(e) = trunk_update::write_trunk_update_md(target.upper_path, &md) {

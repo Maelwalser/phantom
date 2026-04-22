@@ -24,6 +24,7 @@ mod events;
 mod operations;
 mod overlay_scan;
 mod pipeline;
+mod pre_submit_warnings;
 mod scope_audit;
 
 /// Output of the submission step (semantic operation extraction).

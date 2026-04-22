@@ -6,12 +6,14 @@
 pub(crate) mod config_merge;
 pub(crate) mod diff;
 pub mod error;
+pub(crate) mod graph;
 pub(crate) mod index;
 pub(crate) mod languages;
 pub(crate) mod merge;
 pub(crate) mod parser;
 
 pub use error::SemanticError;
+pub use graph::InMemoryDependencyGraph;
 pub use index::InMemorySymbolIndex;
 pub use languages::LanguageExtractor;
 pub use merge::SemanticMerger;

@@ -12,7 +12,7 @@ use std::path::Path;
 use phantom_core::changeset::SemanticOperation;
 use phantom_core::conflict::{MergeReport, MergeResult, MergeStrategy};
 use phantom_core::error::CoreError;
-use phantom_core::symbol::SymbolEntry;
+use phantom_core::symbol::{SymbolEntry, SymbolReference};
 
 use crate::config_merge;
 use crate::diff;
@@ -43,6 +43,25 @@ impl phantom_core::traits::SemanticAnalyzer for SemanticMerger {
     fn extract_symbols(&self, path: &Path, content: &[u8]) -> Result<Vec<SymbolEntry>, CoreError> {
         self.parser
             .parse_file(path, content)
+            .map_err(|e| CoreError::Semantic(e.to_string()))
+    }
+
+    fn extract_references(
+        &self,
+        path: &Path,
+        content: &[u8],
+        _symbols: &[SymbolEntry],
+    ) -> Result<Vec<SymbolReference>, CoreError> {
+        // The parser re-extracts symbols inside `parse_file_with_refs` to
+        // attribute references to their enclosing symbols. Taking `_symbols`
+        // as a parameter keeps the trait signature uniform and future-proofs
+        // for analyzers that can skip the second extraction.
+        if !self.parser.supports_language(path) {
+            return Ok(Vec::new());
+        }
+        self.parser
+            .parse_file_with_refs(path, content)
+            .map(|(_, refs)| refs)
             .map_err(|e| CoreError::Semantic(e.to_string()))
     }
 

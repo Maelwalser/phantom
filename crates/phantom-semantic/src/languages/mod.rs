@@ -20,7 +20,7 @@ pub mod yaml;
 use std::path::Path;
 
 use phantom_core::id::{ContentHash, SymbolId};
-use phantom_core::symbol::{SymbolEntry, SymbolKind};
+use phantom_core::symbol::{SymbolEntry, SymbolKind, SymbolReference};
 use tree_sitter::Node;
 
 /// Trait for extracting symbols from a tree-sitter parse tree.
@@ -41,6 +41,27 @@ pub trait LanguageExtractor: Send + Sync {
         source: &[u8],
         file_path: &Path,
     ) -> Vec<SymbolEntry>;
+
+    /// Extract outbound symbol references (calls, type-uses, imports, ...).
+    ///
+    /// `symbols` is the list of symbols previously extracted from the same
+    /// file, used to attribute each reference to its enclosing symbol via
+    /// [`find_enclosing_symbol`](phantom_core::symbol::find_enclosing_symbol).
+    ///
+    /// The default implementation returns an empty `Vec`, so languages opt
+    /// into dependency-graph participation by overriding this method. This
+    /// keeps the dependency-graph pipeline total across every supported file
+    /// type — languages without reference extraction simply contribute no
+    /// edges.
+    fn extract_references(
+        &self,
+        _tree: &tree_sitter::Tree,
+        _source: &[u8],
+        _file_path: &Path,
+        _symbols: &[SymbolEntry],
+    ) -> Vec<SymbolReference> {
+        Vec::new()
+    }
 
     /// Exact filenames this extractor handles (e.g., `"Dockerfile"`, `"Makefile"`).
     ///
@@ -101,6 +122,12 @@ pub(crate) fn build_scope(parts: &[String], root: &str) -> String {
 }
 
 /// Create a [`SymbolEntry`] and push it onto the symbol list.
+///
+/// The `signature_hash` defaults to the same value as `content_hash` — any
+/// mutation to the symbol's text counts as a signature change. Language
+/// extractors that can tell a true signature change from a body-only change
+/// (e.g. Rust) should call [`push_symbol_with_signature`] to pass a tighter
+/// hash of just the declaration node.
 pub(crate) fn push_symbol(
     symbols: &mut Vec<SymbolEntry>,
     scope: &str,
@@ -123,6 +150,42 @@ pub(crate) fn push_symbol(
         file: file_path.to_path_buf(),
         byte_range: node.start_byte()..node.end_byte(),
         content_hash,
+        signature_hash: content_hash,
+    });
+}
+
+/// Create a [`SymbolEntry`] with a distinct signature hash.
+///
+/// Use when the language extractor can identify the symbol's declaration
+/// separately from its body (e.g. a function's `fn name(args) -> ret`
+/// clause versus its block). When only the body changes, `signature_hash`
+/// stays stable and dependents won't be flagged as broken.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn push_symbol_with_signature(
+    symbols: &mut Vec<SymbolEntry>,
+    scope: &str,
+    name: &str,
+    kind: SymbolKind,
+    node: Node<'_>,
+    source: &[u8],
+    file_path: &Path,
+    signature_bytes: &[u8],
+) {
+    let kind_str = format!("{kind:?}").to_lowercase();
+    let id = SymbolId(format!("{scope}::{name}::{kind_str}"));
+    let content = &source[node.start_byte()..node.end_byte()];
+    let content_hash = ContentHash::from_bytes(content);
+    let signature_hash = ContentHash::from_bytes(signature_bytes);
+
+    symbols.push(SymbolEntry {
+        id,
+        kind,
+        name: name.to_string(),
+        scope: scope.to_string(),
+        file: file_path.to_path_buf(),
+        byte_range: node.start_byte()..node.end_byte(),
+        content_hash,
+        signature_hash,
     });
 }
 

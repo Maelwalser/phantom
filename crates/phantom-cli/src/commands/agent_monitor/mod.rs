@@ -136,6 +136,17 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         )?;
     }
 
+    // Write the per-overlay Claude settings so the background agent drains
+    // trunk-update notifications automatically. Canonical copy lands at
+    // `<work_dir>/.claude/settings.json` (the path Claude trusts), marker
+    // copy at `.phantom/overlays/<agent>/claude-settings.json`.
+    // Failure here is non-fatal — we fall back to file-only delivery.
+    if let Err(e) = phantom_session::hook_config::write(&ctx.phantom_dir, &agent_id, &work_dir) {
+        tracing::warn!(error = %e, "failed to write hook settings; falling back to file-only delivery");
+    }
+    let marker = phantom_session::hook_config::settings_path(&ctx.phantom_dir, &agent_id);
+    let hook_settings_file = if marker.exists() { Some(marker) } else { None };
+
     // Spawn the agent process as our child so we can waitpid for it.
     let system_prompt_file = args.system_prompt_file.as_deref().map(PathBuf::from);
     let (claude_pid, exit_code) = spawn_and_wait_agent(
@@ -146,6 +157,7 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
         &args.repo_root,
         &args.cli_command,
         system_prompt_file.as_deref(),
+        hook_settings_file.as_deref(),
     )?;
 
     // Emit AgentLaunched event now that we have the real PID.
@@ -286,6 +298,8 @@ async fn was_changeset_materialized(events: &SqliteEventStore, changeset_id: &Ch
 }
 
 /// Spawn the CLI agent process as our direct child, wait for it, return the exit code.
+#[allow(clippy::too_many_arguments)] // all args are orthogonal and a struct
+// would just shuffle the same fields around the call site
 fn spawn_and_wait_agent(
     phantom_dir: &Path,
     agent: &str,
@@ -294,6 +308,7 @@ fn spawn_and_wait_agent(
     repo_root: &str,
     cli_command: &str,
     system_prompt_file: Option<&Path>,
+    hook_settings_file: Option<&Path>,
 ) -> anyhow::Result<(u32, Option<i32>)> {
     let overlay_root = phantom_dir.join("overlays").join(agent);
     let log_file = overlay_root.join("agent.log");
@@ -315,7 +330,13 @@ fn spawn_and_wait_agent(
     ];
 
     let mut cmd = cli_adapter
-        .build_headless_command(work_dir, task, &env_vars, system_prompt_file)
+        .build_headless_command(
+            work_dir,
+            task,
+            &env_vars,
+            system_prompt_file,
+            hook_settings_file,
+        )
         .context("CLI adapter does not support headless mode")?;
 
     cmd.stdin(std::process::Stdio::null())

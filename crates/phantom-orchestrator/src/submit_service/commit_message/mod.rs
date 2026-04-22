@@ -47,6 +47,7 @@ mod tests {
             file: PathBuf::from("src/lib.rs"),
             byte_range: 0..10,
             content_hash: ContentHash([0; 32]),
+            signature_hash: ContentHash([0; 32]),
         }
     }
 

@@ -27,10 +27,10 @@ pub use conflict::{ConflictDetail, ConflictKind, ConflictSpan, MergeCheckResult,
 pub use error::CoreError;
 pub use event::{Event, EventKind};
 pub use id::{AgentId, ChangesetId, ContentHash, EventId, GitOid, PlanId, SymbolId};
-pub use notification::{TrunkFileStatus, TrunkNotification};
+pub use notification::{DependencyImpact, ImpactChange, TrunkFileStatus, TrunkNotification};
 pub use plan::{Plan, PlanDomain, PlanStatus, RawPlanDomain, RawPlanOutput};
 pub use reserved::{ReservedPathKind, WHITEOUTS_JSON, is_reserved_path};
-pub use symbol::{SymbolEntry, SymbolKind, find_enclosing_symbol};
+pub use symbol::{ReferenceKind, SymbolEntry, SymbolKind, SymbolReference, find_enclosing_symbol};
 pub use task_category::{ParseTaskCategoryError, TaskCategory};
-pub use traits::{EventStore, SemanticAnalyzer, SymbolIndex};
+pub use traits::{DependencyEdge, DependencyGraph, EventStore, SemanticAnalyzer, SymbolIndex};
 pub use util::is_binary_or_non_utf8;

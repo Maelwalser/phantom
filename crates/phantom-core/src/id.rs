@@ -68,6 +68,41 @@ impl fmt::Display for EventId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SymbolId(pub String);
 
+impl SymbolId {
+    /// Extract the short `name` component from a `"scope::name::kind"` ID.
+    ///
+    /// Returns the full string as a fallback when the ID has fewer than two
+    /// `::` separators (e.g., legacy events or hand-crafted test data).
+    #[must_use]
+    pub fn name(&self) -> &str {
+        // Name is the second-to-last `::`-separated segment. We search from
+        // the right because the scope itself may contain `::`.
+        let s = &self.0;
+        match s.rsplit_once("::") {
+            Some((before_kind, _kind)) => match before_kind.rsplit_once("::") {
+                Some((_scope, name)) => name,
+                None => before_kind,
+            },
+            None => s,
+        }
+    }
+
+    /// Extract the `scope` component from a `"scope::name::kind"` ID.
+    ///
+    /// Returns an empty string when no scope prefix is present.
+    #[must_use]
+    pub fn scope(&self) -> &str {
+        let s = &self.0;
+        match s.rsplit_once("::") {
+            Some((before_kind, _kind)) => match before_kind.rsplit_once("::") {
+                Some((scope, _name)) => scope,
+                None => "",
+            },
+            None => "",
+        }
+    }
+}
+
 impl fmt::Display for SymbolId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -87,6 +122,20 @@ impl ContentHash {
     pub fn from_bytes(data: &[u8]) -> Self {
         let hash = blake3::hash(data);
         Self(*hash.as_bytes())
+    }
+
+    /// The all-zeros hash. Used as an "unset" sentinel for fields that may be
+    /// missing in older serialized data (e.g. `SymbolEntry::signature_hash`
+    /// before the dependency graph was introduced).
+    #[must_use]
+    pub fn zero() -> Self {
+        Self([0u8; 32])
+    }
+
+    /// Return `true` if this is the all-zeros sentinel.
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
+        self.0 == [0u8; 32]
     }
 
     /// Return the hash as a lowercase hex string (64 chars).
@@ -262,6 +311,21 @@ mod tests {
         let json = serde_json::to_string(&h).unwrap();
         let back: ContentHash = serde_json::from_str(&json).unwrap();
         assert_eq!(h, back);
+    }
+
+    #[test]
+    fn symbol_id_parts() {
+        let id = SymbolId("crate::auth::login::function".into());
+        assert_eq!(id.name(), "login");
+        assert_eq!(id.scope(), "crate::auth");
+
+        let nested = SymbolId("crate::a::b::c::struct".into());
+        assert_eq!(nested.name(), "c");
+        assert_eq!(nested.scope(), "crate::a::b");
+
+        let short = SymbolId("name::kind".into());
+        assert_eq!(short.name(), "name");
+        assert_eq!(short.scope(), "");
     }
 
     #[test]

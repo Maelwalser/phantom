@@ -71,6 +71,25 @@ pub async fn run_interactive_session(
     ];
     let env_refs: Vec<(&str, &str)> = env_vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
+    // Write per-overlay Claude settings that registers Phantom's active
+    // notification hooks. The canonical copy lands at
+    // `<work_dir>/.claude/settings.json` (the trusted location Claude
+    // actually loads hooks from); a marker copy goes next to the overlay
+    // under `.phantom/overlays/<agent>/claude-settings.json`. If this fails
+    // we fall back to file-only delivery.
+    if let Err(e) = phantom_session::hook_config::write(&ctx.phantom_dir, agent_id, work_dir) {
+        warn!(error = %e, "failed to write hook settings; falling back to file-only delivery");
+    }
+    // Still forward the marker path via `--settings` for CLIs like Codex
+    // that merge hooks that way; Claude reads .claude/settings.json
+    // natively and the --settings flag is a no-op for it.
+    let marker = phantom_session::hook_config::settings_path(&ctx.phantom_dir, agent_id);
+    let hook_settings_ref = if marker.exists() {
+        Some(marker.as_path())
+    } else {
+        None
+    };
+
     // Use PTY when stdin is a terminal (enables output capture for session IDs).
     // Fall back to direct Stdio::inherit() when not a TTY (tests, CI, piped input).
     let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
@@ -81,6 +100,7 @@ pub async fn run_interactive_session(
             session_id,
             &env_refs,
             system_prompt_file,
+            hook_settings_ref,
         )?
     } else {
         pty::spawn_direct(
@@ -89,6 +109,7 @@ pub async fn run_interactive_session(
             session_id,
             &env_refs,
             system_prompt_file,
+            hook_settings_ref,
         )?
     };
 

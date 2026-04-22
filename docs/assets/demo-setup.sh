@@ -1,28 +1,34 @@
 #!/usr/bin/env bash
-# Sets up the demo repo: a tiny Python project + `ph init` + two tasked
-# overlays, then drives real Claude sessions (via `claude --session-id`) to
-# actually implement the change through each overlay's FUSE mount. The demo
-# tape then resumes each of those real sessions with `ph <agent>`.
+# Sets up the dependency-graph-notification demo:
 #
-# Each agent adds a new file under `says/` so `main.py` will call it when
-# the project runs. Because both agents touch only their own new file, the
-# semantic merge is clean and the trunk ends up calling both prints.
+#   * Trunk defines greetings.greet(name)
+#   * Agent-A is tasked with adding a `locale` parameter to greet (signature change)
+#   * Agent-B owns handlers.py which calls greet("world"); B adds a log line
+#     so handlers.py lands in B's upper and the symbol reference is tracked
+#
+# Running the tape will:
+#   1. show both overlays tasked side-by-side
+#   2. submit agent-a → Phantom's semantic diff flags the signature change
+#   3. ripple fires a DependencyImpact for agent-b; a pending notification
+#      lands in `.phantom/overlays/agent-b/pending-notifications/`
+#   4. the hook-ready JSON is previewed (a `cat | jq` of the summary_md)
+#   5. agent-b is resumed — Claude's `UserPromptSubmit` hook drains the queue
+#      and injects the trunk update as `additionalContext`
 #
 # Run this BEFORE: vhs docs/assets/demo.tape
 #
 # Requirements:
-#   * `ph` on PATH         (cargo install --path crates/phantom-cli)
-#   * `claude` authenticated (this script runs two short prompts)
-#   * `python3` on PATH
+#   * `ph`   on PATH (cargo install --path crates/phantom-cli)
+#   * `claude` authenticated
+#   * `python3`, `jq`, `uuidgen` on PATH
 set -euo pipefail
 export RUST_LOG=off
 
 DEMO_DIR="/tmp/phantom-demo"
 
 # Sandbox HOME for Claude Code so the TUI header reads "phantom" instead of
-# the host user's real email. Reuses the real OAuth credentials (so no
-# interactive login is needed) but overrides the display fields Claude caches
-# in ~/.claude.json (oauthAccount.emailAddress / organizationName / displayName).
+# the host user's real email. Reuses real OAuth credentials so no interactive
+# login is needed.
 CLAUDE_HOME="/tmp/phantom-home"
 mkdir -p "$CLAUDE_HOME/.claude"
 cp "$HOME/.claude/.credentials.json" "$CLAUDE_HOME/.claude/.credentials.json"
@@ -63,71 +69,80 @@ rm -rf "$DEMO_DIR"
 mkdir -p "$DEMO_DIR"
 cd "$DEMO_DIR"
 
-# Tiny Python project: main.py prints a header, then calls `say()` on every
-# module it finds under `says/`. Agents will each drop in a new `says/<x>.py`.
+# Minimal Python project with a clear cross-file dependency:
+#   greetings.greet(name)   — definition
+#   handlers.handle_welcome — calls greet("world")
+#   main.py                 — calls handle_welcome
 git init -b main --quiet
 git config user.email "demo@phantom.dev"
 git config user.name  "Phantom Demo"
 
-cat > main.py <<'PY'
-"""Phantom demo project.
+cat > greetings.py <<'PY'
+"""Greeting primitives. agent-a will evolve the signature here."""
 
-Run with:  python3 main.py
-"""
-import importlib
-import os
+
+def greet(name: str) -> None:
+    print(f"hello, {name}")
+PY
+
+cat > handlers.py <<'PY'
+"""Request handlers. agent-b owns this file — it calls greet()."""
+from greetings import greet
+
+
+def handle_welcome() -> None:
+    greet("world")
+PY
+
+cat > main.py <<'PY'
+"""Phantom demo entry point."""
+from handlers import handle_welcome
 
 
 def main() -> None:
     print("phantom demo")
-    says_dir = "says"
-    if not os.path.isdir(says_dir):
-        return
-    for name in sorted(os.listdir(says_dir)):
-        if name.endswith(".py") and name != "__init__.py":
-            importlib.import_module(f"says.{name[:-3]}").say()
+    handle_welcome()
 
 
 if __name__ == "__main__":
     main()
 PY
 
-mkdir -p says
-cat > says/__init__.py <<'PY'
-"""Each module in this package must expose a `say()` function."""
-PY
-
 cat > README.md <<'MD'
-# phantom demo
+# phantom demo — dependency-graph notification
+
+Two agents working in parallel. agent-a changes a symbol's signature,
+agent-b holds a caller. Phantom's ripple catches the cross-file
+dependency and injects a rich notification into agent-b's next turn via
+Claude Code hooks.
 
 Run with:
 
 ```
 python3 -B main.py
 ```
-
-Each agent contributes a `say()` module under `says/`.
 MD
 
-# Stop Python from littering the overlay with __pycache__ entries — those
-# would get picked up as changes and conflict across agents on submit.
 cat > .gitignore <<'GI'
 __pycache__/
 *.pyc
+.phantom/
+.claude/
 GI
 
 git add .
-git commit -m "initial commit" --quiet
+git commit -m "initial commit: greetings + handlers" --quiet
 
 # Initialize Phantom and create two overlays with real TaskCreated events.
-# --command true keeps it synchronous and CLI-free.
 ph init >/dev/null
-ph agent-a --command true --task "add a user-registration ready print" >/dev/null
-ph agent-b --command true --task "add a rate-limiting ready print"      >/dev/null
+ph agent-a --command true \
+    --task "Add a locale parameter to greetings.greet(name)." >/dev/null
+ph agent-b --command true \
+    --task "Add a print() log line before the greet() call in handlers.py." >/dev/null
 
-# Drive real Claude sessions to implement each agent's change through the
-# FUSE overlay. Claude keys sessions by cwd, so we launch from each overlay's
-# mount path — the same cwd `ph <agent>` resumes into on the demo tape.
+# Drive real Claude sessions so each overlay holds finished work whose
+# resumption the tape can display. Each session writes through its FUSE
+# mount, so the overlay's upper ends up with the agent's edits.
 AGENT_A_SID="$(uuidgen)"
 AGENT_B_SID="$(uuidgen)"
 
@@ -135,12 +150,7 @@ AGENT_B_SID="$(uuidgen)"
     cd "$DEMO_DIR/.phantom/overlays/agent-a/mount"
     HOME="$CLAUDE_HOME" claude --session-id "$AGENT_A_SID" \
         --permission-mode bypassPermissions \
-        -p "Create a NEW file at \`says/agent_a.py\`. Its entire content must be:
-
-def say() -> None:
-    print(\"[agent-a] user registration ready\")
-
-Do not modify any other file (main.py, says/__init__.py, etc. must stay untouched). Write the file now, then confirm in one short sentence." \
+        -p "Edit greetings.py so \`greet\` takes a second parameter \`locale: str\` and prints \`f\"hello, {name} ({locale})\"\`. Keep the function name. Write the file, then reply in one sentence." \
         >/dev/null
 )
 
@@ -148,12 +158,7 @@ Do not modify any other file (main.py, says/__init__.py, etc. must stay untouche
     cd "$DEMO_DIR/.phantom/overlays/agent-b/mount"
     HOME="$CLAUDE_HOME" claude --session-id "$AGENT_B_SID" \
         --permission-mode bypassPermissions \
-        -p "Create a NEW file at \`says/agent_b.py\`. Its entire content must be:
-
-def say() -> None:
-    print(\"[agent-b] rate limiting ready\")
-
-Do not modify any other file (main.py, says/__init__.py, etc. must stay untouched). Write the file now, then confirm in one short sentence." \
+        -p "Edit handlers.py: inside handle_welcome, add \`print(\"[welcome] dispatching\")\` on the line BEFORE the existing \`greet(\\\"world\\\")\` call. Do not change any other file. Write the file, then reply in one sentence." \
         >/dev/null
 )
 

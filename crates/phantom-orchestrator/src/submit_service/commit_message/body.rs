@@ -90,6 +90,7 @@ mod tests {
             file: PathBuf::from("src/lib.rs"),
             byte_range: 0..10,
             content_hash: ContentHash([0; 32]),
+            signature_hash: ContentHash([0; 32]),
         }
     }
 
@@ -128,6 +129,7 @@ mod tests {
             SemanticOperation::ModifySymbol {
                 file: PathBuf::from("f.rs"),
                 old_hash: ContentHash([0; 32]),
+                old_signature_hash: ContentHash([0; 32]),
                 new_entry: sym("b"),
             },
             SemanticOperation::DeleteSymbol {
