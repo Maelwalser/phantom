@@ -10,6 +10,7 @@ pub mod interactive;
 pub mod log;
 pub mod notify_hook;
 pub mod plan;
+pub mod recover;
 pub mod remove;
 pub mod resolve;
 pub mod resume;

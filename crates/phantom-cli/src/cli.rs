@@ -55,6 +55,8 @@ pub enum Commands {
     /// Roll back a changeset and replay downstream
     #[command(alias = "rb", display_name = "rollback/rb")]
     Rollback(commands::rollback::RollbackArgs),
+    /// Reconcile orphan pre-commit fences after a crashed submit
+    Recover(commands::recover::RecoverArgs),
     /// Query the event log
     #[command(alias = "l", display_name = "log/l")]
     Log(commands::log::LogArgs),

@@ -266,8 +266,21 @@ mod tests {
             MaterializeResult::Success { new_commit, .. } => {
                 assert_ne!(new_commit, base);
                 let events = event_store.events();
-                assert_eq!(events.len(), 1);
+                // Pre-commit fence is appended before the git commit, then
+                // the `ChangesetMaterialized` terminal event. Order matters:
+                // the fence must land first so crash recovery can reconcile.
+                assert_eq!(events.len(), 2, "events: {events:#?}");
                 match &events[0].kind {
+                    EventKind::ChangesetMaterializationStarted { parent, path } => {
+                        assert_eq!(*parent, base);
+                        assert_eq!(
+                            *path,
+                            phantom_core::event::MaterializationPath::Direct
+                        );
+                    }
+                    other => panic!("expected ChangesetMaterializationStarted, got {other:?}"),
+                }
+                match &events[1].kind {
                     EventKind::ChangesetMaterialized { new_commit: nc } => {
                         assert_eq!(*nc, new_commit);
                     }
@@ -309,9 +322,16 @@ mod tests {
             MaterializeResult::Success { new_commit, .. } => {
                 assert_ne!(new_commit, base);
                 let events = event_store.events();
-                assert_eq!(events.len(), 1);
+                assert_eq!(events.len(), 2, "events: {events:#?}");
                 assert!(matches!(
                     &events[0].kind,
+                    EventKind::ChangesetMaterializationStarted {
+                        path: phantom_core::event::MaterializationPath::Merge,
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    &events[1].kind,
                     EventKind::ChangesetMaterialized { .. }
                 ));
             }

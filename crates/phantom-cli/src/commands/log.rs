@@ -268,6 +268,12 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
             };
             format!("merge-checked {{ {status} }}")
         }
+        EventKind::ChangesetMaterializationStarted { parent, path } => {
+            format!(
+                "materialization-started {{ parent: {}, path: {path:?} }}",
+                short_hex(&parent.to_hex())
+            )
+        }
         EventKind::ChangesetMaterialized { new_commit } => {
             format!(
                 "materialized {{ commit: {} }}",
@@ -374,6 +380,7 @@ fn event_kind_label(kind: &phantom_core::EventKind) -> &'static str {
         EventKind::ChangesetSubmitted { .. } | EventKind::ChangesetMaterialized { .. } => {
             "submitted"
         }
+        EventKind::ChangesetMaterializationStarted { .. } => "materializing",
         EventKind::ChangesetMergeChecked { .. } => "merge checked",
         EventKind::ChangesetConflicted { .. } => "conflicted",
         EventKind::ChangesetDropped { .. } => "dropped",

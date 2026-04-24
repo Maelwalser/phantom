@@ -93,14 +93,33 @@ async fn changeset_submitted_failure_leaves_trunk_committed_and_no_event() {
 
     // 3. The event log must NOT contain a `ChangesetSubmitted` event —
     //    that is the entry whose write was faulted.
-    let submitted = events
-        .events()
-        .into_iter()
+    let log = events.events();
+    let submitted = log
+        .iter()
         .filter(|e| matches!(e.kind, EventKind::ChangesetSubmitted { .. }))
         .count();
     assert_eq!(
         submitted, 0,
         "no ChangesetSubmitted event should have been persisted"
+    );
+
+    // 3b. Fence + materialized are both durable: the crash happened *after*
+    //     materialization succeeded, so both the pre-commit fence and the
+    //     materialized terminal must be in the log. This is what recovery
+    //     uses to determine the commit is legitimate audit-wise even though
+    //     `ChangesetSubmitted` is missing.
+    let fence = log
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::ChangesetMaterializationStarted { .. }))
+        .count();
+    let materialized = log
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::ChangesetMaterialized { .. }))
+        .count();
+    assert_eq!(fence, 1, "fence event must be durable after H-ORC2 fault");
+    assert_eq!(
+        materialized, 1,
+        "materialized terminal must be durable after H-ORC2 fault"
     );
 
     // 4. The trunk-advance commit still contains the agent's change,

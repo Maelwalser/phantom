@@ -107,6 +107,11 @@ fn print_overview() {
         "rb",
         "Drop a changeset, revert trunk, flag downstream agents",
     );
+    row(
+        "recover",
+        "",
+        "Reconcile orphan pre-commit fences after a crashed submit",
+    );
     println!();
 
     // Group: Inspection
@@ -209,6 +214,7 @@ async fn main() {
         Some(Commands::Conflicts(args)) => commands::conflicts::run(args).await,
         Some(Commands::Resolve(args)) => commands::resolve::run(args).await,
         Some(Commands::Rollback(args)) => commands::rollback::run(args).await,
+        Some(Commands::Recover(args)) => commands::recover::run(args).await,
         Some(Commands::Log(args)) => commands::log::run(args).await,
         Some(Commands::Changes(args)) => commands::changes::run(args).await,
         Some(Commands::Remove(args)) => commands::remove::run(args).await,

@@ -19,6 +19,6 @@ mod schema_tests;
 pub use error::EventStoreError;
 pub use projection::Projection;
 pub use query::{EventQuery, QueryOrder};
-pub use replay::ReplayEngine;
+pub use replay::{OrphanFence, ReplayEngine};
 pub use snapshot::SnapshotManager;
 pub use store::{EventStoreConfig, SqliteEventStore};

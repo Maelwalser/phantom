@@ -11,6 +11,7 @@ pub mod materialization_service;
 pub mod materializer;
 pub(crate) mod ops;
 pub mod pending_notifications;
+pub mod recovery;
 pub mod ripple;
 pub mod submit_service;
 #[cfg(test)]

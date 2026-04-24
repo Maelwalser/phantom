@@ -6,6 +6,7 @@ use std::path::Path;
 use tracing::{debug, warn};
 
 use phantom_core::changeset::Changeset;
+use phantom_core::event::MaterializationPath;
 use phantom_core::id::GitOid;
 use phantom_core::traits::EventStore;
 
@@ -27,6 +28,18 @@ pub(super) async fn direct_apply(
     event_store: &dyn EventStore,
 ) -> Result<MaterializeResult, OrchestratorError> {
     debug!(changeset = %changeset.id, "direct apply — trunk has not advanced");
+
+    // Pre-commit fence (ghost-commit protocol). Append intent BEFORE any git
+    // write so that a crash between commit and `ChangesetMaterialized` can
+    // be reconciled against trunk HEAD. If the fence append itself fails,
+    // nothing has touched trunk yet — return the error and abort.
+    events::append_materialization_started(
+        event_store,
+        changeset,
+        *head,
+        MaterializationPath::Direct,
+    )
+    .await?;
 
     let file_oids = git::create_blobs_from_overlay(git.repo(), upper_dir)?;
     let new_commit =
