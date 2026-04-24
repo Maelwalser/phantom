@@ -3,9 +3,10 @@
 
 use std::path::Path;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use phantom_core::changeset::Changeset;
+use phantom_core::event::MaterializationPath;
 use phantom_core::id::GitOid;
 use phantom_core::traits::EventStore;
 
@@ -28,16 +29,36 @@ pub(super) async fn direct_apply(
 ) -> Result<MaterializeResult, OrchestratorError> {
     debug!(changeset = %changeset.id, "direct apply — trunk has not advanced");
 
+    // Pre-commit fence (ghost-commit protocol). Append intent BEFORE any git
+    // write so that a crash between commit and `ChangesetMaterialized` can
+    // be reconciled against trunk HEAD. If the fence append itself fails,
+    // nothing has touched trunk yet — return the error and abort.
+    events::append_materialization_started(
+        event_store,
+        changeset,
+        *head,
+        MaterializationPath::Direct,
+    )
+    .await?;
+
     let file_oids = git::create_blobs_from_overlay(git.repo(), upper_dir)?;
     let new_commit =
         commit::commit_from_oids(git, &file_oids, head, message, &changeset.agent_id.0)?;
 
-    // Update working tree to match the new commit (best-effort).
+    // Update working tree to match the new commit. Escalated from debug! to
+    // warn!: the FUSE overlay's lower layer reads from the working tree, so
+    // a diverged tree silently gives subsequent materializations wrong inputs
+    // on the three-way merge path. The commit itself is safe (merges read from
+    // the object DB), but every future `changed_files` / read-through falls
+    // out of sync with HEAD.
     if let Err(e) = git
         .repo()
         .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
     {
-        debug!(error = %e, "checkout_head after direct apply failed (non-fatal)");
+        warn!(
+            error = %e,
+            "checkout_head after direct apply failed; working tree has diverged from HEAD"
+        );
     }
 
     events::finalize_with_rollback(git, event_store, changeset, head, &new_commit).await?;

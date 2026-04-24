@@ -23,13 +23,19 @@ async fn schema_version(pool: &SqlitePool) -> Result<u32, EventStoreError> {
         sqlx::query_as("SELECT value FROM schema_meta WHERE key = 'schema_version'")
             .fetch_one(pool)
             .await?;
-    row.0.parse().map_err(|_| EventStoreError::SchemaMismatch {
-        expected: CURRENT_SCHEMA_VERSION,
-        found: 0,
+    row.0.parse().map_err(|_| EventStoreError::SchemaCorrupted {
+        key: "schema_version".into(),
+        value: row.0.clone(),
     })
 }
 
 /// Run forward migrations up to [`CURRENT_SCHEMA_VERSION`].
+///
+/// Each migration (DDL + version bump) runs inside a SQLite transaction so a
+/// process death between the two statements cannot leave the database in a
+/// state where the DDL has partly applied but the recorded version is stale.
+/// The existing `IF NOT EXISTS` / `add_column_if_missing` guards remain as
+/// defense in depth for migrations that are naturally idempotent.
 pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), EventStoreError> {
     let current = schema_version(pool).await?;
     if current > CURRENT_SCHEMA_VERSION {
@@ -44,11 +50,13 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), EventStoreEr
         .filter(|m| m.version > current)
     {
         tracing::debug!(target: "phantom_events::schema", to = m.version, name = m.name, "applying migration");
-        migrations::apply(m, pool).await?;
+        let mut tx = pool.begin().await?;
+        migrations::apply(m, &mut tx).await?;
         sqlx::query("UPDATE schema_meta SET value = $1 WHERE key = 'schema_version'")
             .bind(m.version.to_string())
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
     }
 
     Ok(())

@@ -3,7 +3,7 @@
 use phantom_core::changeset::ChangesetStatus;
 use phantom_core::event::EventKind;
 use phantom_core::id::AgentId;
-use phantom_events::{Projection, SnapshotManager, SqliteEventStore};
+use phantom_events::{Projection, ReplayEngine, SnapshotManager, SqliteEventStore};
 use phantom_git::GitOps;
 
 use super::run_state::{AgentRunState, format_duration, read_agent_run_state};
@@ -236,6 +236,31 @@ pub(super) async fn run_summary(
                 ui::status_label(cs.status),
             );
         }
+        println!();
+    }
+
+    // Orphan pre-commit fences — trunk and event log disagree about whether
+    // an in-flight submit finished. Informational only; `ph recover`
+    // reconciles.
+    let orphans = ReplayEngine::new(events)
+        .orphan_materialization_fences()
+        .await?;
+    if !orphans.is_empty() {
+        ui::section_header("Orphan materialization fences");
+        for orphan in &orphans {
+            println!(
+                "  {} {:<14} parent {} (fence event {})",
+                console::style("⚠").yellow(),
+                orphan.changeset_id,
+                ui::style_cyan(&orphan.parent.to_hex()[..12.min(orphan.parent.to_hex().len())]),
+                orphan.fence_event_id.0,
+            );
+        }
+        println!(
+            "  {} run `{}` to reconcile",
+            console::style("↳").dim(),
+            console::style("ph recover").bold()
+        );
         println!();
     }
 

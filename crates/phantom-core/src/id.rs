@@ -8,9 +8,58 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// Shared validator for IDs that must be safe as filesystem path components.
+///
+/// Restricted to ASCII alphanumerics, hyphen, and underscore. ASCII-only so
+/// that homograph attacks using Unicode lookalikes cannot impersonate
+/// another ID, and so that non-ASCII bytes cannot surprise downstream tools
+/// that assume byte-safe names.
+fn validate_path_safe_id(kind: &str, s: &str, max_len: usize) -> Result<(), String> {
+    if s.is_empty() {
+        return Err(format!("{kind} must not be empty"));
+    }
+    if s.len() > max_len {
+        return Err(format!("{kind} must be at most {max_len} characters"));
+    }
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(format!(
+            "{kind} may only contain ASCII alphanumeric characters, hyphens, and underscores"
+        ));
+    }
+    if s == "." || s == ".." {
+        return Err(format!("{kind} must not be '.' or '..'"));
+    }
+    Ok(())
+}
+
 /// Unique identifier for a changeset (e.g. `"cs-0042"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct ChangesetId(pub String);
+
+impl ChangesetId {
+    /// Validate that a changeset ID is safe for use as a filesystem/database key.
+    pub fn validate(id: &str) -> Result<Self, String> {
+        validate_path_safe_id("changeset id", id, 128)?;
+        Ok(Self(id.to_string()))
+    }
+}
+
+impl TryFrom<String> for ChangesetId {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::validate(&s)
+    }
+}
+
+impl From<ChangesetId> for String {
+    fn from(id: ChangesetId) -> Self {
+        id.0
+    }
+}
 
 impl fmt::Display for ChangesetId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -20,31 +69,33 @@ impl fmt::Display for ChangesetId {
 
 /// Identifier for an agent (e.g. `"agent-a"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct AgentId(pub String);
 
 impl AgentId {
     /// Validate that an agent name is safe for use as a filesystem path component.
-    /// Only allows alphanumeric characters, hyphens, and underscores. Max 64 chars.
+    ///
+    /// Restricted to **ASCII** alphanumerics, hyphen, and underscore (max 64
+    /// chars). ASCII-only — not Unicode alphanumeric — so that homograph
+    /// attacks using Unicode lookalikes cannot impersonate another agent in
+    /// log output or filesystem paths, and so that non-ASCII agent names
+    /// cannot surprise downstream tools that assume byte-safe names.
     pub fn validate(name: &str) -> Result<Self, String> {
-        if name.is_empty() {
-            return Err("agent name must not be empty".into());
-        }
-        if name.len() > 64 {
-            return Err("agent name must be at most 64 characters".into());
-        }
-        if !name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        {
-            return Err(
-                "agent name may only contain alphanumeric characters, hyphens, and underscores"
-                    .into(),
-            );
-        }
-        if name == "." || name == ".." {
-            return Err("agent name must not be '.' or '..'".into());
-        }
+        validate_path_safe_id("agent name", name, 64)?;
         Ok(Self(name.to_string()))
+    }
+}
+
+impl TryFrom<String> for AgentId {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::validate(&s)
+    }
+}
+
+impl From<AgentId> for String {
+    fn from(id: AgentId) -> Self {
+        id.0
     }
 }
 
@@ -160,7 +211,29 @@ impl fmt::Display for ContentHash {
 
 /// Unique identifier for a plan (e.g. `"plan-20260413-143022"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct PlanId(pub String);
+
+impl PlanId {
+    /// Validate that a plan ID is safe for use as a filesystem path component.
+    pub fn validate(id: &str) -> Result<Self, String> {
+        validate_path_safe_id("plan id", id, 128)?;
+        Ok(Self(id.to_string()))
+    }
+}
+
+impl TryFrom<String> for PlanId {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::validate(&s)
+    }
+}
+
+impl From<PlanId> for String {
+    fn from(id: PlanId) -> Self {
+        id.0
+    }
+}
 
 impl fmt::Display for PlanId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -295,6 +368,20 @@ mod tests {
         assert!(AgentId::validate("agent.name").is_err());
         assert!(AgentId::validate("agent@name").is_err());
         assert!(AgentId::validate("agent name").is_err());
+    }
+
+    #[test]
+    fn agent_id_validate_rejects_unicode_alphanumeric() {
+        // Unicode alphanumeric is a homograph risk in logs and paths.
+        assert!(AgentId::validate("café").is_err());
+        assert!(AgentId::validate("агент").is_err());
+        assert!(AgentId::validate("agent１").is_err());
+    }
+
+    #[test]
+    fn agent_id_validate_rejects_null_and_control_bytes() {
+        assert!(AgentId::validate("agent\0name").is_err());
+        assert!(AgentId::validate("agent\nname").is_err());
     }
 
     #[test]

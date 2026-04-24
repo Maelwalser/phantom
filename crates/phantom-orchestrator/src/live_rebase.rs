@@ -162,22 +162,53 @@ pub fn rebase_agent(
 
 /// Atomically write content to a file in the upper directory.
 ///
-/// Writes to a temporary sibling file, then renames over the target. On Unix,
+/// Writes to a sibling tempfile, then renames over the target. On Unix,
 /// rename within the same filesystem is atomic, preventing partial reads.
+///
+/// The tempfile name includes the PID and a fresh counter so two concurrent
+/// rebases (e.g. across different agents on the same file during a burst)
+/// cannot collide on the tmp path. `target.with_extension(...)` is also
+/// unsafe for extension-less files (it produces `dir/extension/<basename>`),
+/// so we build the name explicitly from the parent directory and filename.
 fn atomic_write_upper(
     upper_dir: &Path,
     rel_path: &Path,
     content: &[u8],
 ) -> Result<(), OrchestratorError> {
-    let target = upper_dir.join(rel_path);
-    let tmp = target.with_extension("phantom-rebase-tmp");
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let target = upper_dir.join(rel_path);
+    let parent = target.parent().ok_or_else(|| {
+        OrchestratorError::LiveRebase(format!(
+            "live_rebase target has no parent directory: {}",
+            target.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent)?;
+
+    let filename = target
+        .file_name()
+        .ok_or_else(|| {
+            OrchestratorError::LiveRebase(format!(
+                "live_rebase target has no file name: {}",
+                target.display()
+            ))
+        })?
+        .to_string_lossy()
+        .into_owned();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = parent.join(format!(
+        ".{filename}.phantom-rebase.{}.{seq}.tmp",
+        std::process::id(),
+    ));
 
     std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, &target)?;
+    if let Err(e) = std::fs::rename(&tmp, &target) {
+        // Best-effort cleanup so a rename failure does not leak a tmp file.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(OrchestratorError::Io(e));
+    }
 
     Ok(())
 }
@@ -243,8 +274,16 @@ pub fn write_current_base(
     let path = dir.join("current_base");
     let tmp = dir.join("current_base.tmp");
 
-    std::fs::write(&tmp, base.to_hex())?;
-    std::fs::rename(&tmp, &path)?;
+    if let Err(e) = std::fs::write(&tmp, base.to_hex()) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(OrchestratorError::Io(e));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        // Rename failed — clean up the orphan tmp so future writes don't
+        // see a stale `.tmp` that could confuse manual recovery.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(OrchestratorError::Io(e));
+    }
 
     Ok(())
 }

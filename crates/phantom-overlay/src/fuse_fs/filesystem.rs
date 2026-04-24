@@ -17,12 +17,48 @@ use fuser::{
 use phantom_core::AgentId;
 use tracing::{debug, warn};
 
+use crate::error::OverlayError;
 use crate::inode_table::InodeTable;
 use crate::layer::OverlayLayer;
 
 use super::attr::{TTL, default_dir_attr, metadata_to_attr};
 use super::config::FsConfig;
 use super::handles::{DirSnapshot, OpenFile};
+
+/// Translate an [`OverlayError`] to the closest-matching `errno` value
+/// reported back to the kernel. Preserves the distinction between
+/// "this file does not exist" (ENOENT) and "an I/O error occurred"
+/// (EIO) so that tools running inside the overlay see real failures
+/// rather than a spurious file-not-found.
+fn err_to_errno(err: &OverlayError) -> Errno {
+    match err {
+        OverlayError::PathNotFound(_)
+        | OverlayError::InodeNotFound(_)
+        | OverlayError::NotFound(_) => Errno::ENOENT,
+        OverlayError::ReservedPath(_) => Errno::EACCES,
+        OverlayError::AlreadyExists(_) => Errno::EEXIST,
+        OverlayError::Io(e) => io_err_to_errno(e),
+        OverlayError::Fuse(_) | OverlayError::Serialization(_) => Errno::EIO,
+    }
+}
+
+fn io_err_to_errno(err: &std::io::Error) -> Errno {
+    use std::io::ErrorKind;
+    match err.kind() {
+        ErrorKind::NotFound => Errno::ENOENT,
+        ErrorKind::PermissionDenied => Errno::EACCES,
+        ErrorKind::AlreadyExists => Errno::EEXIST,
+        ErrorKind::InvalidInput | ErrorKind::InvalidData => Errno::EINVAL,
+        ErrorKind::UnexpectedEof => Errno::EIO,
+        _ => {
+            if let Some(code) = err.raw_os_error() {
+                Errno::from_i32(code)
+            } else {
+                Errno::EIO
+            }
+        }
+    }
+}
 
 /// FUSE filesystem backed by an [`OverlayLayer`].
 ///
@@ -101,8 +137,15 @@ impl Filesystem for PhantomFs {
                 let attr = metadata_to_attr(ino, &meta, &self.config);
                 reply.entry(&TTL, &attr, Generation(0));
             }
-            Err(_) => {
-                reply.error(Errno::ENOENT);
+            Err(e) => {
+                // Map the concrete error — a real I/O failure must not be
+                // flattened to ENOENT, or tools running inside the overlay
+                // see "file not found" for things they can't read/write.
+                let is_not_found = matches!(&e, OverlayError::PathNotFound(_));
+                if !is_not_found {
+                    warn!(path = %child_path.display(), error = %e, "lookup: non-ENOENT error from overlay");
+                }
+                reply.error(err_to_errno(&e));
             }
         }
     }
@@ -344,7 +387,14 @@ impl Filesystem for PhantomFs {
         }
 
         // Extend file if writing past current end (creates a sparse hole).
-        let write_end = offset + data.len() as u64;
+        // Use checked_add to avoid a silent wraparound when a malicious or
+        // malfunctioning client supplies an offset close to u64::MAX —
+        // otherwise `set_len` would truncate the file to a tiny size and
+        // then the `write_at` below would fail, producing silent data loss.
+        let Some(write_end) = offset.checked_add(data.len() as u64) else {
+            reply.error(Errno::EFBIG);
+            return;
+        };
         if let Ok(meta) = open_file.file.metadata()
             && write_end > meta.len()
             && let Err(e) = open_file.file.set_len(write_end)
@@ -370,7 +420,7 @@ impl Filesystem for PhantomFs {
         name: &OsStr,
         mode: u32,
         _umask: u32,
-        _flags: i32,
+        flags: i32,
         reply: ReplyCreate,
     ) {
         let Some(parent_path) = self.inodes.get_path(parent.0) else {
@@ -379,6 +429,16 @@ impl Filesystem for PhantomFs {
         };
 
         let child_path = parent_path.join(name);
+
+        // Honor O_EXCL: if the file already exists in either layer, the
+        // kernel expects us to return EEXIST rather than silently truncating.
+        // Without this check `write_file(..., &[])` zero-truncates the
+        // existing file — which breaks lockfile-style atomic-create patterns
+        // used by tempfile crates, editors, and build tools.
+        if flags & libc::O_EXCL != 0 && self.layer.exists(&child_path) {
+            reply.error(Errno::EEXIST);
+            return;
+        }
 
         match self.layer.write_file(&child_path, &[]) {
             Ok(()) => {
@@ -540,6 +600,16 @@ impl Filesystem for PhantomFs {
 
         let child_path = parent_path.join(name);
 
+        // Reject reserved paths (e.g. `.phantom`, `.whiteouts.json`) before
+        // touching the filesystem. Without this guard, `mkdir(".phantom")`
+        // would create a directory in the upper layer that then contaminates
+        // the changeset listing and confuses the orchestrator.
+        if let Some(_kind) = phantom_core::reserved::is_reserved_path(&child_path) {
+            warn!(path = %child_path.display(), "mkdir of reserved path rejected");
+            reply.error(Errno::EACCES);
+            return;
+        }
+
         // Passthrough paths create directories directly in the lower layer.
         let target_path = if self.layer.is_passthrough(&child_path) {
             self.layer.lower_dir().join(&child_path)
@@ -662,8 +732,15 @@ impl Filesystem for PhantomFs {
             return;
         }
 
-        // Write whiteout to hide any lower-layer copy.
-        let _ = self.layer.delete_file(&child_path);
+        // Write whiteout to hide any lower-layer copy. If persist fails
+        // (disk full, perm denied, serialization error), the on-disk
+        // whiteouts.json is stale: after a restart the deleted directory
+        // would reappear. Do not claim success to the kernel in that case.
+        if let Err(e) = self.layer.delete_file(&child_path) {
+            warn!(error = %e, "rmdir: failed to persist whiteout");
+            reply.error(Errno::EIO);
+            return;
+        }
         self.inodes.unlink(&child_path);
         reply.ok();
     }

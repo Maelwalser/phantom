@@ -102,20 +102,35 @@ fn read_symlink_hides_unsafe_on_disk_target() {
     drop(err);
 }
 
+/// Serializes tests that mutate `PHANTOM_PERMIT_ABSOLUTE_SYMLINKS` so they
+/// cannot race against each other (cargo runs tests in parallel by default).
+static SYMLINK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
+#[allow(unsafe_code)] // test-only env manipulation
 fn read_symlink_passes_through_absolute_target_in_lower_layer() {
-    // Plant a symlink with an absolute target in the lower layer (the user's
-    // real working tree). This mirrors how `uv venv`, `python -m venv`, and
-    // similar tools create `.venv/bin/python` pointing at the system Python.
+    let _guard = SYMLINK_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (lower, upper) = setup();
     std::os::unix::fs::symlink("/usr/bin/env", lower.path().join("python")).unwrap();
-
     let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
+    // SAFETY: test-only environment manipulation under a global mutex.
+    unsafe { std::env::remove_var("PHANTOM_PERMIT_ABSOLUTE_SYMLINKS") };
+    let err = layer
+        .read_symlink(Path::new("python"))
+        .expect_err("absolute lower-layer symlink must be rejected by default");
+    drop(err);
+
+    // SAFETY: test-only environment manipulation under a global mutex.
+    unsafe { std::env::set_var("PHANTOM_PERMIT_ABSOLUTE_SYMLINKS", "1") };
     let target = layer
         .read_symlink(Path::new("python"))
-        .expect("absolute lower-layer symlink target must be exposed verbatim");
+        .expect("permit flag should let absolute target through");
     assert_eq!(target, Path::new("/usr/bin/env"));
+    // SAFETY: test-only environment manipulation under a global mutex.
+    unsafe { std::env::remove_var("PHANTOM_PERMIT_ABSOLUTE_SYMLINKS") };
 }
 
 #[test]
@@ -133,9 +148,11 @@ fn read_symlink_passes_through_parent_escape_in_lower_layer() {
 }
 
 #[test]
+#[allow(unsafe_code)] // test-only env manipulation
 fn read_symlink_exposes_venv_python_layout_from_lower_layer() {
-    // End-to-end shape of the Python venv case that motivated this fix:
-    // `.venv/bin/python` pointing at an absolute interpreter path.
+    let _guard = SYMLINK_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (lower, upper) = setup();
     std::fs::create_dir_all(lower.path().join(".venv/bin")).unwrap();
     std::os::unix::fs::symlink("/usr/bin/env", lower.path().join(".venv/bin/python")).unwrap();
@@ -143,6 +160,8 @@ fn read_symlink_exposes_venv_python_layout_from_lower_layer() {
 
     let layer = OverlayLayer::new(lower.path().to_path_buf(), upper.path().to_path_buf()).unwrap();
 
+    // SAFETY: test-only environment manipulation under a global mutex.
+    unsafe { std::env::set_var("PHANTOM_PERMIT_ABSOLUTE_SYMLINKS", "1") };
     assert_eq!(
         layer.read_symlink(Path::new(".venv/bin/python")).unwrap(),
         Path::new("/usr/bin/env"),
@@ -151,6 +170,8 @@ fn read_symlink_exposes_venv_python_layout_from_lower_layer() {
         layer.read_symlink(Path::new(".venv/bin/python3")).unwrap(),
         Path::new("python"),
     );
+    // SAFETY: test-only environment manipulation under a global mutex.
+    unsafe { std::env::remove_var("PHANTOM_PERMIT_ABSOLUTE_SYMLINKS") };
 }
 
 #[test]

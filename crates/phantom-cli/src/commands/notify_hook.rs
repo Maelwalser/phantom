@@ -86,7 +86,10 @@ pub fn run(args: &NotifyHookArgs) -> anyhow::Result<()> {
             return Ok(());
         }
     };
-    let agent_id = AgentId(args.agent.clone());
+    // Validate the agent name: the hook is user-reachable and the agent id
+    // flows into filesystem paths under .phantom/ and into log output.
+    let agent_id = AgentId::validate(&args.agent)
+        .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {}", args.agent, e))?;
     trace_invocation(Some(&ctx.phantom_dir), &args.agent, &args.event, "invoked");
     emit_hook_output(
         &ctx.phantom_dir,
@@ -101,13 +104,23 @@ pub fn run(args: &NotifyHookArgs) -> anyhow::Result<()> {
 /// so we can tell at a glance whether Claude's hook runner is calling us —
 /// essential when debugging an end-to-end demo. Zero impact on the hot path.
 fn trace_invocation(phantom_dir: Option<&std::path::Path>, agent: &str, event: &str, note: &str) {
+    // When we have a Phantom context, write alongside it. Otherwise, use a
+    // per-user location under $XDG_RUNTIME_DIR (or $HOME) so that a world-
+    // writable `/tmp` target cannot be pre-created by another user as a
+    // symlink to a sensitive path (TOCTOU on first append).
     let log_path = match phantom_dir {
         Some(p) => p.join("notify-hook.log"),
-        None => std::path::PathBuf::from("/tmp/phantom-notify-hook.log"),
+        None => user_runtime_dir().join("phantom-notify-hook.log"),
     };
     let ts = chrono::Utc::now().to_rfc3339();
     let line = format!("{ts} agent={agent} event={event} {note}\n");
-    // Best effort: if we cannot log, we still want to proceed.
+    // Open with O_NOFOLLOW semantics where possible: create exclusively if
+    // missing, otherwise append. If the file exists but is a symlink, refuse.
+    if let Ok(meta) = std::fs::symlink_metadata(&log_path)
+        && meta.file_type().is_symlink()
+    {
+        return;
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -116,6 +129,20 @@ fn trace_invocation(phantom_dir: Option<&std::path::Path>, agent: &str, event: &
         use std::io::Write;
         let _ = f.write_all(line.as_bytes());
     }
+}
+
+fn user_runtime_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR")
+        && !dir.is_empty()
+    {
+        return std::path::PathBuf::from(dir);
+    }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        return std::path::PathBuf::from(home);
+    }
+    std::env::temp_dir()
 }
 
 /// Core logic, split for unit-testing with an injected writer.

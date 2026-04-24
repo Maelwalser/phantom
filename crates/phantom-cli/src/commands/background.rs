@@ -447,9 +447,21 @@ fn collect_background_agents(phantom_dir: &Path, agents: &mut Vec<AgentId>) {
                     || dir.join("waiting.json").exists()
                     || dir.join("monitor.pid").exists();
                 if is_background {
-                    let id = AgentId(name.to_string());
-                    if !agents.contains(&id) {
-                        agents.push(id);
+                    // Directory names come from disk — validate before use as
+                    // an AgentId so a crafted dir name cannot traverse paths.
+                    match AgentId::validate(name) {
+                        Ok(id) => {
+                            if !agents.contains(&id) {
+                                agents.push(id);
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                dir = %dir.display(),
+                                %err,
+                                "skipping overlay dir with invalid agent name",
+                            );
+                        }
                     }
                 }
             }

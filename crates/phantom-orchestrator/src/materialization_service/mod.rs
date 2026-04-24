@@ -95,10 +95,19 @@ pub async fn materialize_and_ripple(
 
     // Look up the ChangesetMaterialized event ID so LiveRebased events
     // can reference it as their causal_parent (cross-changeset DAG edge).
+    // Transient query failures must not silently produce root-linked events;
+    // propagate so the caller can retry the ripple phase.
     let trigger_event_id = events
         .latest_event_for_changeset(&changeset.id)
         .await
-        .unwrap_or(None);
+        .map_err(|e| {
+            tracing::warn!(
+                error = %e,
+                changeset = %changeset.id.0,
+                "causal parent query failed during ripple setup"
+            );
+            OrchestratorError::EventStore(e.to_string())
+        })?;
 
     let head = materializer.git().head_oid()?;
     let changed_files = materializer

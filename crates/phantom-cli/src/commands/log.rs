@@ -83,9 +83,19 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
     let since = args.since.as_deref().map(parse_duration_ago).transpose()?;
 
     // Auto-detect whether the positional filter is an agent or changeset.
+    // Both values flow into SQL and log output — validate to reject crafted
+    // names (path traversal, control bytes, etc.).
     let (agent_id, changeset_id) = match &args.filter {
-        Some(f) if f.starts_with("cs-") => (None, Some(ChangesetId(f.clone()))),
-        Some(f) => (Some(AgentId(f.clone())), None),
+        Some(f) if f.starts_with("cs-") => {
+            let cs = ChangesetId::validate(f)
+                .map_err(|e| anyhow::anyhow!("invalid changeset id '{f}': {e}"))?;
+            (None, Some(cs))
+        }
+        Some(f) => {
+            let agent = AgentId::validate(f)
+                .map_err(|e| anyhow::anyhow!("invalid agent name '{f}': {e}"))?;
+            (Some(agent), None)
+        }
         None => (None, None),
     };
 
@@ -258,6 +268,12 @@ fn format_event_kind(kind: &phantom_core::EventKind) -> String {
             };
             format!("merge-checked {{ {status} }}")
         }
+        EventKind::ChangesetMaterializationStarted { parent, path } => {
+            format!(
+                "materialization-started {{ parent: {}, path: {path:?} }}",
+                short_hex(&parent.to_hex())
+            )
+        }
         EventKind::ChangesetMaterialized { new_commit } => {
             format!(
                 "materialized {{ commit: {} }}",
@@ -364,6 +380,7 @@ fn event_kind_label(kind: &phantom_core::EventKind) -> &'static str {
         EventKind::ChangesetSubmitted { .. } | EventKind::ChangesetMaterialized { .. } => {
             "submitted"
         }
+        EventKind::ChangesetMaterializationStarted { .. } => "materializing",
         EventKind::ChangesetMergeChecked { .. } => "merge checked",
         EventKind::ChangesetConflicted { .. } => "conflicted",
         EventKind::ChangesetDropped { .. } => "dropped",

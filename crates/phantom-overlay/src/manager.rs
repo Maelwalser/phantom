@@ -95,7 +95,10 @@ impl OverlayManager {
     /// point. The caller (CLI) is responsible for unmounting first; if they
     /// did not, we fail loud rather than destroy the user's VCS.
     pub fn destroy_overlay(&mut self, agent_id: &AgentId) -> Result<(), OverlayError> {
-        if self.active_overlays.remove(agent_id).is_none() {
+        // Look up without removing so that if we bail out (mount still
+        // active, etc.) the caller's next retry can still find the overlay
+        // tracked in `active_overlays`.
+        if !self.active_overlays.contains_key(agent_id) {
             return Err(OverlayError::NotFound(agent_id.clone()));
         }
 
@@ -103,11 +106,8 @@ impl OverlayManager {
         let mount_point = overlay_root.join("mount");
 
         if is_fuse_mount_point(&mount_point) {
-            // Reinsert a minimal handle so the caller can retry after unmount
-            // without losing track of the overlay's existence. The handle is
-            // not reused beyond a `NotFound` check, so constructing a fresh
-            // layer would be wasteful — insert nothing and let the caller
-            // re-open via `restore_overlays` if they retry.
+            // Mount still active — refuse and keep the handle in place so
+            // the caller can unmount and retry.
             return Err(OverlayError::Io(std::io::Error::new(
                 std::io::ErrorKind::ResourceBusy,
                 format!(
@@ -119,6 +119,9 @@ impl OverlayManager {
                 ),
             )));
         }
+
+        // Mount is clean — safe to drop the handle.
+        self.active_overlays.remove(agent_id);
 
         if overlay_root.exists() {
             // Even with the mount check above, extra defense: skip the mount
@@ -159,7 +162,22 @@ impl OverlayManager {
             if let Some(name) = entry.file_name().to_str()
                 && entry.path().join("upper").is_dir()
             {
-                agents.push(AgentId(name.to_string()));
+                // Reject directory names that are not valid agent IDs.
+                // Without this filter, a directory named `../escape` or
+                // containing null bytes (injected via a rogue git submodule,
+                // manual mkdir, or a compromised .phantom/ checkout) would
+                // flow into path joining, log messages, and the embedded
+                // hook command string.
+                match AgentId::validate(name) {
+                    Ok(id) => agents.push(id),
+                    Err(e) => {
+                        tracing::warn!(
+                            dir_name = %name,
+                            error = %e,
+                            "ignoring overlay directory with invalid agent name"
+                        );
+                    }
+                }
             }
         }
         Ok(agents)

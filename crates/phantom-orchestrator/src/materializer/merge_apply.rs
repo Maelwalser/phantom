@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
 use phantom_core::changeset::Changeset;
+use phantom_core::event::MaterializationPath;
 use phantom_core::id::GitOid;
 use phantom_core::traits::{EventStore, SemanticAnalyzer};
 
@@ -117,6 +118,18 @@ pub(super) async fn merge_apply(
         });
     }
 
+    // Pre-commit fence (ghost-commit protocol). Only emitted on the merge
+    // path once we've decided a commit is actually going to happen — emitting
+    // before conflict detection would flood the log with fences the recovery
+    // pass then has to correlate with conflict terminals.
+    events::append_materialization_started(
+        ctx.event_store,
+        changeset,
+        *ctx.head,
+        MaterializationPath::Merge,
+    )
+    .await?;
+
     let merged_oids = git::create_blobs_from_content(git.repo(), &merged_files)?;
     let new_commit = commit::commit_from_oids_with_deletions(
         git,
@@ -127,11 +140,17 @@ pub(super) async fn merge_apply(
         &changeset.agent_id.0,
     )?;
 
+    // Escalated from debug! to warn!: the FUSE overlay's lower layer reads
+    // from the working tree. Failing to refresh it leaves subsequent
+    // materializations comparing changesets against stale file content.
     if let Err(e) = git
         .repo()
         .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
     {
-        debug!(error = %e, "checkout_head after merge commit failed (non-fatal)");
+        warn!(
+            error = %e,
+            "checkout_head after merge commit failed; working tree has diverged from HEAD"
+        );
     }
 
     if !text_fallback_files.is_empty() {

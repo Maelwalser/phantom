@@ -122,35 +122,33 @@ pub fn write_resolve_context_file(
 
     let parser = phantom_semantic::Parser::new();
     let mut content = String::new();
-    writeln!(content, "# Phantom Conflict Resolution").unwrap();
-    writeln!(content).unwrap();
-    writeln!(
+    let _ = writeln!(content, "# Phantom Conflict Resolution");
+    let _ = writeln!(content);
+    let _ = writeln!(
         content,
         "You are resolving merge conflicts in a Phantom overlay. Your changes are"
-    )
-    .unwrap();
-    writeln!(content, "isolated from trunk and other agents.").unwrap();
-    writeln!(content).unwrap();
-    writeln!(content, "## Agent Info").unwrap();
-    writeln!(content, "- Agent: {agent_id}").unwrap();
-    writeln!(content, "- Changeset: {changeset_id}").unwrap();
-    writeln!(content, "- Base commit: {base_short}").unwrap();
-    writeln!(content).unwrap();
-    writeln!(content, "## Conflicts").unwrap();
+    );
+    let _ = writeln!(content, "isolated from trunk and other agents.");
+    let _ = writeln!(content);
+    let _ = writeln!(content, "## Agent Info");
+    let _ = writeln!(content, "- Agent: {agent_id}");
+    let _ = writeln!(content, "- Changeset: {changeset_id}");
+    let _ = writeln!(content, "- Base commit: {base_short}");
+    let _ = writeln!(content);
+    let _ = writeln!(content, "## Conflicts");
 
     for (i, conflict) in conflicts.iter().enumerate() {
-        writeln!(content).unwrap();
+        let _ = writeln!(content);
         let kind_label = format_conflict_kind(conflict.detail.kind);
-        writeln!(
+        let _ = writeln!(
             content,
             "### Conflict {}: {} [{}]",
             i + 1,
             conflict.detail.file.display(),
             kind_label
-        )
-        .unwrap();
-        writeln!(content, "{}", conflict.detail.description).unwrap();
-        writeln!(content).unwrap();
+        );
+        let _ = writeln!(content, "{}", conflict.detail.description);
+        let _ = writeln!(content);
 
         let lang = lang_from_path(&conflict.detail.file);
         let ctx = FormatCtx {
@@ -161,13 +159,12 @@ pub fn write_resolve_context_file(
         };
         dispatch(&mut content, &ctx);
 
-        writeln!(
+        let _ = writeln!(
             content,
             "Edit this file in your working directory to merge both changes."
-        )
-        .unwrap();
-        writeln!(content).unwrap();
-        writeln!(content, "---").unwrap();
+        );
+        let _ = writeln!(content);
+        let _ = writeln!(content, "---");
     }
 
     let filename = match group_index {

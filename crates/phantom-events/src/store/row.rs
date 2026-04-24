@@ -65,7 +65,7 @@ pub(crate) fn row_to_event(row: &SqliteRow) -> Result<Event, EventStoreError> {
 ///
 /// `INTEGER PRIMARY KEY AUTOINCREMENT` is monotonically increasing from 1,
 /// so a negative value on read indicates database corruption or tampering.
-pub(super) fn checked_id(raw: i64, column: &str) -> Result<u64, EventStoreError> {
+pub(crate) fn checked_id(raw: i64, column: &str) -> Result<u64, EventStoreError> {
     u64::try_from(raw).map_err(|_| {
         EventStoreError::CorruptedRow(format!("column '{column}' contains negative value {raw}"))
     })

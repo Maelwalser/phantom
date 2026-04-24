@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use tracing::warn;
+use tracing::{error, warn};
 
 use phantom_core::changeset::SemanticOperation;
 use phantom_core::id::{AgentId, GitOid};
@@ -32,8 +32,16 @@ pub(super) fn write_notification_and_base(
     if let Err(e) = ripple::write_trunk_notification(phantom_dir, agent_id, &notif) {
         warn!(%agent_id, error = %e, "failed to write notification");
     }
+    // Persisting current_base is essential: the agent has been notified that
+    // trunk moved, and future ripples will three-way-merge against the stored
+    // base. If write fails, the agent's base tracking is inconsistent with
+    // reality — escalate to error so operators can investigate.
     if let Err(e) = live_rebase::write_current_base(phantom_dir, agent_id, &head) {
-        warn!(%agent_id, error = %e, "failed to update current_base");
+        error!(
+            %agent_id,
+            error = %e,
+            "failed to update current_base after trunk notification; agent base tracking is now inconsistent"
+        );
     }
 }
 

@@ -2,11 +2,11 @@
 //! consistency via HEAD rollback on event store failures (C6).
 
 use chrono::Utc;
-use tracing::error;
+use tracing::{error, warn};
 
 use phantom_core::changeset::Changeset;
 use phantom_core::conflict::ConflictDetail;
-use phantom_core::event::{Event, EventKind};
+use phantom_core::event::{Event, EventKind, MaterializationPath};
 use phantom_core::id::{EventId, GitOid};
 use phantom_core::traits::EventStore;
 
@@ -46,6 +46,40 @@ pub(super) async fn finalize_with_rollback(
     }
 }
 
+/// Append a `ChangesetMaterializationStarted` (pre-commit fence) event.
+///
+/// Must be called **before** any git write. On recovery, fence events with
+/// no subsequent terminal event are reconciled against trunk HEAD — so the
+/// intent record has to be durable before the effect it describes. If this
+/// append fails, return the error and abort materialization; nothing has
+/// touched trunk yet.
+pub(super) async fn append_materialization_started(
+    event_store: &dyn EventStore,
+    changeset: &Changeset,
+    parent: GitOid,
+    path: MaterializationPath,
+) -> Result<EventId, OrchestratorError> {
+    let causal_parent = event_store
+        .latest_event_for_changeset(&changeset.id)
+        .await
+        .map_err(|e| {
+            warn!(error = %e, changeset = %changeset.id.0, "causal parent query failed");
+            OrchestratorError::EventStore(e.to_string())
+        })?;
+    let event = Event {
+        id: EventId(0),
+        timestamp: Utc::now(),
+        changeset_id: changeset.id.clone(),
+        agent_id: changeset.agent_id.clone(),
+        causal_parent,
+        kind: EventKind::ChangesetMaterializationStarted { parent, path },
+    };
+    event_store
+        .append(event)
+        .await
+        .map_err(|e| OrchestratorError::EventStore(e.to_string()))
+}
+
 /// Append a `ChangesetMaterialized` event to the store.
 ///
 /// Returns the assigned `EventId` so callers can use it as the `causal_parent`
@@ -55,10 +89,15 @@ pub(super) async fn append_materialized_event(
     changeset: &Changeset,
     new_commit: &GitOid,
 ) -> Result<EventId, OrchestratorError> {
+    // Propagate causal-parent query failures: writing a root-linked event on a
+    // transient DB error silently breaks the causal DAG used by rollback.
     let causal_parent = event_store
         .latest_event_for_changeset(&changeset.id)
         .await
-        .unwrap_or(None);
+        .map_err(|e| {
+            warn!(error = %e, changeset = %changeset.id.0, "causal parent query failed");
+            OrchestratorError::EventStore(e.to_string())
+        })?;
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
@@ -84,7 +123,10 @@ pub(super) async fn append_conflicted_event(
     let causal_parent = event_store
         .latest_event_for_changeset(&changeset.id)
         .await
-        .unwrap_or(None);
+        .map_err(|e| {
+            warn!(error = %e, changeset = %changeset.id.0, "causal parent query failed");
+            OrchestratorError::EventStore(e.to_string())
+        })?;
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),

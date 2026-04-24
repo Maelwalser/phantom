@@ -79,19 +79,37 @@ pub fn classify_trunk_changes(
 
 /// Write a trunk notification file for an agent.
 ///
-/// The file is written to `.phantom/overlays/<agent>/trunk-updated.json`.
+/// The file is written atomically to
+/// `.phantom/overlays/<agent>/trunk-updated.json` using a write-then-rename
+/// pattern. A crash mid-write leaves either the previous notification or
+/// the new one — never a truncated or empty file that the agent would
+/// either mis-parse or silently ignore.
 pub fn write_trunk_notification(
     phantom_dir: &Path,
     agent_id: &AgentId,
     notification: &TrunkNotification,
 ) -> std::io::Result<()> {
-    let path = phantom_dir
-        .join("overlays")
-        .join(&agent_id.0)
-        .join("trunk-updated.json");
+    let dir = phantom_dir.join("overlays").join(&agent_id.0);
+    let path = dir.join("trunk-updated.json");
     let json = serde_json::to_string_pretty(notification).map_err(std::io::Error::other)?;
-    std::fs::write(path, json)
+    let tmp = dir.join(format!(
+        "trunk-updated.json.tmp.{}.{}",
+        std::process::id(),
+        NOTIFICATION_SEQ.fetch_add(1, Ordering::Relaxed),
+    ));
+    if let Err(e) = std::fs::write(&tmp, json) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
+
+static NOTIFICATION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+use std::sync::atomic::Ordering;
 
 /// Remove a stale trunk notification file if it exists.
 pub fn remove_trunk_notification(phantom_dir: &Path, agent_id: &AgentId) {

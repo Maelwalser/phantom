@@ -100,11 +100,17 @@ impl CliAdapter for ClaudeAdapter {
 
     fn extract_session_id(&self, output_tail: &str) -> Option<String> {
         // Claude Code prints: "claude --resume <UUID>" near the end of output.
-        // RFC 4122 permits either case, so match both.
-        let re = Regex::new(
-            r"(?i)claude --resume ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
-        )
-        .ok()?;
+        // RFC 4122 permits either case, so match both. Compile once — the
+        // regex crate explicitly warns against re-compiling in hot paths and
+        // a lazy static keeps future callers safe even if the rate changes.
+        use std::sync::OnceLock;
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE.get_or_init(|| {
+            Regex::new(
+                r"(?i)claude --resume ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+            )
+            .expect("claude session id regex is a compile-time constant")
+        });
         re.captures(output_tail)
             .and_then(|caps| caps.get(1))
             .map(|m| m.as_str().to_string())

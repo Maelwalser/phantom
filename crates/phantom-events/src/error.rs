@@ -26,6 +26,15 @@ pub enum EventStoreError {
         found: u32,
     },
 
+    /// A value in the `schema_meta` table could not be parsed.
+    #[error("schema metadata '{key}' has invalid value '{value}'")]
+    SchemaCorrupted {
+        /// The key whose value failed to parse.
+        key: String,
+        /// The raw value read from the database.
+        value: String,
+    },
+
     /// A projection snapshot could not be deserialized or serialized.
     #[error("snapshot corrupted: {0}")]
     SnapshotCorrupted(String),

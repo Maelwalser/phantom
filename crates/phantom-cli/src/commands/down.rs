@@ -136,7 +136,9 @@ pub fn run(args: &DownArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// List agent directory names under `.phantom/overlays/`.
+/// List agent directory names under `.phantom/overlays/`, rejecting
+/// entries whose names are not valid agent ids (they would otherwise flow
+/// into path joins during teardown and SIGTERM delivery).
 fn list_agent_dirs(overlays_dir: &Path) -> Vec<String> {
     let mut agents = Vec::new();
     let Ok(entries) = std::fs::read_dir(overlays_dir) else {
@@ -146,7 +148,14 @@ fn list_agent_dirs(overlays_dir: &Path) -> Vec<String> {
         if entry.file_type().is_ok_and(|ft| ft.is_dir())
             && let Some(name) = entry.file_name().to_str()
         {
-            agents.push(name.to_string());
+            if phantom_core::AgentId::validate(name).is_ok() {
+                agents.push(name.to_string());
+            } else {
+                tracing::warn!(
+                    dir = %entry.path().display(),
+                    "skipping overlay dir with invalid agent name during teardown",
+                );
+            }
         }
     }
     agents.sort();

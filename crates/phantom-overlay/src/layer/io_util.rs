@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing::warn;
 
@@ -9,14 +10,27 @@ use crate::error::OverlayError;
 
 use super::OverlayLayer;
 
+/// Monotonically increasing counter so concurrent `atomic_write` calls
+/// inside the same process never pick the same temporary filename.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// Atomically write `data` to `target` via a temporary sibling file.
 ///
 /// On Unix, `rename` within the same filesystem is atomic, so readers never
-/// see a partially-written file.
+/// see a partially-written file. The temp filename embeds both the PID and
+/// a process-local sequence number so concurrent FUSE operations inside the
+/// same daemon cannot race on a shared temp path.
 pub(super) fn atomic_write(target: &Path, data: &[u8]) -> Result<(), OverlayError> {
-    let tmp = target.with_extension(format!("tmp.{}", std::process::id()));
-    fs::write(&tmp, data)?;
-    fs::rename(&tmp, target)?;
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = target.with_extension(format!("tmp.{}.{}", std::process::id(), seq));
+    if let Err(e) = fs::write(&tmp, data) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    if let Err(e) = fs::rename(&tmp, target) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 

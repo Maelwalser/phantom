@@ -51,6 +51,21 @@ pub enum EventKind {
         /// Whether the merge was clean or conflicted.
         result: MergeCheckResult,
     },
+    /// Pre-commit fence: the materializer is about to commit this changeset
+    /// to trunk. Written *before* any git write so that a crash between fence
+    /// and terminal event (`ChangesetMaterialized` / `ChangesetConflicted` /
+    /// `ChangesetDropped`) can be reconciled against git HEAD at recovery
+    /// time. Never changes changeset state on its own.
+    ChangesetMaterializationStarted {
+        /// Trunk HEAD the materializer intends to commit on top of. If
+        /// recovery finds a matching commit whose parent is this OID, it
+        /// reconstructs the missing `ChangesetMaterialized`; otherwise the
+        /// attempt is treated as aborted.
+        parent: GitOid,
+        /// Which apply path is running — informational, lets recovery log
+        /// which branch emitted the fence.
+        path: MaterializationPath,
+    },
     /// The changeset was materialized (committed to trunk).
     ChangesetMaterialized {
         /// The new trunk commit OID.
@@ -150,6 +165,19 @@ pub enum EventKind {
     Unknown,
 }
 
+/// Which apply path was running when a [`EventKind::ChangesetMaterializationStarted`]
+/// fence was emitted. Recovery uses this only to label reconstructed events;
+/// both paths reconcile the same way (compare `parent` against `HEAD^`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MaterializationPath {
+    /// Fast path: trunk had not advanced since the changeset's base, so the
+    /// overlay was committed directly without a three-way merge.
+    Direct,
+    /// Slow path: trunk advanced, so a per-file semantic merge ran before
+    /// the commit.
+    Merge,
+}
+
 /// An immutable record of something that happened in Phantom.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
@@ -218,6 +246,14 @@ mod tests {
             EventKind::ChangesetSubmitted { operations: vec![] },
             EventKind::ChangesetMergeChecked {
                 result: MergeCheckResult::Clean,
+            },
+            EventKind::ChangesetMaterializationStarted {
+                parent: GitOid::zero(),
+                path: MaterializationPath::Direct,
+            },
+            EventKind::ChangesetMaterializationStarted {
+                parent: GitOid::from_bytes([7; 20]),
+                path: MaterializationPath::Merge,
             },
             EventKind::ChangesetMaterialized {
                 new_commit: GitOid::zero(),

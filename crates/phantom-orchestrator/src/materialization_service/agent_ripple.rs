@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use tracing::warn;
+use tracing::{error, warn};
 
 use phantom_core::changeset::SemanticOperation;
 use phantom_core::event::{Event, EventKind};
@@ -91,10 +91,39 @@ pub(super) async fn handle_agent_ripple(
         };
     }
 
-    let old_base = live_rebase::read_current_base(ctx.phantom_dir, target.agent_id)
-        .ok()
-        .flatten()
-        .unwrap_or(*ctx.changeset_base);
+    // Do not silently fall back on I/O or parse errors: that would use the
+    // *submitting* agent's base as the target agent's base, producing a
+    // wrong-base three-way merge that either invents false conflicts or
+    // produces silently corrupted output. `Ok(None)` (legitimate missing
+    // file) still falls back to the changeset base.
+    let old_base = match live_rebase::read_current_base(ctx.phantom_dir, target.agent_id) {
+        Ok(Some(base)) => base,
+        Ok(None) => *ctx.changeset_base,
+        Err(e) => {
+            error!(
+                agent_id = %target.agent_id,
+                error = %e,
+                "read_current_base failed; aborting ripple for this agent to avoid wrong-base merge"
+            );
+            // Still surface the notification so the agent is aware the trunk
+            // moved, but do not attempt live rebase with a wrong base.
+            write_notification_and_base(
+                ctx.phantom_dir,
+                target.agent_id,
+                *ctx.head,
+                classified.clone(),
+                impacts.clone(),
+            );
+            emit_agent_notified(ctx, target, &impacts).await;
+            return RippleEffect {
+                agent_id: target.agent_id.clone(),
+                files: target.files.to_vec(),
+                merged_count: 0,
+                conflicted_count: shadowed_files.len(),
+                dep_impact_count: impacts.len(),
+            };
+        }
+    };
 
     match live_rebase::rebase_agent(
         ctx.materializer.git(),
@@ -106,11 +135,28 @@ pub(super) async fn handle_agent_ripple(
         &shadowed_files,
     ) {
         Ok(rebase_result) => {
-            if let Err(e) =
-                live_rebase::write_current_base(ctx.phantom_dir, target.agent_id, ctx.head)
-            {
-                warn!(agent_id = %target.agent_id, error = %e, "failed to update current_base");
-            }
+            // The live rebase has already written merged bytes into the
+            // agent's upper layer. If we cannot persist `current_base`, the
+            // agent's base tracking is permanently wrong — every future
+            // ripple would run against the old base and either fabricate
+            // conflicts or silently corrupt. Propagate the failure so callers
+            // do not see a success-shaped `RippleEffect` for a corrupted
+            // state.
+            let base_persisted = match live_rebase::write_current_base(
+                ctx.phantom_dir,
+                target.agent_id,
+                ctx.head,
+            ) {
+                Ok(()) => true,
+                Err(e) => {
+                    error!(
+                        agent_id = %target.agent_id,
+                        error = %e,
+                        "failed to update current_base after live rebase; agent base tracking is now inconsistent"
+                    );
+                    false
+                }
+            };
 
             // Build enriched notification with rebase outcomes.
             let enriched: Vec<(PathBuf, TrunkFileStatus)> = classified
@@ -132,7 +178,10 @@ pub(super) async fn handle_agent_ripple(
             if let Err(e) =
                 ripple::write_trunk_notification(ctx.phantom_dir, target.agent_id, &notif)
             {
-                warn!(agent_id = %target.agent_id, error = %e, "failed to write notification");
+                // Escalated from warn! to error!: without this notification the
+                // agent has no record of which files were merged vs conflicted
+                // during the live rebase and may re-edit already-merged content.
+                error!(agent_id = %target.agent_id, error = %e, "failed to write enriched trunk notification after live rebase");
             }
 
             write_trunk_update(ctx, target, &enriched, &impacts);
@@ -157,14 +206,27 @@ pub(super) async fn handle_agent_ripple(
                 },
             };
             if let Err(e) = ctx.events.append(event).await {
-                warn!(agent_id = %target.agent_id, error = %e, "failed to record live rebase event");
+                // Escalated from warn! to error!: LiveRebased is the audit
+                // entry rollback reads to determine which agents were
+                // affected by a given commit. Missing entries can cause
+                // incorrect restoration on ph rollback.
+                error!(agent_id = %target.agent_id, error = %e, "failed to record live rebase event");
             }
 
+            // If the base-tracking write failed above, report every
+            // shadowed file as conflicted so the operator has a signal that
+            // subsequent ripples may produce incorrect merges. Counts here
+            // feed user-facing summaries and correctness audits.
+            let (merged_count, conflicted_count) = if base_persisted {
+                (rebase_result.merged.len(), rebase_result.conflicted.len())
+            } else {
+                (0, shadowed_files.len())
+            };
             RippleEffect {
                 agent_id: target.agent_id.clone(),
                 files: target.files.to_vec(),
-                merged_count: rebase_result.merged.len(),
-                conflicted_count: rebase_result.conflicted.len(),
+                merged_count,
+                conflicted_count,
                 dep_impact_count: impacts.len(),
             }
         }

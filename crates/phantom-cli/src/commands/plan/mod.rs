@@ -177,7 +177,17 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
             &upstream_agent_ids,
         )
         .await?;
-        dispatched_agents.push(AgentId(domain.agent_id.clone()));
+        // LLM-generated agent id: validate before constructing the AgentId
+        // so a crafted plan cannot inject traversal strings into the event
+        // log or downstream filesystem paths.
+        let agent_id = AgentId::validate(&domain.agent_id).map_err(|e| {
+            anyhow::anyhow!(
+                "invalid planner-generated agent id '{}': {}",
+                domain.agent_id,
+                e
+            )
+        })?;
+        dispatched_agents.push(agent_id);
     }
 
     // Step 7: Emit PlanCreated event and update persisted status.
@@ -208,10 +218,17 @@ pub async fn run(args: PlanArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Generate a timestamp-based plan ID.
+/// Generate a timestamp-based plan ID with a UUID v7 suffix to avoid
+/// collisions when two `ph plan` invocations fire within the same second.
 fn generate_plan_id() -> PlanId {
     let now = Utc::now();
-    PlanId(now.format("plan-%Y%m%d-%H%M%S").to_string())
+    let suffix = uuid::Uuid::now_v7()
+        .simple()
+        .to_string()
+        .chars()
+        .take(8)
+        .collect::<String>();
+    PlanId(format!("plan-{}-{}", now.format("%Y%m%d-%H%M%S"), suffix))
 }
 
 /// What the user wants to do after the plan has been displayed.

@@ -47,6 +47,10 @@ fn init_repo_with_source() -> TempDir {
 fn phantom(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("ph").unwrap();
     cmd.current_dir(dir).env("RUST_LOG", "");
+    // Integration tests stub the CLI with `echo`; the allowlist in
+    // `validate_cli_name` blocks non-known commands unless this test-only
+    // flag is set.
+    cmd.env("PHANTOM_ALLOW_ANY_CLI", "1");
     cmd
 }
 

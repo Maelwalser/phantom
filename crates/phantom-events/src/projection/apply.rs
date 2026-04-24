@@ -67,6 +67,16 @@ pub(super) fn apply_events(changesets: &mut HashMap<ChangesetId, Changeset>, eve
                     cs.base_commit = *base;
                 }
             }
+            // Pre-commit fence: the materializer has committed intent to the
+            // event log but has not yet touched git. Recovery uses the fence
+            // to reconcile partial states; projection deliberately ignores
+            // it but logs so replay traces still show the fence landed.
+            EventKind::ChangesetMaterializationStarted { .. } => {
+                tracing::trace!(
+                    changeset = %event.changeset_id.0,
+                    "skipping materialization fence during projection"
+                );
+            }
             // Other event kinds don't affect changeset state.
             _ => {}
         }

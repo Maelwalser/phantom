@@ -88,7 +88,13 @@ pub fn run(args: FuseMountArgs) -> anyhow::Result<()> {
         let layer = OverlayLayer::new(args.lower_dir.clone(), args.upper_dir.clone())
             .context("failed to create overlay layer")?;
 
-        let agent_id = AgentId(args.agent.clone());
+        // Re-validate the agent name even though the caller is typically a
+        // trusted sibling process: `_fuse-mount` is reachable as a CLI
+        // subcommand and constructing `AgentId` from a raw CLI flag without
+        // validation would allow path-traversal-like values (`../etc`, null
+        // bytes) to flow into overlay paths and log output.
+        let agent_id = AgentId::validate(&args.agent)
+            .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {}", args.agent, e))?;
 
         let mut fs_config = FsConfig::default();
         if let Some(uid) = args.uid {
