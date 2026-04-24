@@ -252,9 +252,7 @@ pub(super) async fn run_summary(
                 "  {} {:<14} parent {} (fence event {})",
                 console::style("⚠").yellow(),
                 orphan.changeset_id,
-                ui::style_cyan(
-                    &orphan.parent.to_hex()[..12.min(orphan.parent.to_hex().len())]
-                ),
+                ui::style_cyan(&orphan.parent.to_hex()[..12.min(orphan.parent.to_hex().len())]),
                 orphan.fence_event_id.0,
             );
         }

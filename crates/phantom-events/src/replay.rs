@@ -67,9 +67,7 @@ impl<'a> ReplayEngine<'a> {
     /// leaves the changeset's intent recorded in the log but its outcome
     /// ambiguous — trunk may or may not carry the commit. Recovery walks
     /// this list and reconciles each entry against git HEAD.
-    pub async fn orphan_materialization_fences(
-        &self,
-    ) -> Result<Vec<OrphanFence>, EventStoreError> {
+    pub async fn orphan_materialization_fences(&self) -> Result<Vec<OrphanFence>, EventStoreError> {
         // Only consider the *latest* fence per changeset: a successful
         // materialize-then-retry pattern would emit a fence, a terminal,
         // then a second fence for a later attempt. Earlier fences that
@@ -191,12 +189,7 @@ mod tests {
         SqliteEventStore::in_memory().await.unwrap()
     }
 
-    fn fence(
-        changeset: &str,
-        agent: &str,
-        parent: GitOid,
-        path: MaterializationPath,
-    ) -> Event {
+    fn fence(changeset: &str, agent: &str, parent: GitOid, path: MaterializationPath) -> Event {
         Event {
             id: EventId(0),
             timestamp: Utc::now(),
@@ -235,9 +228,14 @@ mod tests {
     async fn orphan_fence_with_no_terminal_is_reported() {
         let s = store().await;
         let parent = GitOid::from_bytes([1; 20]);
-        s.append(fence("cs-1", "agent-a", parent, MaterializationPath::Direct))
-            .await
-            .unwrap();
+        s.append(fence(
+            "cs-1",
+            "agent-a",
+            parent,
+            MaterializationPath::Direct,
+        ))
+        .await
+        .unwrap();
 
         let engine = ReplayEngine::new(&s);
         let orphans = engine.orphan_materialization_fences().await.unwrap();
@@ -265,7 +263,13 @@ mod tests {
             .unwrap();
 
         let engine = ReplayEngine::new(&s);
-        assert!(engine.orphan_materialization_fences().await.unwrap().is_empty());
+        assert!(
+            engine
+                .orphan_materialization_fences()
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -284,7 +288,13 @@ mod tests {
             .unwrap();
 
         let engine = ReplayEngine::new(&s);
-        assert!(engine.orphan_materialization_fences().await.unwrap().is_empty());
+        assert!(
+            engine
+                .orphan_materialization_fences()
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

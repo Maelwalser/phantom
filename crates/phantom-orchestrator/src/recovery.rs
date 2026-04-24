@@ -164,10 +164,7 @@ fn locate_commit_for_fence(git: &GitOps, fence: &OrphanFence, head: &GitOid) -> 
 }
 
 fn commit_authored_by(commit: &git2::Commit<'_>, agent_id: &str) -> bool {
-    commit
-        .author()
-        .name()
-        .is_some_and(|name| name == agent_id)
+    commit.author().name().is_some_and(|name| name == agent_id)
 }
 
 async fn append_reconstructed_materialized(
@@ -365,9 +362,7 @@ mod tests {
         f.write_all(content).unwrap();
 
         let mut index = repo.index().unwrap();
-        index
-            .add_path(std::path::Path::new(path))
-            .unwrap();
+        index.add_path(std::path::Path::new(path)).unwrap();
         index.write().unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
@@ -388,5 +383,4 @@ mod tests {
             .unwrap();
         oid_to_git_oid(new_oid)
     }
-
 }

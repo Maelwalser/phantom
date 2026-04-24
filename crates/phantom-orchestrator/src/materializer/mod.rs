@@ -273,10 +273,7 @@ mod tests {
                 match &events[0].kind {
                     EventKind::ChangesetMaterializationStarted { parent, path } => {
                         assert_eq!(*parent, base);
-                        assert_eq!(
-                            *path,
-                            phantom_core::event::MaterializationPath::Direct
-                        );
+                        assert_eq!(*path, phantom_core::event::MaterializationPath::Direct);
                     }
                     other => panic!("expected ChangesetMaterializationStarted, got {other:?}"),
                 }

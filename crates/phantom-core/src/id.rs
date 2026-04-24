@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 
 /// Shared validator for IDs that must be safe as filesystem path components.
 ///
-/// Restricted to ASCII alphanumerics, hyphen, underscore, and dot (for
-/// UUID-like and timestamp IDs). ASCII-only so that homograph attacks using
-/// Unicode lookalikes cannot impersonate another ID.
+/// Restricted to ASCII alphanumerics, hyphen, and underscore. ASCII-only so
+/// that homograph attacks using Unicode lookalikes cannot impersonate
+/// another ID, and so that non-ASCII bytes cannot surprise downstream tools
+/// that assume byte-safe names.
 fn validate_path_safe_id(kind: &str, s: &str, max_len: usize) -> Result<(), String> {
     if s.is_empty() {
         return Err(format!("{kind} must not be empty"));
