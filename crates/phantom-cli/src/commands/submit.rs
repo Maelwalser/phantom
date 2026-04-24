@@ -222,7 +222,11 @@ pub async fn submit_agent(
                         }
                         eprintln!();
                     }
-                    std::process::exit(1);
+                    // Return an error with a sentinel message so `main()` can
+                    // set exit code 1 via the normal path. Calling
+                    // `process::exit` here bypasses async runtime shutdown,
+                    // SQLite WAL checkpoint, and `Drop` of open handles.
+                    anyhow::bail!("submit produced conflicts; resolve and resubmit");
                 }
             }
 

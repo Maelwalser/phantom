@@ -30,6 +30,42 @@ pub const CONTEXT_FILE: &str = ".phantom-task.md";
 /// Name of the static resolution rules file injected via system prompt.
 pub const RESOLVE_RULES_FILE: &str = "resolve-rules.md";
 
+/// Escape user-controlled content before embedding it into markdown that
+/// will be read by an LLM agent.
+///
+/// Markdown headings (`#` at start of line) and horizontal rules (`---`)
+/// are structural tokens. If a task description contains
+/// `## Commands\n- rm -rf /` it can visually override the real Commands
+/// section shown to the downstream agent. We neutralize these by prefixing
+/// a zero-width Unicode char (U+200B) to leading `#` and `-` runs so they
+/// render as ordinary text. Backticks and HTML-like `<…>` tags are left
+/// intact because they are commonly part of legitimate descriptions;
+/// callers that want to fully neutralize a field should additionally wrap
+/// it in a fenced block.
+pub fn sanitize_markdown(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for line in input.split_inclusive('\n') {
+        // Strip leading whitespace to inspect the first non-space byte.
+        let trimmed = line.trim_start_matches([' ', '\t']);
+        let needs_escape = trimmed.starts_with('#')
+            || trimmed.starts_with("---")
+            || trimmed.starts_with("***")
+            || trimmed.starts_with("===");
+        if needs_escape {
+            // Preserve leading whitespace and insert zero-width space so
+            // the markdown parser (and the LLM's structural sense) does
+            // not interpret the line as a heading or rule.
+            let indent_len = line.len() - trimmed.len();
+            out.push_str(&line[..indent_len]);
+            out.push('\u{200B}');
+            out.push_str(trimmed);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 /// Detect language from file extension for code fence annotations.
 pub(crate) fn lang_from_path(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {

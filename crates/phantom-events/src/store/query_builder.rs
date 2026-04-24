@@ -15,10 +15,30 @@ use crate::query::EventQuery;
 
 use super::row::row_to_event;
 
+/// Sort order for event queries built by [`QueryBuilder`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SortDir {
+    Asc,
+    Desc,
+}
+
+impl SortDir {
+    fn as_sql(self) -> &'static str {
+        match self {
+            Self::Asc => "ASC",
+            Self::Desc => "DESC",
+        }
+    }
+}
+
 /// Tracks SQL WHERE conditions and their bound parameter values.
+///
+/// `conditions` and `params` are intentionally private: exposing raw
+/// `WHERE` fragments to callers would defeat the parameterization that
+/// prevents SQL injection. Use [`push`](Self::push) and [`bind`](Self::bind).
 pub(super) struct QueryBuilder {
-    pub(super) conditions: Vec<String>,
-    pub(super) params: Vec<String>,
+    conditions: Vec<String>,
+    params: Vec<String>,
 }
 
 impl QueryBuilder {
@@ -35,9 +55,18 @@ impl QueryBuilder {
         format!("${}", self.params.len())
     }
 
-    /// Add a WHERE condition.
+    /// Add a WHERE condition. The fragment must be caller-constructed from
+    /// fixed SQL tokens and placeholders returned by [`bind`](Self::bind);
+    /// never embed user input directly.
     pub(super) fn push(&mut self, condition: String) {
         self.conditions.push(condition);
+    }
+
+    /// Replace all existing conditions. Used by the crate-internal
+    /// `query_events` escape hatch; the caller-supplied clause must
+    /// contain only fixed SQL and `$N` placeholders.
+    pub(super) fn replace_conditions(&mut self, conditions: Vec<String>) {
+        self.conditions = conditions;
     }
 
     fn where_clause(&self) -> String {
@@ -48,16 +77,17 @@ impl QueryBuilder {
     pub(super) async fn fetch(
         &self,
         pool: &SqlitePool,
-        order: &str,
+        order: SortDir,
         limit: Option<u64>,
     ) -> Result<Vec<Event>, EventStoreError> {
         let where_clause = self.where_clause();
         let limit_clause = limit.map(|n| format!(" LIMIT {n}")).unwrap_or_default();
+        let order_sql = order.as_sql();
         let sql = format!(
             "SELECT id, timestamp, changeset_id, agent_id, kind, causal_parent
              FROM events
              WHERE {where_clause}
-             ORDER BY id {order}{limit_clause}"
+             ORDER BY id {order_sql}{limit_clause}"
         );
 
         let mut query = sqlx::query(&sql);
@@ -101,8 +131,11 @@ pub(super) fn apply_event_filters(qb: &mut QueryBuilder, q: &EventQuery) {
     }
 
     if let Some(ref sym) = q.symbol_id {
-        let p = qb.bind(sym.0.clone());
-        qb.push(format!("kind LIKE '%' || {p} || '%'"));
+        // Escape SQL LIKE metacharacters (%, _, \) before binding so that a
+        // symbol id containing those characters matches literally rather than
+        // acting as a wildcard.
+        let p = qb.bind(escape_like(&sym.0));
+        qb.push(format!("kind LIKE '%' || {p} || '%' ESCAPE '\\'"));
     }
 
     if let Some(ref since) = q.since {
@@ -115,10 +148,30 @@ pub(super) fn apply_event_filters(qb: &mut QueryBuilder, q: &EventQuery) {
             .kind_prefixes
             .iter()
             .map(|prefix| {
-                let p = qb.bind(kind_pattern::like_prefix(prefix));
-                format!("kind LIKE {p} || '%'")
+                // like_prefix produces a `{"KindName"` fragment; the trailing
+                // `%` is the wildcard we want, but any `%`/`_`/`\` inside the
+                // caller-supplied prefix must be escaped so they cannot act
+                // as wildcards themselves.
+                let p = qb.bind(escape_like(&kind_pattern::like_prefix(prefix)));
+                format!("kind LIKE {p} || '%' ESCAPE '\\'")
             })
             .collect();
         qb.push(format!("({})", or_parts.join(" OR ")));
     }
+}
+
+/// Escape SQL LIKE metacharacters (`%`, `_`, `\`) so the value matches
+/// literally under an `ESCAPE '\'` clause.
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }

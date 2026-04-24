@@ -89,11 +89,15 @@ impl CliAdapter for GeminiAdapter {
 
     fn extract_session_id(&self, output_tail: &str) -> Option<String> {
         // Gemini CLI prints: "gemini --resume <UUID>" or "gemini -r <UUID>"
-        // near the end of output when a session ends.
-        let re = Regex::new(
-            r"gemini (?:--resume|-r) ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
-        )
-        .ok()?;
+        // near the end of output when a session ends. Compile once.
+        use std::sync::OnceLock;
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE.get_or_init(|| {
+            Regex::new(
+                r"gemini (?:--resume|-r) ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+            )
+            .expect("gemini session id regex is a compile-time constant")
+        });
         re.captures(output_tail)
             .and_then(|caps| caps.get(1))
             .map(|m| m.as_str().to_string())

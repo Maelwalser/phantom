@@ -76,13 +76,17 @@ impl OverlayLayer {
         // I/O happens before acquiring the whiteout lock.
         fs::write(&upper_path, data)?;
 
-        if self
+        // If the file was previously whitelisted as deleted, persist the
+        // updated whiteout set HARD — a stale on-disk `.whiteouts.json`
+        // would hide this re-created file on the next process restart,
+        // causing silent data loss for the agent.
+        let removed = self
             .whiteouts
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(rel_path)
-        {
-            self.persist_whiteouts_or_warn();
+            .remove(rel_path);
+        if removed {
+            self.persist_whiteouts()?;
         }
 
         Ok(())
@@ -150,13 +154,16 @@ impl OverlayLayer {
             }
         }
 
-        if self
+        // Hard-persist: a stale whiteout after a successful truncate-to-
+        // re-create would hide the file from `modified_files()` and from
+        // the agent's own view on restart.
+        let removed = self
             .whiteouts
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(rel_path)
-        {
-            self.persist_whiteouts_or_warn();
+            .remove(rel_path);
+        if removed {
+            self.persist_whiteouts()?;
         }
 
         trace!(path = %rel_path.display(), new_size, layer = "upper", "truncate");
@@ -250,13 +257,13 @@ impl OverlayLayer {
         ensure_parent_dir(&upper_path)?;
         std::os::unix::fs::symlink(target, &upper_path)?;
 
-        if self
+        let removed = self
             .whiteouts
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(rel_path)
-        {
-            self.persist_whiteouts_or_warn();
+            .remove(rel_path);
+        if removed {
+            self.persist_whiteouts()?;
         }
 
         trace!(path = %rel_path.display(), target = %target.display(), layer = "upper", "symlink");
@@ -313,7 +320,7 @@ impl OverlayLayer {
 
         self.whiteouts
             .write()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(rel_path.to_path_buf());
         self.persist_whiteouts()?;
 
@@ -348,14 +355,16 @@ impl OverlayLayer {
         let upper_path = self.upper.join(rel_path);
 
         if upper_path.exists() {
-            // Already in the upper layer.
-            if self
+            // Already in the upper layer. Hard-persist the whiteout removal:
+            // a stale on-disk whiteout would later hide this existing file
+            // from `modified_files()` and from the agent's view.
+            let removed = self
                 .whiteouts
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(rel_path)
-            {
-                self.persist_whiteouts_or_warn();
+                .remove(rel_path);
+            if removed {
+                self.persist_whiteouts()?;
             }
             return Ok(upper_path);
         }
@@ -386,13 +395,13 @@ impl OverlayLayer {
         }
 
         // Brief write lock to update whiteout set after I/O is done.
-        if self
+        let removed = self
             .whiteouts
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(rel_path)
-        {
-            self.persist_whiteouts_or_warn();
+            .remove(rel_path);
+        if removed {
+            self.persist_whiteouts()?;
         }
 
         Ok(upper_path)

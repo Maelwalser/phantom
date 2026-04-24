@@ -32,7 +32,12 @@ impl PhantomContext {
         let phantom_dir = find_phantom_dir(&cwd)?;
         let repo_root = phantom_dir
             .parent()
-            .expect(".phantom/ must have a parent")
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    ".phantom/ resolved to the filesystem root ({}); this is unsupported",
+                    phantom_dir.display()
+                )
+            })?
             .to_path_buf();
 
         Ok(Self {
@@ -121,11 +126,27 @@ fn restore_overlays(
 
         let upper_dir = entry.path().join("upper");
         if upper_dir.is_dir() {
+            // Skip directories whose name is not a valid agent ID. This
+            // prevents a manually-created `../escape/upper/` (or a directory
+            // name containing control chars) from flowing into path joins and
+            // log lines. Legitimate overlays created via `ph <agent>` always
+            // pass this check.
+            let agent_id = match phantom_core::AgentId::validate(agent_name) {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!(
+                        dir_name = %agent_name,
+                        error = %e,
+                        "skipping overlay directory with invalid agent name"
+                    );
+                    continue;
+                }
+            };
+
             // Clean up stale FUSE mounts and agent processes before restoring.
             cleanup_stale_fuse_mount(&entry.path(), agent_name);
             cleanup_stale_agent_process(&entry.path(), agent_name);
 
-            let agent_id = phantom_core::AgentId(agent_name.to_string());
             // Only register if not already tracked
             if overlays.upper_dir(&agent_id).is_err()
                 && let Err(e) = overlays.create_overlay(agent_id.clone(), repo_root)
@@ -213,10 +234,48 @@ fn cleanup_stale_agent_process(overlay_dir: &Path, agent_name: &str) {
     }
 }
 
+/// CLI binaries Phantom knows how to launch. Any other `default_cli` value
+/// is rejected to prevent `.phantom/config.toml` from becoming an arbitrary
+/// command execution sink: the parsed value flows directly into
+/// `Command::new(...)`, so an attacker-controlled config (via a merged PR
+/// or rogue clone) could otherwise launch any binary on the host.
+pub const KNOWN_CLIS: &[&str] = &["claude", "gemini", "opencode"];
+
+/// Validate a CLI name is on the allowlist and has no path separators.
+///
+/// Rejects anything containing `/`, `\`, null bytes, or unknown basenames.
+/// Returns a descriptive error so the operator can fix the config.
+pub fn validate_cli_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("CLI name must not be empty".into());
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return Err(format!(
+            "CLI name '{name}' contains a path separator or null byte — only bare CLI names are allowed"
+        ));
+    }
+    if !KNOWN_CLIS.contains(&name) {
+        // Escape hatch for the integration test harness: when the CLI is
+        // stubbed with `echo` (or similar), the test process sets
+        // PHANTOM_ALLOW_ANY_CLI=1 to bypass the allowlist. This is a test-
+        // only flag and is NOT documented as a user-facing feature.
+        let allow_any = std::env::var("PHANTOM_ALLOW_ANY_CLI")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        if !allow_any {
+            return Err(format!(
+                "CLI name '{name}' is not in the allowlist {KNOWN_CLIS:?}; \
+                 add support via phantom-session::adapter before use"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Read `default_cli` from `.phantom/config.toml`.
 ///
-/// Falls back to `"claude"` if the key is missing or the config is unreadable.
-/// Uses simple line parsing to avoid pulling in a TOML crate.
+/// Falls back to `"claude"` if the key is missing, the config is unreadable,
+/// or the configured value fails the allowlist check. Logs a warning on the
+/// rejected-value path so operators notice attempted injections.
 pub fn default_cli(phantom_dir: &Path) -> String {
     let config_path = phantom_dir.join("config.toml");
     let Ok(content) = std::fs::read_to_string(&config_path) else {
@@ -224,13 +283,29 @@ pub fn default_cli(phantom_dir: &Path) -> String {
     };
 
     for line in content.lines() {
-        let trimmed = line.trim();
+        // Strip whitespace and inline comments (`# ...`).
+        let mut trimmed = line.trim();
+        if let Some(idx) = trimmed.find('#') {
+            trimmed = trimmed[..idx].trim();
+        }
         if let Some(rest) = trimmed.strip_prefix("default_cli") {
             let rest = rest.trim_start();
             if let Some(rest) = rest.strip_prefix('=') {
                 let val = rest.trim().trim_matches('"').trim_matches('\'');
-                if !val.is_empty() {
-                    return val.to_string();
+                if val.is_empty() {
+                    continue;
+                }
+                match validate_cli_name(val) {
+                    Ok(()) => return val.to_string(),
+                    Err(e) => {
+                        tracing::warn!(
+                            config = %config_path.display(),
+                            value = %val,
+                            error = %e,
+                            "rejecting default_cli; falling back to 'claude'"
+                        );
+                        return "claude".to_string();
+                    }
                 }
             }
         }
@@ -240,12 +315,27 @@ pub fn default_cli(phantom_dir: &Path) -> String {
 }
 
 /// Walk up from `start` looking for a `.phantom/` directory.
+///
+/// Uses `symlink_metadata` rather than `is_dir` so that a `.phantom/` entry
+/// that is a symlink to somewhere outside the repository is rejected —
+/// otherwise every subsequent read/write (event DB, overlay paths, PID
+/// files) would silently follow the symlink target.
 fn find_phantom_dir(start: &Path) -> anyhow::Result<PathBuf> {
     let mut current = start.to_path_buf();
     loop {
         let candidate = current.join(".phantom");
-        if candidate.is_dir() {
-            return Ok(candidate);
+        if let Ok(meta) = std::fs::symlink_metadata(&candidate) {
+            if meta.file_type().is_dir() {
+                return Ok(candidate);
+            }
+            if meta.file_type().is_symlink() {
+                bail!(
+                    ".phantom/ at {} is a symlink; refusing to use it. \
+                     Replace the symlink with a real directory or run `ph init` \
+                     at the intended location.",
+                    candidate.display()
+                );
+            }
         }
         if !current.pop() {
             bail!(

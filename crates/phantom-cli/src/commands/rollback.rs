@@ -32,10 +32,14 @@ pub async fn run(args: RollbackArgs) -> anyhow::Result<()> {
     match args.target {
         None => run_interactive(&ctx, &events).await?,
         Some(ref target) if target.starts_with("cs-") => {
-            rollback_single(&ctx, &events, &ChangesetId(target.clone())).await?;
+            let cs = ChangesetId::validate(target)
+                .map_err(|e| anyhow::anyhow!("invalid changeset id '{target}': {e}"))?;
+            rollback_single(&ctx, &events, &cs).await?;
         }
         Some(agent_name) => {
-            run_interactive_for_agent(&ctx, &events, &AgentId(agent_name)).await?;
+            let agent = AgentId::validate(&agent_name)
+                .map_err(|e| anyhow::anyhow!("invalid agent name '{agent_name}': {e}"))?;
+            run_interactive_for_agent(&ctx, &events, &agent).await?;
         }
     }
 

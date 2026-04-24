@@ -34,7 +34,13 @@ pub(super) async fn build_pool(
     .pragma("journal_mode", "WAL")
     .pragma("busy_timeout", "5000")
     .pragma("foreign_keys", "ON")
-    .pragma("synchronous", "NORMAL")
+    // synchronous=FULL: the event log is the single source of truth for
+    // Phantom's audit trail. Under NORMAL, WAL pages only fsync at
+    // checkpoint time, so an OS crash can lose recent appends even though
+    // the application received success. Event-append frequency is low
+    // relative to WAL write overhead, so the durability win outweighs the
+    // latency cost.
+    .pragma("synchronous", "FULL")
     .pragma("cache_size", "-64000")
     .pragma("temp_store", "MEMORY");
 

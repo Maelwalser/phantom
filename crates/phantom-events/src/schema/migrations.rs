@@ -13,9 +13,14 @@
 //! 4. Bump [`CURRENT_SCHEMA_VERSION`] to `N` (the unit test enforces that
 //!    it matches the last entry in [`MIGRATIONS`]).
 
-use sqlx::sqlite::SqlitePool;
+use sqlx::Sqlite;
+use sqlx::Transaction;
 
 use crate::error::EventStoreError;
+
+/// Executor used by migration bodies. A transaction handle so DDL and the
+/// version bump in `run_migrations` can be committed atomically.
+type Tx<'a> = Transaction<'a, Sqlite>;
 
 /// Current schema version for the event store database.
 ///
@@ -53,12 +58,12 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
 ];
 
 /// Dispatch to the correct migration body by version number.
-pub(crate) async fn apply(m: &Migration, pool: &SqlitePool) -> Result<(), EventStoreError> {
+pub(crate) async fn apply(m: &Migration, tx: &mut Tx<'_>) -> Result<(), EventStoreError> {
     match m.version {
-        2 => m_002_add_kind_version(pool).await,
-        3 => m_003_projection_snapshots(pool).await,
-        4 => m_004_add_causal_parent(pool).await,
-        5 => m_005_composite_indexes(pool).await,
+        2 => m_002_add_kind_version(tx).await,
+        3 => m_003_projection_snapshots(tx).await,
+        4 => m_004_add_causal_parent(tx).await,
+        5 => m_005_composite_indexes(tx).await,
         _ => Err(EventStoreError::SchemaMismatch {
             expected: CURRENT_SCHEMA_VERSION,
             found: m.version,
@@ -67,9 +72,9 @@ pub(crate) async fn apply(m: &Migration, pool: &SqlitePool) -> Result<(), EventS
 }
 
 /// Migration 1 → 2: add `kind_version` column for envelope versioning.
-async fn m_002_add_kind_version(pool: &SqlitePool) -> Result<(), EventStoreError> {
+async fn m_002_add_kind_version(tx: &mut Tx<'_>) -> Result<(), EventStoreError> {
     add_column_if_missing(
-        pool,
+        tx,
         "ALTER TABLE events ADD COLUMN kind_version INTEGER NOT NULL DEFAULT 1",
     )
     .await
@@ -77,7 +82,7 @@ async fn m_002_add_kind_version(pool: &SqlitePool) -> Result<(), EventStoreError
 
 /// Migration 2 → 3: add `projection_snapshots` table so projections can load
 /// from a persisted snapshot instead of replaying the entire event log.
-async fn m_003_projection_snapshots(pool: &SqlitePool) -> Result<(), EventStoreError> {
+async fn m_003_projection_snapshots(tx: &mut Tx<'_>) -> Result<(), EventStoreError> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS projection_snapshots (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,26 +91,26 @@ async fn m_003_projection_snapshots(pool: &SqlitePool) -> Result<(), EventStoreE
             created_at  TEXT NOT NULL
         )",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_snapshots_at ON projection_snapshots(snapshot_at)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await?;
     Ok(())
 }
 
 /// Migration 3 → 4: add `causal_parent` column for causal DAG ordering.
 /// Nullable INTEGER references the id of the event that caused this one.
-async fn m_004_add_causal_parent(pool: &SqlitePool) -> Result<(), EventStoreError> {
+async fn m_004_add_causal_parent(tx: &mut Tx<'_>) -> Result<(), EventStoreError> {
     add_column_if_missing(
-        pool,
+        tx,
         "ALTER TABLE events ADD COLUMN causal_parent INTEGER DEFAULT NULL",
     )
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_causal_parent ON events(causal_parent)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await?;
     Ok(())
 }
@@ -114,19 +119,19 @@ async fn m_004_add_causal_parent(pool: &SqlitePool) -> Result<(), EventStoreErro
 ///
 /// Most queries filter on `dropped = 0` first, so leading with `dropped`
 /// lets SQLite skip dropped rows via the index rather than scanning.
-async fn m_005_composite_indexes(pool: &SqlitePool) -> Result<(), EventStoreError> {
+async fn m_005_composite_indexes(tx: &mut Tx<'_>) -> Result<(), EventStoreError> {
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_events_dropped_changeset ON events(dropped, changeset_id)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_dropped_agent ON events(dropped, agent_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_events_dropped_timestamp ON events(dropped, timestamp)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
     Ok(())
 }
@@ -136,8 +141,8 @@ async fn m_005_composite_indexes(pool: &SqlitePool) -> Result<(), EventStoreErro
 /// If a previous migration was interrupted after the ALTER but before the
 /// version update, the column may already exist. SQLite reports this as
 /// "duplicate column"; we treat it as success.
-async fn add_column_if_missing(pool: &SqlitePool, sql: &str) -> Result<(), EventStoreError> {
-    match sqlx::query(sql).execute(pool).await {
+async fn add_column_if_missing(tx: &mut Tx<'_>, sql: &str) -> Result<(), EventStoreError> {
+    match sqlx::query(sql).execute(&mut **tx).await {
         Ok(_) => Ok(()),
         Err(e) if e.to_string().contains("duplicate column") => Ok(()),
         Err(e) => Err(e.into()),

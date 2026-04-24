@@ -13,6 +13,7 @@ use phantom_core::id::{ChangesetId, EventId};
 
 use crate::error::EventStoreError;
 use crate::store::SqliteEventStore;
+use crate::store::row::checked_id;
 
 /// A persisted snapshot of projection state at a given event ID.
 pub(super) struct ProjectionSnapshot {
@@ -45,8 +46,12 @@ impl<'a> SnapshotRepository<'a> {
             Some((snapshot_at, data)) => {
                 let changesets: HashMap<ChangesetId, Changeset> = serde_json::from_slice(&data)
                     .map_err(|e| EventStoreError::SnapshotCorrupted(e.to_string()))?;
+                // Reject negative snapshot_at values — a wraparound to a
+                // huge u64 would cause `query_after_id` to silently return
+                // nothing and mask the corruption as a clean projection.
+                let snapshot_at = EventId(checked_id(snapshot_at, "snapshot_at")?);
                 Ok(Some(ProjectionSnapshot {
-                    snapshot_at: EventId(snapshot_at as u64),
+                    snapshot_at,
                     changesets,
                 }))
             }

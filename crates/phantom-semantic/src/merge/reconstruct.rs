@@ -111,6 +111,16 @@ pub(super) fn reconstruct_merged_file(
         let key = entity_key(base_sym);
         let range = &base_sym.byte_range;
 
+        // Skip symbols whose byte range is already fully covered by a
+        // previously-emitted symbol. This happens when the extractor emits
+        // both a container (e.g. `impl_item`) and its children (the
+        // methods inside). Without this guard, the inner symbol's bytes
+        // get written twice — once as part of the container, once when
+        // processed on its own.
+        if range.end <= cursor {
+            continue;
+        }
+
         // Copy interstitial bytes (between symbols) from base
         if range.start > cursor {
             result.extend_from_slice(&base[cursor..range.start]);
@@ -121,17 +131,34 @@ pub(super) fn reconstruct_merged_file(
 
         let start_pos = result.len();
 
+        // Safely extract a byte range from a source buffer. If the range
+        // is out of bounds (extractor bug or mismatched buffers), fall
+        // back to the base bytes instead of panicking — merge produces
+        // slightly stale output rather than crashing the whole submit.
+        fn slice_or_base<'a>(
+            source: &'a [u8],
+            range: &std::ops::Range<usize>,
+            base_bytes: &'a [u8],
+        ) -> &'a [u8] {
+            if range.end <= source.len() && range.start <= range.end {
+                &source[range.clone()]
+            } else {
+                base_bytes
+            }
+        }
+        let base_bytes = slice_or_base(base, &base_sym.byte_range, &[]);
+
         match (in_ours, in_theirs) {
             (Some(o), Some(t)) => {
                 let ours_changed = o.content_hash != base_sym.content_hash;
                 let theirs_changed = t.content_hash != base_sym.content_hash;
                 if ours_changed && !theirs_changed {
-                    result.extend_from_slice(&ours[o.byte_range.clone()]);
+                    result.extend_from_slice(slice_or_base(ours, &o.byte_range, base_bytes));
                 } else if !ours_changed && theirs_changed {
-                    result.extend_from_slice(&theirs[t.byte_range.clone()]);
+                    result.extend_from_slice(slice_or_base(theirs, &t.byte_range, base_bytes));
                 } else {
                     // Both changed to same thing, or neither changed — use ours
-                    result.extend_from_slice(&ours[o.byte_range.clone()]);
+                    result.extend_from_slice(slice_or_base(ours, &o.byte_range, base_bytes));
                 }
             }
             (Some(o), None) => {
@@ -139,14 +166,14 @@ pub(super) fn reconstruct_merged_file(
                     // Ours unchanged, theirs deleted → honor deletion (skip)
                 } else {
                     // Should not reach here — conflict was caught
-                    result.extend_from_slice(&ours[o.byte_range.clone()]);
+                    result.extend_from_slice(slice_or_base(ours, &o.byte_range, base_bytes));
                 }
             }
             (None, Some(t)) => {
                 if t.content_hash == base_sym.content_hash {
                     // Theirs unchanged, ours deleted → honor deletion (skip)
                 } else {
-                    result.extend_from_slice(&theirs[t.byte_range.clone()]);
+                    result.extend_from_slice(slice_or_base(theirs, &t.byte_range, base_bytes));
                 }
             }
             (None, None) => {

@@ -34,6 +34,10 @@ fn init_git_repo() -> TempDir {
 fn phantom(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("ph").unwrap();
     cmd.current_dir(dir).env("RUST_LOG", "");
+    // Tests stub the CLI with `echo`; the runtime allowlist in
+    // `validate_cli_name` blocks non-known CLIs unless this test-only
+    // env var is set.
+    cmd.env("PHANTOM_ALLOW_ANY_CLI", "1");
     cmd
 }
 

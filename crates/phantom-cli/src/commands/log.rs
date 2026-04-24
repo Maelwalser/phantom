@@ -83,9 +83,19 @@ pub async fn run(args: LogArgs) -> anyhow::Result<()> {
     let since = args.since.as_deref().map(parse_duration_ago).transpose()?;
 
     // Auto-detect whether the positional filter is an agent or changeset.
+    // Both values flow into SQL and log output — validate to reject crafted
+    // names (path traversal, control bytes, etc.).
     let (agent_id, changeset_id) = match &args.filter {
-        Some(f) if f.starts_with("cs-") => (None, Some(ChangesetId(f.clone()))),
-        Some(f) => (Some(AgentId(f.clone())), None),
+        Some(f) if f.starts_with("cs-") => {
+            let cs = ChangesetId::validate(f)
+                .map_err(|e| anyhow::anyhow!("invalid changeset id '{f}': {e}"))?;
+            (None, Some(cs))
+        }
+        Some(f) => {
+            let agent = AgentId::validate(f)
+                .map_err(|e| anyhow::anyhow!("invalid agent name '{f}': {e}"))?;
+            (Some(agent), None)
+        }
         None => (None, None),
     };
 

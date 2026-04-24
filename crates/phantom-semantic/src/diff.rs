@@ -16,6 +16,22 @@ pub fn entity_key(entry: &SymbolEntry) -> EntityKey {
     (entry.name.clone(), entry.kind, entry.scope.clone())
 }
 
+/// Return `true` iff the symbol set has entity-key collisions — two symbols
+/// with the same `(name, kind, scope)`. Because `diff_symbols` uses a
+/// `HashMap<EntityKey, &SymbolEntry>`, one of them silently shadows the
+/// other, and `reconstruct_merged_file` then emits only one set of bytes
+/// while dropping the rest. Callers should fall back to a text merge.
+#[must_use]
+pub fn has_key_collision(symbols: &[SymbolEntry]) -> bool {
+    let mut seen = std::collections::HashSet::with_capacity(symbols.len());
+    for entry in symbols {
+        if !seen.insert(entity_key(entry)) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Compute the semantic operations needed to transform `base` into `current`.
 ///
 /// Matches symbols by their composite identity `(name, kind, scope)` and
@@ -29,6 +45,22 @@ pub fn diff_symbols(
         base.iter().map(|e| (entity_key(e), e)).collect();
     let current_map: HashMap<EntityKey, &SymbolEntry> =
         current.iter().map(|e| (entity_key(e), e)).collect();
+
+    // Warn on entity-key collisions: when two symbols in the same file share
+    // `(name, kind, scope)` (e.g. `impl Foo<T>` and `impl Foo<i32>` both
+    // producing scope `"Foo"`), `HashMap::collect` silently keeps one and
+    // drops the other. This is a latent data-loss source; callers deciding
+    // to trust the diff should call `has_key_collision` first.
+    if base.len() != base_map.len() || current.len() != current_map.len() {
+        tracing::warn!(
+            path = %file.display(),
+            base_total = base.len(),
+            base_unique = base_map.len(),
+            current_total = current.len(),
+            current_unique = current_map.len(),
+            "symbol entity-key collision detected; diff may be incomplete"
+        );
+    }
 
     let mut ops = Vec::new();
 

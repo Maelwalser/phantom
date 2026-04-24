@@ -41,8 +41,13 @@ impl Drop for FuseCleanupGuard {
 pub fn run(args: &ExecArgs) -> anyhow::Result<()> {
     let ctx = PhantomContext::locate()?;
 
+    // Validate the agent name before using it as a path component; an
+    // unvalidated value would allow traversal out of `.phantom/overlays/`.
+    let agent_id = phantom_core::AgentId::validate(&args.agent)
+        .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {}", args.agent, e))?;
+
     // Validate agent exists.
-    let overlay_root = ctx.phantom_dir.join("overlays").join(&args.agent);
+    let overlay_root = ctx.phantom_dir.join("overlays").join(agent_id.0.as_str());
     let upper_dir = overlay_root.join("upper");
     if !upper_dir.exists() {
         anyhow::bail!(

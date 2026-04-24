@@ -16,12 +16,15 @@ pub enum QueryOrder {
     Desc,
 }
 
-impl QueryOrder {
-    /// SQL keyword for this ordering direction.
-    pub(crate) fn as_sql(self) -> &'static str {
-        match self {
-            Self::Asc => "ASC",
-            Self::Desc => "DESC",
+// Implementation note: intentionally no `as_sql()` on the public enum.
+// The crate-internal `store::query_builder::SortDir` is the only type that
+// feeds a direction into SQL, which keeps the user-facing surface free of
+// raw SQL strings.
+impl From<QueryOrder> for crate::store::query_builder::SortDir {
+    fn from(o: QueryOrder) -> Self {
+        match o {
+            QueryOrder::Asc => Self::Asc,
+            QueryOrder::Desc => Self::Desc,
         }
     }
 }

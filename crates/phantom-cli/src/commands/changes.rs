@@ -24,8 +24,10 @@ pub async fn run(args: ChangesArgs) -> anyhow::Result<()> {
     let events_store = ctx.open_events().await?;
 
     let query = if let Some(ref agent) = args.agent {
+        let agent_id = AgentId::validate(agent)
+            .map_err(|e| anyhow::anyhow!("invalid agent name '{agent}': {e}"))?;
         EventQuery {
-            agent_id: Some(AgentId(agent.clone())),
+            agent_id: Some(agent_id),
             limit: Some(args.limit),
             kind_prefixes: vec![
                 "ChangesetMaterialized".to_string(),

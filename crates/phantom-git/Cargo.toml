@@ -6,17 +6,21 @@ license.workspace = true
 description = "Git operations for Phantom, built on git2"
 publish = false
 
+[features]
+# Exposes `test_support` helpers (panic-on-error git operations for tests).
+# Enabled by integration test crates; must NOT be enabled for release builds.
+test-helpers = ["dep:tempfile"]
+
 [dependencies]
 phantom-core = { workspace = true }
 git2 = { workspace = true }
 diffy = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-
-[dependencies.tempfile]
-workspace = true
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

@@ -14,7 +14,7 @@ use anyhow::Context;
 use phantom_core::id::{AgentId, ChangesetId, GitOid};
 use phantom_toolchain::{Toolchain, VerificationVerb};
 
-use super::CONTEXT_FILE;
+use super::{CONTEXT_FILE, sanitize_markdown};
 
 /// Separator that marks the boundary between the static preamble and dynamic
 /// updates. Everything above this line is written once at task creation;
@@ -65,7 +65,16 @@ pub fn write_context_file_with_toolchain(
         .unwrap_or_default();
 
     let task_section = match task {
-        Some(t) if !t.is_empty() => format!("\n## Task\n{t}\n"),
+        Some(t) if !t.is_empty() => {
+            // Sanitize the task description before embedding it in the
+            // markdown context file: without this, a crafted task string
+            // could inject headings (e.g. `## Commands`) that override the
+            // real Commands section the LLM reads. Legitimate task content
+            // (prose, code fences, bullet lists not at column 0) is
+            // unaffected.
+            let safe = sanitize_markdown(t);
+            format!("\n## Task\n{safe}\n")
+        }
         _ => String::new(),
     };
 

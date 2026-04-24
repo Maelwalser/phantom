@@ -10,14 +10,20 @@ use crate::error::EventStoreError;
 use crate::query::EventQuery;
 
 use super::SqliteEventStore;
-use super::query_builder::{QueryBuilder, apply_event_filters};
+use super::query_builder::{QueryBuilder, SortDir, apply_event_filters};
 use super::row::{checked_id, row_to_event};
 
 impl SqliteEventStore {
     /// Append an event, returning the auto-generated [`EventId`].
     pub(crate) async fn append_internal(&self, event: Event) -> Result<EventId, EventStoreError> {
         let kind_json = serde_json::to_string(&event.kind)?;
-        let timestamp_str = event.timestamp.to_rfc3339();
+        // Use explicit UTC-with-Z format so every stored timestamp sorts
+        // lexicographically in insertion order, matching the timestamp
+        // index's BTREE ordering. A future `to_rfc3339` call emitting
+        // `+00:00` would break that ordering silently.
+        let timestamp_str = event
+            .timestamp
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
         let result = sqlx::query(
             "INSERT INTO events (timestamp, changeset_id, agent_id, kind, kind_version, causal_parent)
@@ -45,7 +51,7 @@ impl SqliteEventStore {
     pub async fn query(&self, q: &EventQuery) -> Result<Vec<Event>, EventStoreError> {
         let mut qb = QueryBuilder::new();
         apply_event_filters(&mut qb, q);
-        qb.fetch(&self.pool, q.order.as_sql(), q.limit).await
+        qb.fetch(&self.pool, SortDir::from(q.order), q.limit).await
     }
 
     /// Count events matching the query filters (ignores limit).
@@ -105,27 +111,27 @@ impl SqliteEventStore {
         let mut qb = QueryBuilder::new();
         let p = qb.bind((after.0 as i64).to_string());
         qb.push(format!("id > {p}"));
-        qb.fetch(&self.pool, "ASC", None).await
+        qb.fetch(&self.pool, SortDir::Asc, None).await
     }
 
     /// Mark all events belonging to a changeset as dropped.
     ///
     /// Also invalidates all projection snapshots, since they may contain
-    /// state derived from the dropped events.
+    /// state derived from the dropped events. Both operations run in a
+    /// single transaction so a crash between the UPDATE and the snapshot
+    /// wipe cannot leave a stale snapshot masking the dropped state.
     ///
     /// Returns the number of rows affected.
     pub async fn mark_dropped(&self, changeset_id: &ChangesetId) -> Result<u64, EventStoreError> {
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query("UPDATE events SET dropped = 1 WHERE changeset_id = $1")
             .bind(&changeset_id.0)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
-
-        // Invalidate all projection snapshots — rollback is rare, so a full
-        // wipe is simpler and safer than selective invalidation.
         sqlx::query("DELETE FROM projection_snapshots")
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
-
+        tx.commit().await?;
         Ok(result.rows_affected())
     }
 
@@ -133,18 +139,26 @@ impl SqliteEventStore {
     ///
     /// Results are always ordered by `id ASC` (chronological), as expected
     /// by the [`EventStore`](phantom_core::traits::EventStore) trait methods.
+    ///
+    /// `where_clause` must be caller-constructed from fixed SQL tokens and
+    /// positional parameter references (`$1`, `$2`, ...). The string is
+    /// interpolated directly into SQL; callers that embed user input there
+    /// would create an injection hole. To prevent accidental misuse, the
+    /// function is `pub(crate)` and the only callers live inside this crate.
     pub(crate) async fn query_events(
         &self,
         where_clause: &str,
         params: &[String],
     ) -> Result<Vec<Event>, EventStoreError> {
         let mut qb = QueryBuilder::new();
-        // Replace the default "dropped = 0" with the caller's full clause
-        // which already includes the dropped filter.
-        qb.conditions = vec![where_clause.to_string()];
+        // `QueryBuilder::new()` seeds `dropped = 0` — we drop that here and
+        // trust the caller's clause to include whatever `dropped` filter is
+        // appropriate. Parameters are appended in order so `$N` placeholders
+        // stay consistent with the existing bind count.
+        qb.replace_conditions(vec![where_clause.to_string()]);
         for p in params {
-            qb.params.push(p.clone());
+            qb.bind(p.clone());
         }
-        qb.fetch(&self.pool, "ASC", None).await
+        qb.fetch(&self.pool, SortDir::Asc, None).await
     }
 }

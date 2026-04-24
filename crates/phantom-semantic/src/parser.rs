@@ -103,6 +103,22 @@ impl Parser {
         path: &Path,
         content: &[u8],
     ) -> Result<(Vec<SymbolEntry>, Vec<SymbolReference>), SemanticError> {
+        // Bound tree-sitter input size to avoid OOM on adversarial or
+        // accidental large files. 16 MiB covers every source file we care
+        // about; anything larger is conservatively treated as "no symbols
+        // available", which `symbols_disjoint` (in phantom-orchestrator) now
+        // interprets as "assume overlap" and runs a full semantic merge.
+        const MAX_PARSE_BYTES: usize = 16 * 1024 * 1024;
+        if content.len() > MAX_PARSE_BYTES {
+            tracing::warn!(
+                path = %path.display(),
+                size = content.len(),
+                limit = MAX_PARSE_BYTES,
+                "file exceeds parse size limit; skipping symbol extraction"
+            );
+            return Ok((Vec::new(), Vec::new()));
+        }
+
         let idx = self
             .resolve_index(path)
             .ok_or_else(|| SemanticError::UnsupportedLanguage {

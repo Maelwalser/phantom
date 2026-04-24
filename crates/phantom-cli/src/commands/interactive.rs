@@ -31,6 +31,12 @@ pub async fn run_interactive_session(
 ) -> anyhow::Result<()> {
     let config_default = crate::context::default_cli(&ctx.phantom_dir);
     let command = args.command.as_deref().unwrap_or(&config_default);
+    // Validate the CLI name against the same allowlist that the background
+    // path uses. The command string flows into `Command::new(...)` inside
+    // the GenericAdapter and was previously only validated when `--background`
+    // was passed, leaving the interactive path open to arbitrary binaries.
+    crate::context::validate_cli_name(command)
+        .map_err(|e| anyhow::anyhow!("invalid --command value '{command}': {e}"))?;
     let cli_adapter = adapter::adapter_for(command);
 
     // Detect repo toolchain once and thread it through so the context file
@@ -92,6 +98,8 @@ pub async fn run_interactive_session(
 
     // Use PTY when stdin is a terminal (enables output capture for session IDs).
     // Fall back to direct Stdio::inherit() when not a TTY (tests, CI, piped input).
+    // SAFETY: STDIN_FILENO (0) is always a valid fd; isatty on a closed fd returns
+    // 0 (errno=EBADF), never UB.
     let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
     let (exit_status, captured_session_id) = if is_tty {
         pty::spawn_with_pty(

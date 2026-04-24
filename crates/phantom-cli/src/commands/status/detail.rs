@@ -24,7 +24,8 @@ pub(super) async fn run_detailed(
     all_files: bool,
 ) -> anyhow::Result<()> {
     let phantom_dir = &ctx.phantom_dir;
-    let agent_id = AgentId(agent_name.to_string());
+    let agent_id = AgentId::validate(agent_name)
+        .map_err(|e| anyhow::anyhow!("invalid agent name '{agent_name}': {e}"))?;
 
     let projection = SnapshotManager::new(events).build_projection().await?;
     let agent_events = events.query_by_agent(&agent_id).await?;

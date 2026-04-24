@@ -191,12 +191,24 @@ fn symbols_disjoint(
     if agent_syms.is_empty() {
         return false;
     }
-    let base_syms = analyzer
-        .extract_symbols(file, base_content)
-        .unwrap_or_default();
-    let trunk_syms = analyzer
-        .extract_symbols(file, trunk_content)
-        .unwrap_or_default();
+    // If symbol extraction fails on either side we cannot prove disjointness —
+    // fall back conservatively to "overlaps", which forces the caller to run
+    // the full semantic merge (or detect a real conflict). Treating extraction
+    // failure as "disjoint" would silently commit conflicting changes.
+    let Ok(base_syms) = analyzer.extract_symbols(file, base_content) else {
+        tracing::warn!(
+            path = %file.display(),
+            "symbol extraction failed on base; assuming overlap"
+        );
+        return false;
+    };
+    let Ok(trunk_syms) = analyzer.extract_symbols(file, trunk_content) else {
+        tracing::warn!(
+            path = %file.display(),
+            "symbol extraction failed on trunk; assuming overlap"
+        );
+        return false;
+    };
     let trunk_ops = analyzer.diff_symbols(&base_syms, &trunk_syms);
     let trunk_names: HashSet<String> = trunk_ops
         .iter()

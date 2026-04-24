@@ -21,11 +21,14 @@ diffy = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tempfile = { workspace = true }
 nix = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = { workspace = true }
+# Pull in phantom-git's test helpers only for the orchestrator's own tests.
+# This keeps the panic-on-error helpers out of the release binary.
+phantom-git = { workspace = true, features = ["test-helpers"] }
 
 [lints]
 workspace = true

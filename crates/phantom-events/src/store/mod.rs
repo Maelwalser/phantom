@@ -21,8 +21,8 @@ use crate::schema;
 mod config;
 mod connection;
 mod queries;
-mod query_builder;
-mod row;
+pub(crate) mod query_builder;
+pub(crate) mod row;
 
 pub use config::EventStoreConfig;
 

@@ -32,10 +32,50 @@ fn session_path(phantom_dir: &Path, agent_id: &AgentId) -> std::path::PathBuf {
 }
 
 /// Load a previously saved CLI session for this agent, if one exists.
+///
+/// Rejects session ids whose shape doesn't match any expected format. The
+/// value flows into `Command::args(["--resume", id])` for the coding CLI;
+/// a crafted value inside `cli_session.json` would otherwise be handed to
+/// the child process verbatim. We accept UUIDs (with optional dashes) and
+/// the `ses_` prefix used by opencode.
 pub fn load_session(phantom_dir: &Path, agent_id: &AgentId) -> Option<CliSession> {
     let path = session_path(phantom_dir, agent_id);
     let content = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&content).ok()
+    let session: CliSession = serde_json::from_str(&content).ok()?;
+    if !is_well_formed_session_id(&session.session_id) {
+        tracing::warn!(
+            path = %path.display(),
+            session_id = %session.session_id,
+            "ignoring stored CLI session with unrecognized session_id shape",
+        );
+        return None;
+    }
+    Some(session)
+}
+
+/// Allow only the formats currently emitted by supported adapters.
+fn is_well_formed_session_id(s: &str) -> bool {
+    if s.is_empty() || s.len() > 128 {
+        return false;
+    }
+    // UUID with dashes.
+    let is_uuid = s.len() == 36 && s.chars().all(|c| c == '-' || c.is_ascii_hexdigit());
+    if is_uuid {
+        return true;
+    }
+    // UUID without dashes.
+    let is_bare_hex = s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit());
+    if is_bare_hex {
+        return true;
+    }
+    // opencode `ses_…` prefix with alphanumeric/underscore/hyphen.
+    if let Some(rest) = s.strip_prefix("ses_") {
+        return !rest.is_empty()
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    }
+    false
 }
 
 /// Persist a CLI session to disk so it can be resumed on the next task invocation.

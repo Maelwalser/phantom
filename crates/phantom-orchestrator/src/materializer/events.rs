@@ -2,7 +2,7 @@
 //! consistency via HEAD rollback on event store failures (C6).
 
 use chrono::Utc;
-use tracing::error;
+use tracing::{error, warn};
 
 use phantom_core::changeset::Changeset;
 use phantom_core::conflict::ConflictDetail;
@@ -55,10 +55,15 @@ pub(super) async fn append_materialized_event(
     changeset: &Changeset,
     new_commit: &GitOid,
 ) -> Result<EventId, OrchestratorError> {
+    // Propagate causal-parent query failures: writing a root-linked event on a
+    // transient DB error silently breaks the causal DAG used by rollback.
     let causal_parent = event_store
         .latest_event_for_changeset(&changeset.id)
         .await
-        .unwrap_or(None);
+        .map_err(|e| {
+            warn!(error = %e, changeset = %changeset.id.0, "causal parent query failed");
+            OrchestratorError::EventStore(e.to_string())
+        })?;
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
@@ -84,7 +89,10 @@ pub(super) async fn append_conflicted_event(
     let causal_parent = event_store
         .latest_event_for_changeset(&changeset.id)
         .await
-        .unwrap_or(None);
+        .map_err(|e| {
+            warn!(error = %e, changeset = %changeset.id.0, "causal parent query failed");
+            OrchestratorError::EventStore(e.to_string())
+        })?;
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),

@@ -250,6 +250,12 @@ pub async fn run(args: TaskArgs) -> anyhow::Result<()> {
             .join("agent.log");
         let config_default = crate::context::default_cli(&ctx.phantom_dir);
         let cli_command = args.command.as_deref().unwrap_or(&config_default);
+        // Reject arbitrary CLI paths: the string flows straight into
+        // Command::new(...) so a malicious --command value would be direct
+        // arbitrary command execution. The allowlist mirrors the adapter
+        // routing in phantom-session::adapter::adapter_for.
+        crate::context::validate_cli_name(cli_command)
+            .map_err(|e| anyhow::anyhow!("invalid --command / default_cli: {e}"))?;
         spawn_agent_monitor(
             &ctx.phantom_dir,
             &ctx.repo_root,

@@ -19,10 +19,19 @@ pub(super) async fn record_changeset_submitted(
     agent_id: &AgentId,
     operations: Vec<SemanticOperation>,
 ) -> Result<(), OrchestratorError> {
+    // Do not silently produce a root-linked event on transient query failure —
+    // a broken causal chain corrupts rollback ordering.
     let causal_parent = events
         .latest_event_for_changeset(&changeset_id)
         .await
-        .unwrap_or(None);
+        .map_err(|e| {
+            tracing::warn!(
+                error = %e,
+                changeset = %changeset_id.0,
+                "causal parent query failed"
+            );
+            OrchestratorError::EventStore(e.to_string())
+        })?;
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),

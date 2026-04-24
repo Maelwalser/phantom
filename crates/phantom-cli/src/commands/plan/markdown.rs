@@ -21,7 +21,13 @@ const JSON_FENCE_MARKER: &str = "<!-- phantom-plan:json -->";
 const FENCE: &str = "````";
 
 /// Render a [`Plan`] as a self-contained Markdown document.
-pub fn render_plan_markdown(plan: &Plan) -> String {
+///
+/// Returns an error when the embedded JSON payload cannot be serialized.
+/// In practice `Plan` is always serializable, but propagating the error
+/// avoids a runtime panic in the user-facing save path if a future field
+/// introduces a non-serializable type (for example a floating-point NaN
+/// in a derived field).
+pub fn render_plan_markdown(plan: &Plan) -> anyhow::Result<String> {
     let mut out = String::with_capacity(1024);
 
     let _ = writeln!(out, "# Phantom Plan");
@@ -64,14 +70,15 @@ pub fn render_plan_markdown(plan: &Plan) -> String {
     let _ = writeln!(out);
     let _ = writeln!(out, "{JSON_FENCE_MARKER}");
     let _ = writeln!(out, "{FENCE}json");
-    let payload = serde_json::to_string_pretty(plan).expect("Plan is always serializable to JSON");
+    let payload =
+        serde_json::to_string_pretty(plan).context("failed to serialize plan for markdown")?;
     out.push_str(&payload);
     if !payload.ends_with('\n') {
         out.push('\n');
     }
     let _ = writeln!(out, "{FENCE}");
 
-    out
+    Ok(out)
 }
 
 fn render_domain(out: &mut String, index: usize, domain: &PlanDomain) {
@@ -139,7 +146,7 @@ fn render_domain(out: &mut String, index: usize, domain: &PlanDomain) {
 pub fn write_plan_file(repo_root: &Path, plan: &Plan) -> anyhow::Result<PathBuf> {
     let filename = format!("phantom-plan-{}.md", plan.id.0);
     let path = repo_root.join(&filename);
-    let contents = render_plan_markdown(plan);
+    let contents = render_plan_markdown(plan)?;
     std::fs::write(&path, contents)
         .with_context(|| format!("failed to write plan file {}", path.display()))?;
     Ok(path)
@@ -260,7 +267,7 @@ mod tests {
     #[test]
     fn roundtrip_preserves_all_fields() {
         let original = sample_plan();
-        let md = render_plan_markdown(&original);
+        let md = render_plan_markdown(&original).expect("render");
         assert!(md.contains(JSON_FENCE_MARKER));
         assert!(md.contains("# Phantom Plan"));
 
@@ -320,7 +327,7 @@ mod tests {
         let mut plan = sample_plan();
         // User request that contains a triple-backtick — must not break the 4-backtick fence.
         plan.request = "Support ```rust``` snippets in docs".into();
-        let md = render_plan_markdown(&plan);
+        let md = render_plan_markdown(&plan).expect("render");
         let parsed = parse_plan_markdown(&md).unwrap();
         assert_eq!(parsed.request, plan.request);
     }

@@ -32,16 +32,31 @@ pub(super) fn collect_changes(
         .modified_files()
         .map_err(|e| OrchestratorError::Overlay(e.to_string()))?;
 
+    // Conservative default on `.gitignore` check failure: treat the path as
+    // ignored so a transient git error cannot leak unintended files (possibly
+    // `.env` or build artifacts) into a trunk commit.
+    let is_ignored_safe = |path: &PathBuf| -> bool {
+        git.is_ignored(path)
+            .inspect_err(|e| {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "gitignore check failed; excluding path from changeset"
+                );
+            })
+            .unwrap_or(true)
+    };
+
     let deleted: Vec<PathBuf> = layer
         .deleted_files()
         .into_iter()
-        .filter(|path| !git.is_ignored(path).unwrap_or(false))
+        .filter(|path| !is_ignored_safe(path))
         .collect();
 
     let total_count = all_modified.len();
     let modified: Vec<PathBuf> = all_modified
         .into_iter()
-        .filter(|path| !git.is_ignored(path).unwrap_or(false))
+        .filter(|path| !is_ignored_safe(path))
         .collect();
 
     let ignored_count = total_count - modified.len();

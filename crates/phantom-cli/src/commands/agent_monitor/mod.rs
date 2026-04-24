@@ -87,17 +87,25 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
 
     let ctx = PhantomContext::locate()?;
     let events = ctx.open_events().await?;
-    let agent_id = AgentId(args.agent.clone());
+    // Re-validate the agent name: `_agent-monitor` is reachable as a hidden
+    // subcommand and its `--agent` flag would otherwise flow unchecked into
+    // path joins and the embedded hook command string.
+    let agent_id = AgentId::validate(&args.agent)
+        .map_err(|e| anyhow::anyhow!("invalid agent name '{}': {}", args.agent, e))?;
     let changeset_id = ChangesetId(args.changeset_id.clone());
     let work_dir = PathBuf::from(&args.work_dir);
 
     // Wait for upstream dependencies to materialize before starting.
+    // Each upstream name is validated the same way as the primary agent.
     let upstream_agents: Vec<AgentId> = args
         .depends_on_agents
         .split(',')
         .filter(|s| !s.is_empty())
-        .map(|s| AgentId(s.to_string()))
-        .collect();
+        .map(|s| {
+            AgentId::validate(s)
+                .map_err(|e| anyhow::anyhow!("invalid upstream agent name '{s}': {e}"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     if !upstream_agents.is_empty() {
         deps::wait_for_dependencies(
@@ -161,10 +169,13 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     )?;
 
     // Emit AgentLaunched event now that we have the real PID.
+    // Propagate query errors rather than flattening them to `None`: a
+    // silently root-linked event corrupts the causal chain used by
+    // rollback ordering.
     let causal_parent = events
         .latest_event_for_changeset(&changeset_id)
         .await
-        .unwrap_or(None);
+        .map_err(|e| anyhow::anyhow!("failed to resolve causal parent for AgentLaunched: {e}"))?;
     let launch_event = Event {
         id: EventId(0),
         timestamp: Utc::now(),
@@ -223,15 +234,42 @@ pub async fn run(args: AgentMonitorArgs) -> anyhow::Result<()> {
     let (status, should_remove) =
         reconcile_with_event_log(&events, &agent_id, &changeset_id, status, should_remove).await;
 
-    // Write status file while the overlay still exists.
+    // Write status file while the overlay still exists. Both the serialize
+    // and the write are observable failures: the status file is the only
+    // persistent record of completion read by `ph status` and `ph background`.
+    // Silently losing it makes the reconcile path invent "died unexpectedly"
+    // markers after the next CLI invocation.
     let status_file = status_path(&ctx.phantom_dir, &args.agent);
-    if let Ok(json) = serde_json::to_string_pretty(&status) {
-        let _ = std::fs::write(&status_file, json);
+    match serde_json::to_string_pretty(&status) {
+        Ok(json) => {
+            if let Err(err) = std::fs::write(&status_file, &json) {
+                tracing::error!(
+                    path = %status_file.display(),
+                    %err,
+                    "failed to write agent status file",
+                );
+            }
+        }
+        Err(err) => {
+            tracing::error!(%err, "failed to serialize agent status");
+        }
     }
 
-    // Clean up PID files.
-    let _ = std::fs::remove_file(pid_path(&ctx.phantom_dir, &args.agent));
-    let _ = std::fs::remove_file(monitor_pid_path(&ctx.phantom_dir, &args.agent));
+    // Clean up PID files. A failure here leaves stale markers that
+    // `cleanup_stale_agent_process` would later interpret as a crashed
+    // process and override the real status — log so we can correlate.
+    let agent_pid = pid_path(&ctx.phantom_dir, &args.agent);
+    if let Err(err) = std::fs::remove_file(&agent_pid)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %agent_pid.display(), %err, "failed to remove agent PID file");
+    }
+    let monitor_pid = monitor_pid_path(&ctx.phantom_dir, &args.agent);
+    if let Err(err) = std::fs::remove_file(&monitor_pid)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %monitor_pid.display(), %err, "failed to remove monitor PID file");
+    }
 
     // Auto-remove overlay after successful submit. On conflict or failure
     // the overlay is preserved for `phantom resolve` or manual recovery.
@@ -388,11 +426,13 @@ pub(super) async fn run_post_completion(
 
     let success = exit_code == Some(0);
 
-    // Record completion event.
+    // Record completion event. AgentCompleted is the event rollback must
+    // reach to determine how far to replay, so we cannot afford to silently
+    // root-link it on a transient query failure.
     let causal_parent = events
         .latest_event_for_changeset(changeset_id)
         .await
-        .unwrap_or(None);
+        .map_err(|e| anyhow::anyhow!("failed to resolve causal parent for AgentCompleted: {e}"))?;
     let event = Event {
         id: EventId(0),
         timestamp: Utc::now(),

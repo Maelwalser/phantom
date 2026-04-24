@@ -43,6 +43,25 @@ pub(super) fn semantic_merge(
         .parse_file(path, theirs)
         .map_err(|e| CoreError::Semantic(e.to_string()))?;
 
+    // If any side has entity-key collisions (e.g. `impl Foo<T>` and `impl
+    // Foo<i32>` both producing scope `"Foo"`, or two identically-named
+    // methods on separate impl blocks), the HashMap below silently drops one
+    // symbol. That leads to silent content loss in `reconstruct_merged_file`.
+    // Bail to the text merge with an explicit strategy so operators notice.
+    if crate::diff::has_key_collision(&base_symbols)
+        || crate::diff::has_key_collision(&ours_symbols)
+        || crate::diff::has_key_collision(&theirs_symbols)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            "symbol entity-key collision; using text merge to avoid silent content loss"
+        );
+        return Ok((
+            text_merge(base, ours, theirs, path),
+            MergeStrategy::TextFallbackInvalidSyntax,
+        ));
+    }
+
     let base_map: HashMap<EntityKey, &SymbolEntry> =
         base_symbols.iter().map(|e| (entity_key(e), e)).collect();
     let ours_map: HashMap<EntityKey, &SymbolEntry> =

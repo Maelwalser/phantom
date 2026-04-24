@@ -26,6 +26,40 @@ const CONTEXT_FILE: &str = ".phantom-task.md";
 /// Maximum byte size for the generated markdown (keeps token budget bounded).
 const BYTE_BUDGET: usize = 4096;
 
+/// Sanitize a user-derived name (symbol name, file-path component, etc.)
+/// before embedding it inside backticks in LLM-consumed markdown.
+///
+/// Strips newlines / carriage returns so a crafted value cannot break out
+/// of its bullet and start a new markdown section. Replaces embedded
+/// backticks with an escaped form so the inline-code span cannot be
+/// prematurely closed. Truncates to 120 bytes to keep per-item budget
+/// predictable even for pathological inputs.
+fn sanitize_inline(s: &str) -> String {
+    const MAX: usize = 120;
+    let mut out = String::with_capacity(s.len().min(MAX));
+    for ch in s.chars() {
+        if out.len() >= MAX {
+            out.push('…');
+            break;
+        }
+        match ch {
+            '\n' | '\r' => {
+                // Newlines let a crafted value start a new markdown block.
+                out.push(' ');
+            }
+            '`' => {
+                // Neutralize backticks so the inline code span cannot close
+                // early and let the suffix act as markdown.
+                out.push('\u{200B}');
+                out.push('`');
+            }
+            c if c.is_control() => out.push('\u{FFFD}'),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Generate markdown notification content from semantic operations and
 /// classified file statuses.
 ///
@@ -114,18 +148,23 @@ fn render_impacts_section(impacts: &[DependencyImpact]) -> String {
     );
 
     for impact in impacts {
-        let your_name = impact.your_symbol.name();
-        let dep_name = impact.depends_on.name();
+        // Each field below is user-derived (from the repo's source code or
+        // file paths). Run every embedded value through `sanitize_inline`
+        // so a crafted identifier or path cannot inject markdown structure
+        // into the cross-agent notification.
+        let your_name = sanitize_inline(impact.your_symbol.name());
+        let dep_name = sanitize_inline(impact.depends_on.name());
         let (start, end) = impact.line_range;
+        let file_str = sanitize_inline(&impact.file.display().to_string());
         let location = if start == end {
-            format!("{}:{start}", impact.file.display())
+            format!("{file_str}:{start}")
         } else {
-            format!("{}:{start}-{end}", impact.file.display())
+            format!("{file_str}:{start}-{end}")
         };
         let preview = impact
             .trunk_preview
             .as_deref()
-            .map(|p| format!(" — {p}"))
+            .map(|p| format!(" — {}", sanitize_inline(p)))
             .unwrap_or_default();
         let _ = writeln!(
             out,
@@ -224,13 +263,18 @@ fn render_file_section(
 }
 
 /// Render a single semantic operation as a markdown bullet.
+///
+/// All user-derived strings (symbol names, file paths) are passed through
+/// [`sanitize_inline`] before embedding so that a crafted source file
+/// cannot inject markdown structure into notifications delivered to other
+/// agents.
 fn render_operation(op: &SemanticOperation, file_content: Option<&[u8]>) -> String {
     match op {
         SemanticOperation::AddSymbol { symbol, .. } => {
             let line = line_info(symbol.byte_range.start, file_content);
             format!(
                 "- **Added**: `{}()` ({}{line})\n",
-                symbol.name,
+                sanitize_inline(&symbol.name),
                 kind_label(symbol.kind),
             )
         }
@@ -238,7 +282,7 @@ fn render_operation(op: &SemanticOperation, file_content: Option<&[u8]>) -> Stri
             let line = line_info(new_entry.byte_range.start, file_content);
             format!(
                 "- **Modified**: `{}()` ({}{line})\n",
-                new_entry.name,
+                sanitize_inline(&new_entry.name),
                 kind_label(new_entry.kind),
             )
         }
@@ -250,13 +294,19 @@ fn render_operation(op: &SemanticOperation, file_content: Option<&[u8]>) -> Stri
             } else {
                 &id.0
             };
-            format!("- **Deleted**: `{name}()`\n")
+            format!("- **Deleted**: `{}()`\n", sanitize_inline(name))
         }
         SemanticOperation::AddFile { path } => {
-            format!("- **New file**: `{}`\n", path.display())
+            format!(
+                "- **New file**: `{}`\n",
+                sanitize_inline(&path.display().to_string())
+            )
         }
         SemanticOperation::DeleteFile { path } => {
-            format!("- **File deleted**: `{}`\n", path.display())
+            format!(
+                "- **File deleted**: `{}`\n",
+                sanitize_inline(&path.display().to_string())
+            )
         }
         SemanticOperation::RawDiff { .. } => {
             "- Raw changes applied (no semantic analysis available)\n".to_string()

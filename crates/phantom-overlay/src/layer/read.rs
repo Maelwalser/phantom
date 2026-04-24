@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::error::OverlayError;
 use crate::trunk_view::read_dir_entries;
@@ -66,7 +66,33 @@ impl OverlayLayer {
                 Ok(target)
             }
             ResolvedPath::Lower(path) | ResolvedPath::Passthrough(path) => {
-                Ok(fs::read_link(&path)?)
+                let target = fs::read_link(&path)?;
+                // Security policy for lower/passthrough symlinks with
+                // absolute targets. A repo committing `evil -> /etc/shadow`
+                // can otherwise be read by agents inside the overlay.
+                //
+                // Default (secure): refuse to follow absolute targets. Set
+                // `PHANTOM_PERMIT_ABSOLUTE_SYMLINKS=1` to opt back in for
+                // toolchains that need them (Python venvs, node_modules
+                // shims, Go caches).
+                if target.is_absolute() {
+                    let permit = std::env::var("PHANTOM_PERMIT_ABSOLUTE_SYMLINKS")
+                        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+                    if !permit {
+                        warn!(
+                            path = %rel_path.display(),
+                            target = %target.display(),
+                            "rejecting absolute symlink target from lower/passthrough; set PHANTOM_PERMIT_ABSOLUTE_SYMLINKS=1 to allow"
+                        );
+                        return Err(OverlayError::PathNotFound(rel_path.to_path_buf()));
+                    }
+                    warn!(
+                        path = %rel_path.display(),
+                        target = %target.display(),
+                        "following absolute symlink from lower/passthrough (PHANTOM_PERMIT_ABSOLUTE_SYMLINKS=1); this is a trust boundary"
+                    );
+                }
+                Ok(target)
             }
             ResolvedPath::NotFound => Err(OverlayError::PathNotFound(rel_path.to_path_buf())),
         }

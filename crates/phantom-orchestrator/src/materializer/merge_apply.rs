@@ -127,11 +127,17 @@ pub(super) async fn merge_apply(
         &changeset.agent_id.0,
     )?;
 
+    // Escalated from debug! to warn!: the FUSE overlay's lower layer reads
+    // from the working tree. Failing to refresh it leaves subsequent
+    // materializations comparing changesets against stale file content.
     if let Err(e) = git
         .repo()
         .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
     {
-        debug!(error = %e, "checkout_head after merge commit failed (non-fatal)");
+        warn!(
+            error = %e,
+            "checkout_head after merge commit failed; working tree has diverged from HEAD"
+        );
     }
 
     if !text_fallback_files.is_empty() {

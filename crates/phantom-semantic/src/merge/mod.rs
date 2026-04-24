@@ -118,14 +118,39 @@ impl phantom_core::traits::SemanticAnalyzer for SemanticMerger {
             }
         }
 
-        // Try semantic merge if language is supported.
+        // Try semantic merge if language is supported. If any of base/ours/
+        // theirs has syntax errors, the extracted symbol set is unreliable
+        // and a "clean" semantic merge could silently splice together byte
+        // regions that were computed under incorrect assumptions. Fall
+        // through to the text merge path with `TextFallbackInvalidSyntax`
+        // so conflict markers surface to the operator instead.
         if self.parser.supports_language(path) {
+            let any_invalid = self.parser.has_syntax_errors(path, base)
+                || self.parser.has_syntax_errors(path, ours)
+                || self.parser.has_syntax_errors(path, theirs);
+            if any_invalid {
+                tracing::warn!(
+                    ?path,
+                    "input has syntax errors; using text merge with TextFallbackInvalidSyntax"
+                );
+                return Ok(MergeReport::text_fallback(
+                    text::text_merge(base, ours, theirs, path),
+                    MergeStrategy::TextFallbackInvalidSyntax,
+                ));
+            }
+
             return if let Ok((result, strategy)) =
                 conflict::semantic_merge(&self.parser, base, ours, theirs, path)
             {
                 Ok(MergeReport { result, strategy })
             } else {
-                tracing::warn!(?path, "semantic merge failed, falling back to text merge");
+                // Parse-error semantic merge failure — escalate to error.
+                // Operators need to see this since the text-merge fallback
+                // can silently commit code that had a semantic conflict.
+                tracing::error!(
+                    ?path,
+                    "semantic merge failed; falling back to text merge (may mask real conflicts)"
+                );
                 Ok(MergeReport::text_fallback(
                     text::text_merge(base, ours, theirs, path),
                     MergeStrategy::TextFallbackSemanticError,

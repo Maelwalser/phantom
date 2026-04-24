@@ -3,3 +3,4 @@
 build.sh
 test-project/
 phantom-plan-*.md
+.llm-fence/
